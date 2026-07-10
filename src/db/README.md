@@ -32,3 +32,6 @@ npm run typecheck                             # 4. el compilador señala los rep
 
 El paso 4 es el beneficio de todo el sistema: si un cambio de esquema rompe un tipo usado
 en un repositorio, **no compila** — se corrige antes de llegar a producción.
+
+Paso 5 obligatorio: actualizar la referencia del esquema físico en
+[docs/database/schema.md](../../docs/database/schema.md) en el mismo cambio.
