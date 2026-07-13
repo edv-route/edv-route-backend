@@ -10,6 +10,7 @@
   "scripts": {
     "dev": "tsx watch src/server.ts",
     "build": "tsc",
+    "prestart": "npm run build",
     "start": "node dist/server.js",
     "typecheck": "tsc --noEmit",
     "migrate": "node-pg-migrate -m src/db/migrations up && npm run db:types",

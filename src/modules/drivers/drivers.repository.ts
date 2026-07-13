@@ -6,9 +6,18 @@ import type { Camelize } from '../../db/case-types.js';
 type DriverRow = Camelize<Drivers>;
 type UserRow = Camelize<Users>;
 
+/** Derived tariff state shown as badges in the panel (driver app later). */
+export interface DriverSubscriptionSummary {
+  status: 'active' | 'scheduled' | 'pending_payment' | 'expired';
+  currentPeriodEnd: string | null;
+  dueSoon: boolean;
+}
+
 /** List projection (multi-table) - anchored to the generated row models. */
 export type DriverListItem = Pick<UserRow, 'fullName' | 'email' | 'phone'> &
-  Pick<DriverRow, 'userId' | 'nationalId' | 'status' | 'source' | 'registrationStep' | 'createdAt'>;
+  Pick<DriverRow, 'userId' | 'nationalId' | 'status' | 'source' | 'registrationStep' | 'createdAt'> & {
+    subscription: DriverSubscriptionSummary | null;
+  };
 
 export interface DriverListResult {
   items: DriverListItem[];
@@ -37,6 +46,7 @@ export class DriversRepository {
     search?: string;
     page: number;
     limit: number;
+    reminderDays: number;
   }): Promise<DriverListResult> {
     const where: string[] = [];
     const values: unknown[] = [];
@@ -58,9 +68,21 @@ export class DriversRepository {
       values,
     );
 
+    values.push(opts.reminderDays);
+    const reminderIdx = values.length;
     values.push(opts.limit, (opts.page - 1) * opts.limit);
+
     const { rows } = await this.db.query<DriverListItem>(
-      `SELECT ${LIST_COLUMNS}
+      `SELECT ${LIST_COLUMNS},
+         (SELECT json_build_object(
+            'status', ds.status,
+            'currentPeriodEnd', ds.current_period_end,
+            'dueSoon', ds.status = 'active'
+                       AND ds.current_period_end <= now() + make_interval(days => $${reminderIdx}))
+          FROM driver_subscriptions ds
+          WHERE ds.driver_id = d.user_id
+            AND ds.status IN ('active', 'scheduled', 'pending_payment', 'expired')
+          ORDER BY ds.created_at DESC LIMIT 1) AS subscription
        FROM drivers d JOIN users u ON u.id = d.user_id
        ${whereSql}
        ORDER BY d.created_at DESC
@@ -131,7 +153,8 @@ export class DriversRepository {
             'paidPeriods', (SELECT count(*) FROM subscription_payments spp
                             WHERE spp.driver_subscription_id = ds.id AND spp.status = 'paid'))
           FROM driver_subscriptions ds JOIN subscription_plans sp ON sp.id = ds.plan_id
-          WHERE ds.driver_id = d.user_id AND ds.status IN ('active','scheduled','pending_payment')
+          WHERE ds.driver_id = d.user_id
+            AND ds.status IN ('active','scheduled','pending_payment','expired')
           ORDER BY ds.created_at DESC LIMIT 1) AS subscription
        FROM drivers d JOIN users u ON u.id = d.user_id
        WHERE d.user_id = $1`,

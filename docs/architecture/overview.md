@@ -51,6 +51,10 @@ Piezas transversales:
 src/config/env.ts     Carga y valida las variables de entorno; el server no arranca si falta algo.
 src/plugins/db.ts     Pool de conexiones a Postgres (verifica conectividad al arrancar).
 src/plugins/auth.ts   JWT: firma, verificación y el guard `authenticate` de rutas privadas.
+src/plugins/subscription-scheduler.ts
+                      Job del ciclo de vida de tarifas (cada 60 s y al arrancar): consume
+                      adelantos, expira suscripciones sin cobertura (suspensión inmediata,
+                      gracia configurable) y audita con actor "sistema".
 src/app.ts            Ensambla todo (testeable sin puerto). src/server.ts es el entrypoint.
 ```
 

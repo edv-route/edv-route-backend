@@ -167,6 +167,27 @@ const driversRoutes: FastifyPluginAsync = async (app) => {
     },
   );
 
+  app.post<{ Params: { id: string }; Body: { periods: number } }>(
+    '/:id/subscription/renew',
+    {
+      schema: {
+        params: idParam,
+        body: {
+          type: 'object',
+          required: ['periods'],
+          additionalProperties: false,
+          properties: {
+            periods: { type: 'integer', minimum: 1, maximum: 52 },
+          },
+        },
+      },
+    },
+    async (req, reply) => {
+      const result = await service.renewSubscription(req.params.id, req.body.periods, req.user.sub);
+      return reply.code(201).send(result);
+    },
+  );
+
   app.post<{ Params: { id: string } }>(
     '/:id/approve',
     { schema: { params: idParam } },

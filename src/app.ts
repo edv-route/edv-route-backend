@@ -5,6 +5,7 @@ import sensible from '@fastify/sensible';
 import { loadConfig, type AppConfig } from './config/env.js';
 import dbPlugin from './plugins/db.js';
 import authPlugin from './plugins/auth.js';
+import subscriptionScheduler from './plugins/subscription-scheduler.js';
 import healthRoutes from './modules/health/health.routes.js';
 import authRoutes from './modules/auth/auth.routes.js';
 import adminsRoutes from './modules/admins/admins.routes.js';
@@ -31,6 +32,8 @@ export async function buildApp(): Promise<FastifyInstance> {
   const config = loadConfig();
 
   const app = Fastify({
+    // Per-request logs are noise in the console; errors still get logged
+    disableRequestLogging: true,
     logger:
       config.NODE_ENV === 'development'
         ? {
@@ -51,6 +54,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(sensible);
   await app.register(dbPlugin);
   await app.register(authPlugin);
+  await app.register(subscriptionScheduler);
 
   // Domain modules (versioned API)
   await app.register(

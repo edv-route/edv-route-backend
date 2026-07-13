@@ -43,3 +43,13 @@ auditoría. Detalle completo y cronología: [database/README.md](../database/REA
   historiales de pagos/facturas, capacitaciones.
 - Subida real de archivos (Supabase Storage) e integración Supabase Auth.
 - Facturación fiscal SENIAT: análisis aparte con el contador (el comprobante actual es interno).
+
+## 2026-07-13 — Vencimientos y renovación (bloque 4)
+
+| Decisión | Motivo |
+|---|---|
+| Los períodos vencen a las **00:00** (zona `business_timezone`, seed America/Caracas) del día correspondiente; ventana móvil, **sin anclaje al calendario** | Anclar solo semanales al domingo obligaría lógicas distintas para mensuales/anuales |
+| **Suspensión inmediata** al vencer (`subscription_grace_hours = 0`, la clave sigue configurable) | Decisión de negocio; la clave queda por flexibilidad futura |
+| El estado de tarifa es **independiente** del estado administrativo del chofer: la suscripción pasa a `expired` (no opera) y el pago de renovación la **reactiva automáticamente** | No contaminar la suspensión administrativa; reactivación sin intervención manual |
+| Alerta `payment_reminder_days` (seed 3) días antes del vencimiento: badge en el panel HOY; badge + push en la app del chofer cuando exista (documentado, no implementado) | La app del usuario aún no se desarrolla |
+| El scheduler consume adelantos automáticamente (avanza al siguiente período pagado) y audita cada transición con actor sistema | Los adelantos ×N corren sin intervención |

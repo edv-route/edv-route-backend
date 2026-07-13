@@ -2,6 +2,7 @@
 
 | Documento | Contenido |
 |---|---|
+| [roadmap.md](roadmap.md) | **Estado del proyecto**: qué está completado, qué falta y qué está pospuesto |
 | [database/schema.md](database/schema.md) | **Esquema físico completo**: las 17 tablas con columnas, tipos, constraints, índices, enums y garantías |
 | [database/database-design-v7.md](database/database-design-v7.md) | Diseño conceptual canónico (33 tablas, decisiones de modelado) + ERDs en la misma carpeta |
 | [database/archive/](database/archive/) | Versiones históricas del diseño (v1–v6) — no usar como referencia |

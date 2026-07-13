@@ -286,8 +286,13 @@ aspirante rechazado sí (rechazo = reembolso registrado).
 | `updated_by` | uuid | sí | — | FK → `admins.id` (SET NULL) |
 | `updated_at` | timestamptz | no | `now()` | — |
 
-Seed actual: `subscription_grace_hours = 24` (horas de gracia tras vencer la tarifa antes
-de la suspensión automática del afiliado).
+Claves actuales:
+
+| Clave | Seed | Uso |
+|---|---|---|
+| `subscription_grace_hours` | `0` | Horas de gracia tras vencer la tarifa (0 = suspensión inmediata, decisión 2026-07-13) |
+| `payment_reminder_days` | `3` | Días antes del vencimiento para el badge "Por vencer" (panel hoy; app del chofer futuro) |
+| `business_timezone` | `"America/Caracas"` | Los períodos vencen a las 00:00 de esta zona horaria |
 
 ### `audit_logs` — bitácora de acciones
 

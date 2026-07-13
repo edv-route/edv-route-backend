@@ -86,43 +86,47 @@ export class EnrollmentRepository {
     }
   }
 
-  /** Approval: membership stands, tariff starts running from now. */
-  async approve(driverId: string, periodInterval: string): Promise<void> {
+  /**
+   * Approval: membership stands, tariff starts running from now. Periods end
+   * at 00:00 (business timezone) of the corresponding day (decision 2026-07-10):
+   * first period = now -> next midnight boundary of the interval; the rest are
+   * exact consecutive intervals (already midnight-aligned).
+   */
+  async approve(driverId: string, periodInterval: string, timezone: string): Promise<void> {
     const client = await this.db.connect();
     try {
       await client.query('BEGIN');
 
-      const { rows } = await client.query<{ id: string; paid: string }>(
-        `SELECT ds.id,
-                (SELECT count(*) FROM subscription_payments sp
-                 WHERE sp.driver_subscription_id = ds.id AND sp.status = 'paid') AS paid
-         FROM driver_subscriptions ds
+      const { rows } = await client.query<{ id: string }>(
+        `SELECT ds.id FROM driver_subscriptions ds
          WHERE ds.driver_id = $1 AND ds.status = 'scheduled'
          FOR UPDATE`,
         [driverId],
       );
       const sub = rows[0];
       if (sub) {
-        // Re-anchor paid periods to start now, consecutively
         await client.query(
-          `WITH ordered AS (
+          `WITH anchor AS (
+             SELECT date_trunc('day', (now() + $2::interval) AT TIME ZONE $3) AT TIME ZONE $3 AS first_end
+           ), ordered AS (
              SELECT id, row_number() OVER (ORDER BY period_start) - 1 AS idx
              FROM subscription_payments
              WHERE driver_subscription_id = $1 AND status = 'paid'
            )
            UPDATE subscription_payments sp SET
-             period_start = now() + ($2::interval * o.idx),
-             period_end   = now() + ($2::interval * (o.idx + 1))
-           FROM ordered o WHERE o.id = sp.id`,
-          [sub.id, periodInterval],
+             period_start = CASE WHEN o.idx = 0 THEN now()
+                                 ELSE a.first_end + ($2::interval * (o.idx - 1)) END,
+             period_end   = a.first_end + ($2::interval * o.idx)
+           FROM ordered o, anchor a WHERE o.id = sp.id`,
+          [sub.id, periodInterval, timezone],
         );
         await client.query(
           `UPDATE driver_subscriptions SET
              status = 'active', started_at = now(),
              current_period_start = now(),
-             current_period_end = now() + $2::interval
+             current_period_end = date_trunc('day', (now() + $2::interval) AT TIME ZONE $3) AT TIME ZONE $3
            WHERE id = $1`,
-          [sub.id, periodInterval],
+          [sub.id, periodInterval, timezone],
         );
       }
 
@@ -132,6 +136,93 @@ export class EnrollmentRepository {
       );
 
       await client.query('COMMIT');
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
+  /**
+   * Renewal: N new paid periods, one invoice each. If the subscription is
+   * expired the payment reactivates it immediately (periods restart from now,
+   * midnight-aligned); if still active, periods chain after the last paid one.
+   */
+  async renew(input: {
+    subscriptionId: string;
+    driverId: string;
+    planPriceUsd: number;
+    periods: number;
+    periodInterval: string;
+    timezone: string;
+    reactivate: boolean;
+    registeredBy: string;
+  }): Promise<{ invoiceNumbers: string[] }> {
+    const client = await this.db.connect();
+    try {
+      await client.query('BEGIN');
+
+      // Anchor: expired -> restart from now; active -> chain after last paid period
+      const { rows: anchorRows } = await client.query<{ base: Date }>(
+        input.reactivate
+          ? `SELECT date_trunc('day', (now() + $2::interval) AT TIME ZONE $3) AT TIME ZONE $3 AS base
+             FROM driver_subscriptions WHERE id = $1 FOR UPDATE`
+          : `SELECT COALESCE(
+               (SELECT max(period_end) FROM subscription_payments
+                WHERE driver_subscription_id = $1 AND status = 'paid'),
+               date_trunc('day', (now() + $2::interval) AT TIME ZONE $3) AT TIME ZONE $3
+             ) AS base
+             FROM driver_subscriptions WHERE id = $1 FOR UPDATE`,
+        [input.subscriptionId, input.periodInterval, input.timezone],
+      );
+      const base = anchorRows[0]!.base;
+
+      const invoiceNumbers: string[] = [];
+      for (let i = 0; i < input.periods; i++) {
+        const invoice = await this.createInvoice(
+          client, input.driverId, input.planPriceUsd, input.registeredBy,
+        );
+        invoiceNumbers.push(invoice.invoiceNumber);
+        await client.query(
+          `INSERT INTO subscription_payments
+             (driver_subscription_id, invoice_id, period_start, period_end,
+              amount_usd, status, paid_at, registered_by)
+           VALUES ($1, $2,
+                   CASE WHEN $7::boolean
+                        THEN CASE WHEN $4 = 0 THEN now()
+                                  ELSE $3::timestamptz + ($5::interval * ($4 - 1)) END
+                        ELSE $3::timestamptz + ($5::interval * $4) END,
+                   CASE WHEN $7::boolean
+                        THEN $3::timestamptz + ($5::interval * $4)
+                        ELSE $3::timestamptz + ($5::interval * ($4 + 1)) END,
+                   $6, 'paid', now(), $8)`,
+          [
+            input.subscriptionId,
+            invoice.id,
+            base,
+            i,
+            input.periodInterval,
+            input.planPriceUsd,
+            input.reactivate,
+            input.registeredBy,
+          ],
+        );
+      }
+
+      if (input.reactivate) {
+        await client.query(
+          `UPDATE driver_subscriptions SET
+             status = 'active',
+             current_period_start = now(),
+             current_period_end = $2::timestamptz
+           WHERE id = $1`,
+          [input.subscriptionId, base],
+        );
+      }
+
+      await client.query('COMMIT');
+      return { invoiceNumbers };
     } catch (err) {
       await client.query('ROLLBACK');
       throw err;

@@ -66,6 +66,7 @@ réplica activa automáticamente (quien pagó conserva precio y beneficios de su
 | POST | `/drivers/:id/documents` | **Paso 2** (opcional): registrar documento contra un requerimiento |
 | POST | `/drivers/:id/vehicles` | **Paso 3**: registrar vehículo (por panel nace aprobado) |
 | POST | `/drivers/:id/enroll` | **Paso 4**: `{ planId, periods }` — cobra membresía + tarifa; `periods > 1` = adelanto ×N. Emite facturas (la #1 agrupa membresía + primer período) |
+| POST | `/drivers/:id/subscription/renew` | `{ periods }` — cobra N períodos (factura c/u). Si la tarifa está **vencida**, reactiva la operación automáticamente. Vencimientos a las 00:00 (`business_timezone`) |
 | POST | `/drivers/:id/approve` | Aprobar (exige pagos registrados; la tarifa comienza a correr) |
 | POST | `/drivers/:id/reject` | Rechazar: reembolsa ambos pagos y anula sus facturas (conservan número) |
 

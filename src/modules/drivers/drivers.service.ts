@@ -46,8 +46,9 @@ export class DriversService {
     private readonly enrollment: EnrollmentRepository,
   ) {}
 
-  list(opts: { status?: string; search?: string; page: number; limit: number }): Promise<DriverListResult> {
-    return this.drivers.list(opts);
+  async list(opts: { status?: string; search?: string; page: number; limit: number }): Promise<DriverListResult> {
+    const reminderDays = await this.getSetting('payment_reminder_days', 3);
+    return this.drivers.list({ ...opts, reminderDays: Number(reminderDays) });
   }
 
   async getDetail(driverId: string): Promise<Record<string, unknown>> {
@@ -189,8 +190,78 @@ export class DriversService {
       );
     }
 
-    await this.enrollment.approve(driverId, PERIOD_INTERVALS[subscription.billingPeriod]!);
+    const timezone = await this.getSetting('business_timezone', 'America/Caracas');
+    await this.enrollment.approve(
+      driverId,
+      PERIOD_INTERVALS[subscription.billingPeriod]!,
+      String(timezone),
+    );
     await this.audit(adminId, 'driver.approved', 'drivers', driverId, null);
+  }
+
+  /**
+   * Registers a tariff renewal (advance xN allowed). If the subscription is
+   * expired, the payment reactivates the driver's operation instantly -
+   * no admin status change involved (business decision 2026-07-10).
+   */
+  async renewSubscription(
+    driverId: string,
+    periods: number,
+    adminId: string,
+  ): Promise<{ invoiceNumbers: string[]; reactivated: boolean }> {
+    const detail = await this.getDetail(driverId);
+    if (detail['status'] !== 'approved') {
+      throw this.app.httpErrors.conflict('Solo se renueva la tarifa de afiliados aprobados');
+    }
+    const subscription = detail['subscription'] as {
+      id: string;
+      planId: number;
+      status: string;
+      billingPeriod: string;
+    } | null;
+    if (!subscription || !['active', 'expired'].includes(subscription.status)) {
+      throw this.app.httpErrors.conflict('El afiliado no tiene una tarifa activa ni vencida que renovar');
+    }
+
+    const { rows } = await this.app.db.query<{ priceUsd: string; active: boolean }>(
+      'SELECT price_usd AS "priceUsd", active FROM subscription_plans WHERE id = $1',
+      [subscription.planId],
+    );
+    const plan = rows[0]!;
+    if (!plan.active) {
+      throw this.app.httpErrors.conflict(
+        'La tarifa del afiliado fue retirada del catálogo. El cambio de plan estará disponible próximamente.',
+      );
+    }
+
+    const timezone = await this.getSetting('business_timezone', 'America/Caracas');
+    const reactivate = subscription.status === 'expired';
+
+    const result = await this.enrollment.renew({
+      subscriptionId: subscription.id,
+      driverId,
+      planPriceUsd: Number(plan.priceUsd),
+      periods,
+      periodInterval: PERIOD_INTERVALS[subscription.billingPeriod]!,
+      timezone: String(timezone),
+      reactivate,
+      registeredBy: adminId,
+    });
+
+    await this.audit(adminId, 'subscription.renewed', 'drivers', driverId, {
+      periods,
+      invoices: result.invoiceNumbers,
+      reactivated: reactivate,
+    });
+    return { ...result, reactivated: reactivate };
+  }
+
+  private async getSetting(key: string, fallback: unknown): Promise<unknown> {
+    const { rows } = await this.app.db.query<{ value: unknown }>(
+      'SELECT value FROM app_settings WHERE key = $1',
+      [key],
+    );
+    return rows[0]?.value ?? fallback;
   }
 
   async reject(driverId: string, adminId: string): Promise<RejectionResult> {

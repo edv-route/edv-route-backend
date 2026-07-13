@@ -84,8 +84,11 @@ Todos bajo `/api/v1`. Salvo `health` y `auth/login`, requieren `Authorization: B
 | GET/POST | `/subscription-plans` | Catálogo de tarifas |
 | PUT | `/subscription-plans/:id` | Editar con versionado condicional |
 | PATCH | `/subscription-plans/:id/active` | Archivar / reactivar un plan |
+| GET/POST | `/drivers` (+subrutas) | Afiliados: wizard 4 pasos, aprobar/rechazar, renovación de tarifa — ver [docs/api/endpoints.md](docs/api/endpoints.md) |
 
-**Facturación (decisión 2026-07-10):** numeración de facturas continua con secuencia global
-única, sin reinicio anual (se implementa con `invoices` en el bloque 3).
+**Facturación:** numeración continua con secuencia global única, sin reinicio anual.
+Todo cobro emite factura; los reembolsos anulan con rastro. **Tarifas:** vencen a las
+00:00 (`business_timezone`); el scheduler suspende de inmediato al vencer y la renovación
+reactiva automáticamente. Estado completo del proyecto: [docs/roadmap.md](docs/roadmap.md).
 
 Primer admin: `npm run seed:admin` (imprime la contraseña generada una sola vez).
