@@ -16,6 +16,8 @@ import settingsRoutes from './modules/settings/settings.routes.js';
 import membershipsRoutes from './modules/memberships/memberships.routes.js';
 import subscriptionPlansRoutes from './modules/subscription-plans/subscription-plans.routes.js';
 import driversRoutes from './modules/drivers/drivers.routes.js';
+import auditLogsRoutes from './modules/audit-logs/audit-logs.routes.js';
+import dashboardRoutes from './modules/dashboard/dashboard.routes.js';
 
 declare module 'fastify' {
   interface FastifyInstance {
@@ -69,6 +71,8 @@ export async function buildApp(): Promise<FastifyInstance> {
       await api.register(membershipsRoutes, { prefix: '/memberships' });
       await api.register(subscriptionPlansRoutes, { prefix: '/subscription-plans' });
       await api.register(driversRoutes, { prefix: '/drivers' });
+      await api.register(auditLogsRoutes, { prefix: '/audit-logs' });
+      await api.register(dashboardRoutes, { prefix: '/dashboard' });
     },
     { prefix: '/api/v1' },
   );

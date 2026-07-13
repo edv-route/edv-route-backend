@@ -17,6 +17,15 @@ export class SettingsRepository {
     return rows;
   }
 
+  /** Single-key read with fallback for consumers of business settings. */
+  async get(key: string, fallback: unknown): Promise<unknown> {
+    const { rows } = await this.db.query<{ value: unknown }>(
+      'SELECT value FROM app_settings WHERE key = $1',
+      [key],
+    );
+    return rows[0]?.value ?? fallback;
+  }
+
   /** Updates an existing key only - settings are born in migrations, never via API. */
   async update(key: string, value: unknown, updatedBy: string): Promise<SettingRecord | null> {
     const { rows } = await this.db.query<SettingRecord>(

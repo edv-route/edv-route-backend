@@ -1,6 +1,6 @@
 # API REST — Referencia de endpoints
 
-> Actualizado: 2026-07-10 · Base URL: `http://localhost:3000/api/v1`
+> Actualizado: 2026-07-13 · Base URL: `http://localhost:3000/api/v1`
 
 ## Convenciones
 
@@ -75,6 +75,24 @@ réplica activa automáticamente (quien pagó conserva precio y beneficios de su
 - Numeración **continua global** (`invoice_number` desde una secuencia única, sin reinicio anual).
 - Las facturas nunca se borran: los reembolsos las marcan `voided` con fecha y admin responsable.
 - Comprobante **interno no fiscal** (la facturación SENIAT es un análisis aparte).
+
+## Dashboard
+
+| Método | Ruta | Descripción |
+|---|---|---|
+| GET | `/dashboard/summary` | Resumen operativo: afiliados (aprobados/pendientes/suspendidos), tarifas por vencer (cobertura pagada ≤ `payment_reminder_days`, adelantos incluidos) y vencidas, facturación de los últimos 7 días (monto + cantidad, anuladas excluidas). El feed de actividad del panel reutiliza `GET /audit-logs` |
+
+## Auditoría (solo lectura)
+
+Las entradas las escriben los servicios que actúan — **todos los módulos auditan**
+(afiliados, catálogos, membresía, tarifas, administradores, settings y scheduler) vía el
+helper compartido `writeAudit`. Esta API solo las consulta — nunca se crean, editan ni
+borran por HTTP.
+
+| Método | Ruta | Descripción |
+|---|---|---|
+| GET | `/audit-logs` | Listado paginado, más reciente primero. Query: `eventType`, `entity`, `source` (`admin`\|`system`), `adminId`, `from`/`to` (días calendario en `business_timezone`), `page`, `limit`. Cada entrada resuelve el actor (admin o sistema) y el afiliado afectado (`driverId`/`driverName`, listo para enlazar al perfil) |
+| GET | `/audit-logs/facets` | Valores presentes en el log para poblar los filtros del panel: `eventTypes`, `entities` y `actors` (solo admins que han actuado). Nada hardcodeado en el frontend |
 
 ## Utilidades
 

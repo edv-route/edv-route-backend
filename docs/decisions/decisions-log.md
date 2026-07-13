@@ -38,9 +38,8 @@ auditoría. Detalle completo y cronología: [database/README.md](../database/REA
 
 ## Pendientes conocidos
 
-- Scheduler de vencimientos (gracia → suspensión automática) — bloque 4.
-- Vista global de documentos con alertas de vencimiento, UI de auditoría, dashboard real,
-  historiales de pagos/facturas, capacitaciones.
+- Vista global de documentos con alertas de vencimiento, historiales de pagos/facturas,
+  capacitaciones.
 - Subida real de archivos (Supabase Storage) e integración Supabase Auth.
 - Facturación fiscal SENIAT: análisis aparte con el contador (el comprobante actual es interno).
 
@@ -53,3 +52,24 @@ auditoría. Detalle completo y cronología: [database/README.md](../database/REA
 | El estado de tarifa es **independiente** del estado administrativo del chofer: la suscripción pasa a `expired` (no opera) y el pago de renovación la **reactiva automáticamente** | No contaminar la suspensión administrativa; reactivación sin intervención manual |
 | Alerta `payment_reminder_days` (seed 3) días antes del vencimiento: badge en el panel HOY; badge + push en la app del chofer cuando exista (documentado, no implementado) | La app del usuario aún no se desarrolla |
 | El scheduler consume adelantos automáticamente (avanza al siguiente período pagado) y audita cada transición con actor sistema | Los adelantos ×N corren sin intervención |
+
+## 2026-07-13 — Auditoría (UI del módulo admin)
+
+| Decisión | Motivo |
+|---|---|
+| La API de auditoría es **solo lectura** (`GET /audit-logs`, `GET /audit-logs/facets`): las entradas las escriben los servicios que actúan, nunca el cliente | Integridad del rastro: un log que se puede editar por HTTP no es auditoría |
+| Los filtros `from`/`to` interpretan **días calendario en `business_timezone`** (predicados sargables que conservan el índice de `created_at`) | Consistente con los vencimientos a las 00:00 locales; "hoy" significa lo mismo en toda la app |
+| `/facets` deriva eventos, entidades y actores **realmente presentes** en el log | Sin catálogos duplicados en el frontend que se desincronicen al añadir eventos |
+| Cada entrada resuelve el afiliado afectado (`entity_id` o `data->>'driverId'`) para enlazar al perfil | La auditoría se navega por personas, no por uuids |
+| `SettingsRepository.get(key, fallback)` como lectura compartida de configuración | Tercer consumidor de `business_timezone`; se elimina la duplicación futura |
+
+## 2026-07-13 — Cobertura total de auditoría + dashboard real
+
+| Decisión | Motivo |
+|---|---|
+| **Todos los módulos auditan** (catálogos, membresía, tarifas, administradores, settings) vía el helper compartido `writeAudit` (`modules/audit-logs/audit-writer.ts`); el scheduler y afiliados se refactorizaron al mismo helper | Se decidió ANTES del dashboard para que el feed de actividad nazca completo; una sola ruta de escritura al log |
+| El versionado condicional emite eventos distintos: `*.updated` (in place) vs `*.versioned` (réplica con `previousId`) | El log distingue una edición simple de una nueva versión con suscriptores |
+| `admin.password_changed` no registra la contraseña ni su hash | El evento en sí es el rastro; jamás material sensible en `data` |
+| "Por vencer" (dashboard **y** badge del listado) = **cobertura pagada** (`max(period_end)` de pagos `paid`, adelantos incluidos) ≤ `payment_reminder_days`. Un chofer con adelantos vigentes NO está "por vencer" | Decisión de Luis: el aviso mide quién necesita pagar de verdad; un mismo criterio en toda la app |
+| "Facturación de la semana" = **últimos 7 días móviles** (anuladas excluidas), no semana calendario | Sin ambigüedad de "cuándo empieza la semana"; un lunes por la mañana no muestra $0 |
+| El feed de actividad del panel **reutiliza `GET /audit-logs`** (no hay endpoint de feed propio) | Una sola fuente para la actividad; el dashboard solo agrega números |

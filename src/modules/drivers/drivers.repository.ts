@@ -77,8 +77,15 @@ export class DriversRepository {
          (SELECT json_build_object(
             'status', ds.status,
             'currentPeriodEnd', ds.current_period_end,
+            -- Due soon = PAID coverage (advances included) runs out within the
+            -- reminder window; a driver with prepaid periods is not due
+            -- (Luis, 2026-07-13). Same criterion as the dashboard.
             'dueSoon', ds.status = 'active'
-                       AND ds.current_period_end <= now() + make_interval(days => $${reminderIdx}))
+                       AND COALESCE(
+                         (SELECT max(sp.period_end) FROM subscription_payments sp
+                          WHERE sp.driver_subscription_id = ds.id AND sp.status = 'paid'),
+                         ds.current_period_end
+                       ) <= now() + make_interval(days => $${reminderIdx}))
           FROM driver_subscriptions ds
           WHERE ds.driver_id = d.user_id
             AND ds.status IN ('active', 'scheduled', 'pending_payment', 'expired')

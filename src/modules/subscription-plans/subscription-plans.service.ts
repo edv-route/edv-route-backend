@@ -1,4 +1,5 @@
 import type { FastifyInstance } from 'fastify';
+import { writeAudit } from '../audit-logs/audit-writer.js';
 import type {
   BillingPeriod,
   SubscriptionPlanRecord,
@@ -26,7 +27,7 @@ export class SubscriptionPlansService {
 
   async create(input: SubscriptionPlanInput, actorId: string): Promise<SubscriptionPlanRecord> {
     const allowed = await this.normalizeVehicleTypes(input.allowedVehicleTypeIds);
-    return this.plans.create({
+    const record = await this.plans.create({
       name: input.name.trim(),
       description: input.description,
       billingPeriod: input.billingPeriod,
@@ -34,6 +35,14 @@ export class SubscriptionPlansService {
       allowedVehicleTypes: allowed,
       createdBy: actorId,
     });
+    await writeAudit(this.app.db, {
+      actorAdminId: actorId,
+      eventType: 'plan.created',
+      entity: 'subscription_plans',
+      entityId: record.id,
+      data: { name: record.name, billingPeriod: record.billingPeriod, priceUsd: record.priceUsd },
+    });
+    return record;
   }
 
   /** Conditional versioning: in-place without payments, replica with them. */
@@ -55,15 +64,33 @@ export class SubscriptionPlansService {
       createdBy: actorId,
     };
 
-    if (await this.plans.hasPayments(id)) {
-      return this.plans.replace(id, data);
-    }
-    return (await this.plans.update(id, data))!;
+    const versioned = await this.plans.hasPayments(id);
+    const record = versioned ? await this.plans.replace(id, data) : (await this.plans.update(id, data))!;
+
+    await writeAudit(this.app.db, {
+      actorAdminId: actorId,
+      eventType: versioned ? 'plan.versioned' : 'plan.updated',
+      entity: 'subscription_plans',
+      entityId: record.id,
+      data: {
+        name: record.name,
+        priceUsd: record.priceUsd,
+        ...(versioned ? { previousId: id } : {}),
+      },
+    });
+    return record;
   }
 
-  async setActive(id: number, active: boolean): Promise<SubscriptionPlanRecord> {
+  async setActive(id: number, active: boolean, actorId: string): Promise<SubscriptionPlanRecord> {
     const record = await this.plans.setActive(id, active);
     if (!record) throw this.app.httpErrors.notFound('Tarifa no encontrada');
+    await writeAudit(this.app.db, {
+      actorAdminId: actorId,
+      eventType: active ? 'plan.reactivated' : 'plan.archived',
+      entity: 'subscription_plans',
+      entityId: id,
+      data: { name: record.name },
+    });
     return record;
   }
 

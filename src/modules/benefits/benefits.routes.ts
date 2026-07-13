@@ -19,7 +19,7 @@ const benefitsRoutes: FastifyPluginAsync = async (app) => {
     '/',
     { schema: createBenefitSchema },
     async (req, reply) => {
-      const record = await service.create(req.body.name, req.body.description ?? null);
+      const record = await service.create(req.body.name, req.body.description ?? null, req.user.sub);
       return reply.code(201).send(record);
     },
   );
@@ -28,14 +28,14 @@ const benefitsRoutes: FastifyPluginAsync = async (app) => {
     Params: { id: number };
     Body: { name?: string; description?: string | null; active?: boolean };
   }>('/:id', { schema: updateBenefitSchema }, async (req) =>
-    service.update(req.params.id, req.body),
+    service.update(req.params.id, req.body, req.user.sub),
   );
 
   app.delete<{ Params: { id: number } }>(
     '/:id',
     { schema: deleteBenefitSchema },
     async (req, reply) => {
-      await service.delete(req.params.id);
+      await service.delete(req.params.id, req.user.sub);
       return reply.code(204).send();
     },
   );

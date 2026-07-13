@@ -49,7 +49,7 @@ const adminsRoutes: FastifyPluginAsync = async (app) => {
     '/:id/password',
     { schema: updateAdminPasswordSchema },
     async (req, reply) => {
-      await service.updatePassword(req.params.id, req.body.password);
+      await service.updatePassword(req.params.id, req.body.password, req.user.sub);
       return reply.code(204).send();
     },
   );

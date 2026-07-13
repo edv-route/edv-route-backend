@@ -40,14 +40,14 @@ const requirementsRoutes: FastifyPluginAsync = async (app) => {
   app.patch<{ Params: { id: number }; Body: UpdateRequirementData }>(
     '/:id',
     { schema: updateRequirementSchema },
-    async (req) => service.update(req.params.id, req.body),
+    async (req) => service.update(req.params.id, req.body, req.user.sub),
   );
 
   app.delete<{ Params: { id: number } }>(
     '/:id',
     { schema: deleteRequirementSchema },
     async (req, reply) => {
-      await service.delete(req.params.id);
+      await service.delete(req.params.id, req.user.sub);
       return reply.code(204).send();
     },
   );

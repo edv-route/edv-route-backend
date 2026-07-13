@@ -1,4 +1,5 @@
 import fp from 'fastify-plugin';
+import { writeAudit } from '../modules/audit-logs/audit-writer.js';
 
 const TICK_MS = 60_000;
 
@@ -55,18 +56,20 @@ export default fp(
         );
 
         for (const row of advanced.rows) {
-          await app.db.query(
-            `INSERT INTO audit_logs (event_type, entity, entity_id, data)
-             VALUES ('subscription.period_advanced', 'driver_subscriptions', $1, $2)`,
-            [row.id, JSON.stringify({ driverId: row.driver_id })],
-          );
+          await writeAudit(app.db, {
+            eventType: 'subscription.period_advanced',
+            entity: 'driver_subscriptions',
+            entityId: row.id,
+            data: { driverId: row.driver_id },
+          });
         }
         for (const row of expired.rows) {
-          await app.db.query(
-            `INSERT INTO audit_logs (event_type, entity, entity_id, data)
-             VALUES ('subscription.expired', 'driver_subscriptions', $1, $2)`,
-            [row.id, JSON.stringify({ driverId: row.driver_id })],
-          );
+          await writeAudit(app.db, {
+            eventType: 'subscription.expired',
+            entity: 'driver_subscriptions',
+            entityId: row.id,
+            data: { driverId: row.driver_id },
+          });
           app.log.info({ driverId: row.driver_id }, 'subscription expired (auto)');
         }
       } catch (err) {

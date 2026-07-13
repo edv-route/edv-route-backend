@@ -1,4 +1,5 @@
 import type { FastifyInstance } from 'fastify';
+import { writeAudit } from '../audit-logs/audit-writer.js';
 import type { MembershipRecord, MembershipsRepository } from './memberships.repository.js';
 
 export interface MembershipInput {
@@ -31,7 +32,18 @@ export class MembershipsService {
       );
     }
     await this.validateBenefits(input.benefitIds);
-    return this.memberships.createWithBenefits({ ...this.normalize(input), createdBy: actorId });
+    const record = await this.memberships.createWithBenefits({
+      ...this.normalize(input),
+      createdBy: actorId,
+    });
+    await writeAudit(this.app.db, {
+      actorAdminId: actorId,
+      eventType: 'membership.created',
+      entity: 'memberships',
+      entityId: record.id,
+      data: { name: record.name, priceUsd: record.priceUsd },
+    });
+    return record;
   }
 
   /**
@@ -44,9 +56,23 @@ export class MembershipsService {
     await this.validateBenefits(input.benefitIds);
     const data = { ...this.normalize(input), createdBy: actorId };
 
-    return (await this.memberships.hasPayments(current.id))
-      ? this.memberships.replaceCurrent(current.id, data)
-      : this.memberships.updateWithBenefits(current.id, data);
+    const versioned = await this.memberships.hasPayments(current.id);
+    const record = versioned
+      ? await this.memberships.replaceCurrent(current.id, data)
+      : await this.memberships.updateWithBenefits(current.id, data);
+
+    await writeAudit(this.app.db, {
+      actorAdminId: actorId,
+      eventType: versioned ? 'membership.versioned' : 'membership.updated',
+      entity: 'memberships',
+      entityId: record.id,
+      data: {
+        name: record.name,
+        priceUsd: record.priceUsd,
+        ...(versioned ? { previousId: current.id } : {}),
+      },
+    });
+    return record;
   }
 
   private normalize(input: MembershipInput): MembershipInput {

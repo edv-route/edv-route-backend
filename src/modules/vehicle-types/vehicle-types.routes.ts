@@ -19,7 +19,7 @@ const vehicleTypesRoutes: FastifyPluginAsync = async (app) => {
     '/',
     { schema: createVehicleTypeSchema },
     async (req, reply) => {
-      const record = await service.create(req.body.name);
+      const record = await service.create(req.body.name, req.user.sub);
       return reply.code(201).send(record);
     },
   );
@@ -27,14 +27,14 @@ const vehicleTypesRoutes: FastifyPluginAsync = async (app) => {
   app.patch<{ Params: { id: number }; Body: { name?: string; active?: boolean } }>(
     '/:id',
     { schema: updateVehicleTypeSchema },
-    async (req) => service.update(req.params.id, req.body),
+    async (req) => service.update(req.params.id, req.body, req.user.sub),
   );
 
   app.delete<{ Params: { id: number } }>(
     '/:id',
     { schema: deleteVehicleTypeSchema },
     async (req, reply) => {
-      await service.delete(req.params.id);
+      await service.delete(req.params.id, req.user.sub);
       return reply.code(204).send();
     },
   );

@@ -1,4 +1,5 @@
 import type { FastifyInstance } from 'fastify';
+import { writeAudit } from '../audit-logs/audit-writer.js';
 import type { BenefitRecord, BenefitsRepository } from './benefits.repository.js';
 
 const UNIQUE_VIOLATION = '23505';
@@ -14,9 +15,17 @@ export class BenefitsService {
     return this.benefits.list();
   }
 
-  async create(name: string, description: string | null): Promise<BenefitRecord> {
+  async create(name: string, description: string | null, actorId: string): Promise<BenefitRecord> {
     try {
-      return await this.benefits.create(name.trim(), description);
+      const record = await this.benefits.create(name.trim(), description);
+      await writeAudit(this.app.db, {
+        actorAdminId: actorId,
+        eventType: 'benefit.created',
+        entity: 'benefits',
+        entityId: record.id,
+        data: { name: record.name },
+      });
+      return record;
     } catch (err) {
       if ((err as { code?: string }).code === UNIQUE_VIOLATION) {
         throw this.app.httpErrors.conflict('Ya existe un beneficio con ese nombre');
@@ -28,6 +37,7 @@ export class BenefitsService {
   async update(
     id: number,
     data: { name?: string; description?: string | null; active?: boolean },
+    actorId: string,
   ): Promise<BenefitRecord> {
     try {
       const record = await this.benefits.update(id, {
@@ -35,6 +45,13 @@ export class BenefitsService {
         ...(data.name !== undefined ? { name: data.name.trim() } : {}),
       });
       if (!record) throw this.app.httpErrors.notFound('Beneficio no encontrado');
+      await writeAudit(this.app.db, {
+        actorAdminId: actorId,
+        eventType: 'benefit.updated',
+        entity: 'benefits',
+        entityId: id,
+        data: { name: record.name, fields: Object.keys(data) },
+      });
       return record;
     } catch (err) {
       if ((err as { code?: string }).code === UNIQUE_VIOLATION) {
@@ -44,10 +61,16 @@ export class BenefitsService {
     }
   }
 
-  async delete(id: number): Promise<void> {
+  async delete(id: number, actorId: string): Promise<void> {
     try {
       const deleted = await this.benefits.delete(id);
       if (!deleted) throw this.app.httpErrors.notFound('Beneficio no encontrado');
+      await writeAudit(this.app.db, {
+        actorAdminId: actorId,
+        eventType: 'benefit.deleted',
+        entity: 'benefits',
+        entityId: id,
+      });
     } catch (err) {
       if ((err as { code?: string }).code === FOREIGN_KEY_VIOLATION) {
         throw this.app.httpErrors.conflict(

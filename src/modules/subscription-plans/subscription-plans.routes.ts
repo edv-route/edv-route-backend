@@ -92,7 +92,7 @@ const subscriptionPlansRoutes: FastifyPluginAsync = async (app) => {
         response: { 200: planSchema },
       },
     },
-    async (req) => service.setActive(req.params.id, req.body.active),
+    async (req) => service.setActive(req.params.id, req.body.active, req.user.sub),
   );
 };
 

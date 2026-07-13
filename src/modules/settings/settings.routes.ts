@@ -1,4 +1,5 @@
 import type { FastifyPluginAsync } from 'fastify';
+import { writeAudit } from '../audit-logs/audit-writer.js';
 import { SettingsRepository } from './settings.repository.js';
 
 const settingSchema = {
@@ -44,6 +45,13 @@ const settingsRoutes: FastifyPluginAsync = async (app) => {
     async (req) => {
       const record = await settings.update(req.params.key, req.body.value, req.user.sub);
       if (!record) throw app.httpErrors.notFound('Configuración no encontrada');
+      await writeAudit(app.db, {
+        actorAdminId: req.user.sub,
+        eventType: 'setting.updated',
+        entity: 'app_settings',
+        entityId: req.params.key,
+        data: { value: req.body.value },
+      });
       return record;
     },
   );

@@ -1,4 +1,5 @@
 import type { FastifyInstance } from 'fastify';
+import { writeAudit } from '../audit-logs/audit-writer.js';
 import type { DriversRepository, DriverListResult } from './drivers.repository.js';
 import type { EnrollmentRepository, RejectionResult } from './enrollment.repository.js';
 
@@ -322,10 +323,6 @@ export class DriversService {
     entityId: string,
     data: unknown,
   ): Promise<void> {
-    await this.app.db.query(
-      `INSERT INTO audit_logs (actor_admin_id, event_type, entity, entity_id, data)
-       VALUES ($1, $2, $3, $4, $5)`,
-      [adminId, eventType, entity, entityId, data === null ? null : JSON.stringify(data)],
-    );
+    await writeAudit(this.app.db, { actorAdminId: adminId, eventType, entity, entityId, data });
   }
 }
