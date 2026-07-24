@@ -241,3 +241,71 @@ test('anchoring: resume re-anchors weekly coverage to Mondays when ON', async ()
     await removeDriver(driverId);
   }
 });
+
+test('ciclo v8 anclado: emite el lunes correcto (monto ok), idempotente, deriva mora y saldado', async () => {
+  await setFlag(true);
+  // Force the emission moment to Monday 00:00 so emit_at is always past this week
+  // (deterministic, independent of the weekday the suite runs on).
+  await pool.query(`UPDATE app_settings SET value = '1'::jsonb WHERE key = 'billing_day_of_week'`);
+  await pool.query(`UPDATE app_settings SET value = '0'::jsonb WHERE key = 'billing_hour'`);
+  const tz = 'America/Caracas';
+  const { driverId, subId } = await makeDriver();
+  // Scoped to THIS driver: the engine is global (processes every active weekly
+  // sub), so parallel test files' drivers pollute the global `issued` counter.
+  const pendingWeeks = async (): Promise<string> =>
+    (await pool.query<{ n: string }>(
+      `SELECT count(*)::text AS n FROM subscription_payments
+       WHERE driver_subscription_id = $1 AND status = 'pending' AND charge_kind = 'period'`,
+      [subId])).rows[0]!.n;
+  const debt = async (): Promise<string> =>
+    (await pool.query<{ n: string }>(
+      `SELECT count(*)::text AS n FROM subscription_payments sp
+       JOIN driver_subscriptions ds ON ds.id = sp.driver_subscription_id
+       WHERE ds.driver_id = $1 AND sp.status = 'overdue'`, [driverId])).rows[0]!.n;
+  try {
+    // (1) Engine emits next week's charge FOR THIS DRIVER, on NEXT Monday, weekly amount.
+    await runDebtEngineTick(pool);
+    const { rows: emitted } = await pool.query<{ dow: number; amount: string; onnext: boolean }>(
+      `SELECT extract(isodow from (period_start AT TIME ZONE $2))::int AS dow,
+              amount_usd::text AS amount,
+              period_start = (date_trunc('week', now() AT TIME ZONE $2) + interval '7 days') AT TIME ZONE $2 AS onnext
+       FROM subscription_payments
+       WHERE driver_subscription_id = $1 AND status = 'pending' AND charge_kind = 'period'`,
+      [subId, tz],
+    );
+    assert.equal(emitted.length, 1, 'un cargo pendiente para este chofer');
+    assert.equal(emitted[0]!.dow, 1, 'el cargo arranca un lunes');
+    assert.ok(emitted[0]!.onnext, 'es la semana del próximo lunes');
+    assert.equal(emitted[0]!.amount, '10.00', 'monto = tarifa semanal ($10)');
+    assert.equal(await statusOf(driverId), 'approved', 'al día: sigue aprobado');
+
+    // (2) Idempotent: another tick does not duplicate THIS driver's next-week charge.
+    await runDebtEngineTick(pool);
+    assert.equal(await pendingWeeks(), '1', 'no re-emite la misma semana (guard de idempotencia)');
+
+    // (3) The week arrives unpaid -> the pending becomes overdue, debt = 1, mora.
+    await pool.query(
+      `UPDATE subscription_payments SET period_start = now() - interval '1 hour'
+       WHERE driver_subscription_id = $1 AND status = 'pending' AND charge_kind = 'period'`,
+      [subId],
+    );
+    await runDebtEngineTick(pool);
+    assert.equal(await statusOf(driverId), 'overdue', '1 semana impaga = en mora');
+    assert.equal(await debt(), '1', 'deuda = exactamente 1 semana');
+
+    // (4) Settle it -> debt clears, driver derives back to approved.
+    await pool.query(
+      `UPDATE subscription_payments SET status = 'paid', paid_at = now()
+       FROM driver_subscriptions ds
+       WHERE subscription_payments.driver_subscription_id = ds.id
+         AND ds.driver_id = $1 AND subscription_payments.status = 'overdue'`, [driverId]);
+    await runDebtEngineTick(pool);
+    assert.equal(await debt(), '0', 'sin deuda tras saldar');
+    assert.equal(await statusOf(driverId), 'approved', 'saldado = aprobado');
+  } finally {
+    await removeDriver(driverId);
+    await setFlag(false);
+    await pool.query(`UPDATE app_settings SET value = '5'::jsonb WHERE key = 'billing_day_of_week'`);
+    await pool.query(`UPDATE app_settings SET value = '18'::jsonb WHERE key = 'billing_hour'`);
+  }
+});
