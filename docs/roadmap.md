@@ -18,7 +18,7 @@
 | Ciclo de tarifas | Vencimiento a las 00:00 (`business_timezone`) · **scheduler**: suspensión inmediata + consumo de adelantos · renovación con **reactivación automática** · badges Vigente/Por vencer/Vencida | ✅ |
 | Administradores | CRUD completo · sin auto-suspensión · cambio de contraseña | ✅ |
 | Auditoría | **Cobertura total**: todos los módulos auditan (afiliados, catálogos, membresía, tarifas, admins, settings y scheduler) vía `writeAudit` compartido · **UI**: pantalla con filtros (origen, evento, admin, fechas en tz negocio) y paginación · `GET /audit-logs` + `/facets` | ✅ |
-| Dashboard | `GET /dashboard/summary` (afiliados, tarifas por vencer por cobertura pagada / vencidas, documentos por vencer/vencidos, facturación 7 días) · pantalla con tarjetas enlazadas, feed de actividad (reutiliza `/audit-logs`) y panel de alertas | ✅ |
+| Dashboard | `GET /dashboard/summary` (afiliados incl. **en mora/penalizados**, tarifas por vencer por cobertura pagada / vencidas, documentos por vencer/vencidos, facturación 7 días) · pantalla con tarjetas enlazadas, feed de actividad (reutiliza `/audit-logs`) y panel de alertas (incl. mora/penalización) | ✅ |
 | Documentos | Vista global `GET /documents` (filtros: estado, requerimiento, afiliado/placa, por vencer ≤ N días) · pantalla con dueño enlazado · scheduler propio que marca `expired` a medianoche (tz negocio) con auditoría de sistema · el vencimiento alerta, **no bloquea** | ✅ |
 | Historiales | Vista `v_driver_payments` · `GET /invoices` + `GET /payments` (filtros, `driverId` para historial por afiliado) · pantalla Facturación con tabs Facturas/Pagos · enlace desde el perfil | ✅ |
 | Capacitaciones | Migración `trainings` + `training_attendees` · CRUD (cancelar/completar, nunca borrar) · inscripción solo aprobados con cupo atómico · asistencia · pantalla con panel de asistentes | ✅ |
@@ -70,9 +70,13 @@
   E2E. **B3 hecho**: cargo de **multa** (`charge_kind`, visible como "Penalización"), **pago
   externo** (`POST /drivers/:id/external-payment`: salda todos los cargos con una factura y deja
   constancia) y **reactivación** diferida (`reactivates_at` → lunes siguiente) o manual
-  (`/reactivate`, exige deuda 0). **Siguiente: B4** (conteos de `overdue`/`penalized` en el
-  dashboard y avisos de plazo) y, **antes de encender el motor**, el plan de migración de las
-  suscripciones `active` vivas al anclaje semanal. Modelo **no cerrado formalmente**.
+  (`/reactivate`, exige deuda 0). **B4 — parte dashboard ✅ (2026-07-24)**: `overdue`/`penalized`
+  en `GET /dashboard/summary` + alertas de mora/penalización en el panel (hoy 0, el motor sigue
+  apagado). **Modelo de negocio cerrado formalmente + anclaje al lunes de los flujos de cobro
+  (`approve`/`renew`/`changePlan`/`resume`) implementado detrás del flag (2026-07-24)**; el **plan
+  de migración** al anclaje semanal está diseñado
+  ([plan-migracion-anclaje.md](proposals/tarifa-penalizacion/plan-migracion-anclaje.md)). Queda,
+  **antes de encender el motor**, ejecutar esa migración de datos y validar el ciclo con reloj real.
 - ¿Un documento obligatorio vencido **bloquea** la operación del chofer? Hoy solo alerta.
 - Contrato de afiliación firmado: Storage ya está listo, falta el flujo de subida.
 - Facturación fiscal SENIAT: análisis con el contador.

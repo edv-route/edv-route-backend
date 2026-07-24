@@ -7,6 +7,10 @@ export interface DashboardSummary {
     suspended: number;
     /** Drivers on administrative leave (paused): frozen tariff, not operating. */
     paused: number;
+    /** Debt engine (v8): operating with outstanding debt within the cap. */
+    overdue: number;
+    /** Debt engine (v8): over the debt cap, not operating. */
+    penalized: number;
     /** driver.approved events in the last 7 days vs the 7 before (audit log). */
     approvedLast7: number;
     approvedPrev7: number;
@@ -22,6 +26,8 @@ interface SummaryRow {
   pendingDrivers: string;
   suspendedDrivers: string;
   pausedDrivers: string;
+  overdueDrivers: string;
+  penalizedDrivers: string;
   approvedLast7: string;
   approvedPrev7: string;
   dueSoon: string;
@@ -82,6 +88,8 @@ export class DashboardRepository {
          (SELECT count(*) FROM drivers WHERE status::text = 'pending') AS "pendingDrivers",
          (SELECT count(*) FROM drivers WHERE status::text = 'suspended') AS "suspendedDrivers",
          (SELECT count(*) FROM drivers WHERE status::text = 'paused') AS "pausedDrivers",
+         (SELECT count(*) FROM drivers WHERE status::text = 'overdue') AS "overdueDrivers",
+         (SELECT count(*) FROM drivers WHERE status::text = 'penalized') AS "penalizedDrivers",
          -- Due soon = active subscriptions whose PAID coverage (advances included)
          -- runs out within the reminder window; prepaid renewals don't count.
          (SELECT count(*) FROM driver_subscriptions ds
@@ -122,6 +130,8 @@ export class DashboardRepository {
         pending: Number(row.pendingDrivers),
         suspended: Number(row.suspendedDrivers),
         paused: Number(row.pausedDrivers),
+        overdue: Number(row.overdueDrivers),
+        penalized: Number(row.penalizedDrivers),
         approvedLast7: Number(row.approvedLast7),
         approvedPrev7: Number(row.approvedPrev7),
       },

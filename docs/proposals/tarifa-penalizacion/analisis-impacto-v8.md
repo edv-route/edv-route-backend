@@ -59,6 +59,12 @@ que rechazamos en el rediseño de estados. Las filas de pago **ya son** la verda
 
 ## 3. Decisiones que faltan cerrar (con recomendación)
 
+> **✅ CERRADAS formalmente el 2026-07-24** (ver [decisions-log](../../decisions/decisions-log.md)):
+> alcance solo semanal · anclaje lunes 00:00 / cobro viernes 18:00 · **tope 2** / **penalización 1** ·
+> chofer inactivo **sigue debiendo** · reactivación **lunes siguiente** (auto) + manual · membresía del
+> expulsado **se pierde** (revoca estatus y no reembolsa, sin borrar el pago). Los valores seed de B1
+> ya coincidían; el único cambio frente a la recomendación fue la membresía (era "congelar").
+
 Estas son de **negocio**: no las cierro yo. Doy opciones y una recomendación para acelerar.
 
 1. **Alcance del cobro semanal.** La propuesta es puramente semanal (viernes→lunes), pero el
@@ -169,11 +175,15 @@ estado) para que activarlo no deje el panel a medias.
 reactivaciones. El motor **sigue apagado**; el cobro en producción no ha cambiado en ningún
 momento.
 
-**Siguiente: B4 —** lo que falta del panel: **conteos de `overdue`/`penalized` en el dashboard**
-(el mismo cabo que tuvimos con `paused`) y **avisos de plazo/deuda** (cuántas semanas debe y hasta
-cuándo tiene para pagar). Los badges, filtros y las acciones de pago externo / reactivación ya
-están.
+**B4 — parte dashboard ✅ (2026-07-24):** conteos de `overdue`/`penalized` en `GET /dashboard/summary`
++ alertas de mora/penalización en el panel. Los badges, filtros y las acciones de pago externo /
+reactivación ya estaban. Queda opcional el aviso fino de "cuántas semanas debe y hasta cuándo" en
+lista/perfil.
+
+**Modelo de negocio ✅ CERRADO formalmente (2026-07-24)** — ver sección 3 y el decisions-log.
 
 ⚠️ **Antes de encender el motor** sigue pendiente lo de mayor riesgo: el **plan de migración de
-las suscripciones `active` vivas** al anclaje semanal (secciones 4 y 6) y validar el ciclo
-semanal completo con el reloj real.
+las suscripciones `active` vivas** al anclaje semanal (secciones 4 y 6) — **ya diseñado** en
+[plan-migracion-anclaje.md](plan-migracion-anclaje.md) (incluye una **dependencia de código**:
+anclar al lunes también en `enroll`/`renew`/`resume`), pendiente de aprobación e implementación — y
+validar el ciclo semanal completo con el reloj real.

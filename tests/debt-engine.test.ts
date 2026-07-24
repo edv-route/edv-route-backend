@@ -3,6 +3,7 @@ import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import pg from 'pg';
 import { runDebtEngineTick } from '../src/plugins/debt-scheduler.js';
+import { EnrollmentRepository } from '../src/modules/drivers/enrollment.repository.js';
 
 /**
  * Integration tests for the debt & penalty engine (design v8). They run the
@@ -138,5 +139,61 @@ test('debt cycle: overdue -> penalized (+fine) -> settle -> approved', async () 
   } finally {
     await removeDriver(driverId);
     await setFlag(false);
+  }
+});
+
+test('anchoring: weekly renew lands on Mondays when ON, now-based when OFF', async () => {
+  const repo = new EnrollmentRepository(pool);
+  const { rows: a } = await pool.query<{ id: string }>(`SELECT id FROM admins ORDER BY created_at LIMIT 1`);
+  assert.ok(a[0], 'necesita un admin para registrar el cobro');
+  const adminId = a[0].id;
+  const tz = 'America/Caracas';
+
+  // --- anchorWeekly ON: every weekly period is a Monday-to-Monday window ---
+  const on = await makeDriver();
+  try {
+    await repo.renew({
+      subscriptionId: on.subId, driverId: on.driverId, planPriceUsd: 10, periods: 2,
+      periodInterval: '7 days', timezone: tz, reactivate: true, anchorWeekly: true, registeredBy: adminId,
+    });
+    const { rows } = await pool.query<{ start: Date; end: Date; dow: number; midnight: boolean }>(
+      `SELECT period_start AS start, period_end AS "end",
+              extract(isodow from (period_start AT TIME ZONE $2))::int AS dow,
+              (period_start AT TIME ZONE $2)::time = time '00:00' AS midnight
+       FROM subscription_payments
+       WHERE driver_subscription_id = $1 AND status = 'paid'
+       ORDER BY period_start`,
+      [on.subId, tz],
+    );
+    assert.equal(rows.length, 2, 'crea 2 semanas pagadas');
+    for (const r of rows) {
+      assert.equal(r.dow, 1, 'cada período arranca un lunes');
+      assert.ok(r.midnight, 'a las 00:00 hora del negocio');
+    }
+    assert.equal(
+      new Date(rows[0]!.end).getTime(), new Date(rows[1]!.start).getTime(),
+      'las semanas son consecutivas, sin huecos ni solapes',
+    );
+  } finally {
+    await removeDriver(on.driverId);
+  }
+
+  // --- anchorWeekly OFF: prepaid behaviour unchanged (first period from now) ---
+  const off = await makeDriver();
+  try {
+    await repo.renew({
+      subscriptionId: off.subId, driverId: off.driverId, planPriceUsd: 10, periods: 1,
+      periodInterval: '7 days', timezone: tz, reactivate: true, anchorWeekly: false, registeredBy: adminId,
+    });
+    const { rows } = await pool.query<{ near: boolean }>(
+      `SELECT abs(extract(epoch from (now() - period_start))) < 5 AS near
+       FROM subscription_payments
+       WHERE driver_subscription_id = $1 AND status = 'paid'
+       ORDER BY period_start LIMIT 1`,
+      [off.subId],
+    );
+    assert.ok(rows[0]!.near, 'sin anclaje, el primer período arranca en now()');
+  } finally {
+    await removeDriver(off.driverId);
   }
 });

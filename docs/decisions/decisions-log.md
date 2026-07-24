@@ -360,3 +360,52 @@ auditoría. Detalle completo y cronología: [database/README.md](../database/REA
 | Al elegir un método, el modal muestra debajo los **datos de la cuenta** (banco, cédula/RIF, teléfono, titular… según el tipo, con etiquetas legibles y los `select` resueltos a texto) | El admin debe **verificar** contra qué cuenta pagó el chofer; antes solo veía el nombre del método. Se derivan de `PAYMENT_METHOD_FIELDS`, sin llamadas extra |
 | El input de archivo nativo se sustituye por un **dropzone** (área punteada "clic para subir" + tarjeta con nombre y acciones Cambiar/Quitar) | Coherencia con el design system; el input nativo se veía tosco. Es *click-to-upload*, no drag&drop (el input queda oculto) |
 | El botón del modal de registro de pago pasa de **"Cobrar" → "Guardar"** | El admin **registra un pago ya recibido**, no ejecuta un cobro: coherente con "verificación manual, no pasarela". El modal de pago externo ya decía "Registrar pago" |
+
+## 2026-07-24 — 📊 Motor de deuda (v8) — B4 (parte dashboard): conteos y alertas de mora
+
+> `GET /dashboard/summary` gana `drivers.overdue` y `drivers.penalized`; el panel los muestra como
+> **alertas** condicionales. Solo lectura, aditivo. El motor sigue apagado (hoy ambos 0).
+
+| Decisión | Motivo |
+|---|---|
+| `overdue`/`penalized` se exponen como **conteos** en el summary (dos subqueries `count` por `status::text`, igual que el resto de estados) | Cierra la parte de dashboard de B4 sin tocar el motor; el cast a `text` evita el rechazo del enum por catálogo cacheado del pooler (mismo patrón ya usado) |
+| En el panel se muestran como **alertas** (punto rojo penalizado / ámbar mora), no como stat card | Coherencia con `suspended`/`paused`, que ya son alertas: son estados de "no opera / opera con deuda", no KPIs permanentes. Evita una tarjeta fija en `0/0` con el motor apagado |
+| Los avisos aparecen **solo si hay > 0** (patrón `hasAlerts`) | Con el motor apagado no hay morosos, así que no ensucian el panel; al encenderlo aparecen solos |
+
+## 2026-07-24 — 🔒 Motor de deuda (v8) — modelo de negocio CERRADO
+
+> Cierre formal de las decisiones abiertas del análisis de impacto
+> ([analisis-impacto-v8 §3](../proposals/tarifa-penalizacion/analisis-impacto-v8.md)). Confirmado
+> con Luis. Los valores seed de `app_settings` (B1) ya coincidían; el único cambio frente a la
+> recomendación es la membresía del expulsado.
+
+| Decisión | Cierre |
+|---|---|
+| Alcance | **Solo tarifa semanal** (Mensual Motos ya eliminada) |
+| Ventana / cobro | Semana **anclada al lunes 00:00**; emisión **viernes 18:00** (`business_timezone`) |
+| Tope de deuda | **2 semanas** operando; a la 3.ª impaga → `penalized` (`debt_cap_weeks = 2`) |
+| Penalización | **1 semana** de multa al superar el tope (`penalty_weeks = 1`) |
+| Chofer inactivo (voluntario) | **Sigue debiendo**: `is_available = inactive` NO congela la tarifa (coherente con Fase A) |
+| Reactivación por defecto | **Lunes siguiente** (`reactivation_mode = auto`); el admin puede forzar inmediata |
+| Reincidencia | Expulsión definitiva a **criterio manual** del admin (estado `suspended`), no contador automático |
+| Beneficios en suspensión | Se **pierden** durante la suspensión, se **recuperan** al reactivar |
+| **Membresía del expulsado definitivo** | **Se pierde**: revoca el estatus de miembro (si regresa, paga de nuevo) y **no se reembolsa**. ⚠️ "Perder" = revocar el beneficio; el pago histórico **no se borra ni se anula** (regla de oro #7 intacta) |
+
+Con esto el modelo v8 queda **cerrado formalmente**. Falta, antes de encender el motor
+(`debt_engine_enabled`), el **plan de migración** de las suscripciones `active` vivas al anclaje
+semanal y validar el ciclo con reloj real.
+
+## 2026-07-24 — 🧩 Anclaje al lunes en los flujos de cobro (detrás del flag)
+
+> `approve` (enroll)/`renew`/`changePlan`/`resume` anclan los períodos **weekly** a la semana
+> lunes-a-lunes **cuando el motor está encendido**; con el flag apagado, comportamiento prepago
+> intacto. Es la dependencia de código del
+> [plan de migración](../proposals/tarifa-penalizacion/plan-migracion-anclaje.md). Verificado:
+> typecheck + 5/5 tests (incluye una prueba de anclaje dedicada).
+
+| Decisión | Motivo |
+|---|---|
+| El anclaje se activa solo si `debt_engine_enabled` **y** el plan es `weekly` (`anchorWeekly`, calculado en el service) | Cero efecto en producción hoy (motor apagado): código inerte tras el flag, igual que B1–B3. La regla de negocio vive en el service, no en el SQL |
+| Convención: semanas **lunes-a-lunes desde el lunes de la semana en curso**, redondeo **a favor del chofer** | Coincide con el guard de idempotencia del motor (`period_start = lunes`) y con el re-anclaje del plan de migración, así el motor reconoce la cobertura y no recobra |
+| `resume` con el motor on **re-ancla** al lunes (no hace *shift* por duración de pausa) | El modelo weekly realinea las ventanas a la rejilla semanal, no las desplaza |
+| `enroll` no cambia: sus períodos nacen `scheduled` y se anclan en `approve` | El anclaje real ocurre al aprobar; evita duplicar la lógica |

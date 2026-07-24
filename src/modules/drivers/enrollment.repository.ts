@@ -89,12 +89,23 @@ export class EnrollmentRepository {
   }
 
   /**
-   * Approval: membership stands, tariff starts running from now. Periods end
-   * at 00:00 (business timezone) of the corresponding day (decision 2026-07-10):
-   * first period = now -> next midnight boundary of the interval; the rest are
-   * exact consecutive intervals (already midnight-aligned).
+   * Approval: membership stands, tariff starts running from now. Two anchoring
+   * modes:
+   *  - Prepaid (default / debt engine off): first period = now -> next midnight
+   *    boundary of the interval; the rest are exact consecutive intervals
+   *    (decision 2026-07-10).
+   *  - Weekly anchored (`anchorWeekly`, debt engine on + weekly plan, v8): every
+   *    period is a calendar week [Monday 00:00, next Monday) starting on the
+   *    Monday of the current week, so the debt engine's idempotency guard
+   *    recognises the paid coverage. Rounds in the driver's favour (he gets the
+   *    running week whole).
    */
-  async approve(driverId: string, periodInterval: string, timezone: string): Promise<void> {
+  async approve(
+    driverId: string,
+    periodInterval: string,
+    timezone: string,
+    anchorWeekly = false,
+  ): Promise<void> {
     const client = await this.db.connect();
     try {
       await client.query('BEGIN');
@@ -109,26 +120,35 @@ export class EnrollmentRepository {
       if (sub) {
         await client.query(
           `WITH anchor AS (
-             SELECT date_trunc('day', (now() + $2::interval) AT TIME ZONE $3) AT TIME ZONE $3 AS first_end
+             SELECT date_trunc('day', (now() + $2::interval) AT TIME ZONE $3) AT TIME ZONE $3 AS first_end,
+                    date_trunc('week', (now() AT TIME ZONE $3)) AT TIME ZONE $3 AS monday
            ), ordered AS (
              SELECT id, row_number() OVER (ORDER BY period_start) - 1 AS idx
              FROM subscription_payments
              WHERE driver_subscription_id = $1 AND status = 'paid'
            )
            UPDATE subscription_payments sp SET
-             period_start = CASE WHEN o.idx = 0 THEN now()
-                                 ELSE a.first_end + ($2::interval * (o.idx - 1)) END,
-             period_end   = a.first_end + ($2::interval * o.idx)
+             period_start = CASE
+               WHEN $4::boolean THEN a.monday + ($2::interval * o.idx)
+               WHEN o.idx = 0 THEN now()
+               ELSE a.first_end + ($2::interval * (o.idx - 1)) END,
+             period_end = CASE
+               WHEN $4::boolean THEN a.monday + ($2::interval * (o.idx + 1))
+               ELSE a.first_end + ($2::interval * o.idx) END
            FROM ordered o, anchor a WHERE o.id = sp.id`,
-          [sub.id, periodInterval, timezone],
+          [sub.id, periodInterval, timezone, anchorWeekly],
         );
         await client.query(
           `UPDATE driver_subscriptions SET
              status = 'active', started_at = now(),
-             current_period_start = now(),
-             current_period_end = date_trunc('day', (now() + $2::interval) AT TIME ZONE $3) AT TIME ZONE $3
+             current_period_start = CASE WHEN $4::boolean
+               THEN date_trunc('week', (now() AT TIME ZONE $3)) AT TIME ZONE $3
+               ELSE now() END,
+             current_period_end = CASE WHEN $4::boolean
+               THEN (date_trunc('week', (now() AT TIME ZONE $3)) + interval '7 days') AT TIME ZONE $3
+               ELSE date_trunc('day', (now() + $2::interval) AT TIME ZONE $3) AT TIME ZONE $3 END
            WHERE id = $1`,
-          [sub.id, periodInterval, timezone],
+          [sub.id, periodInterval, timezone, anchorWeekly],
         );
       }
 
@@ -149,15 +169,21 @@ export class EnrollmentRepository {
   }
 
   /**
-   * Resume from an administrative pause (Fase A, moving-window model): the
-   * tariff clock was frozen while paused, so shift every not-yet-consumed period
-   * window forward by the pause duration (now() - paused_at) to preserve the
-   * remaining coverage, flip the driver back to `approved` + available and clear
-   * `paused_at`. now() is the transaction timestamp, stable across statements.
-   * The exact "re-anchor to Monday 00:00" behaviour belongs to the v8 weekly
-   * model (Fase B); here the remaining coverage simply keeps running.
+   * Resume from an administrative pause. Two modes:
+   *  - Prepaid (default / debt engine off): the tariff clock was frozen, so shift
+   *    every not-yet-consumed period forward by the pause duration
+   *    (now() - paused_at) to preserve the remaining coverage.
+   *  - Weekly anchored (`anchorWeekly`, debt engine on + weekly, v8): re-anchor
+   *    the remaining coverage to consecutive Mondays from the current week's
+   *    Monday, so it lines up with the debt engine's weekly grid.
+   * Either way the driver flips back to `approved` + available and `paused_at`
+   * clears. now() is the transaction timestamp, stable across statements.
    */
-  async resume(driverId: string): Promise<void> {
+  async resume(
+    driverId: string,
+    timezone = 'America/Caracas',
+    anchorWeekly = false,
+  ): Promise<void> {
     const client = await this.db.connect();
     try {
       await client.query('BEGIN');
@@ -167,7 +193,33 @@ export class EnrollmentRepository {
         [driverId],
       );
       const pausedAt = rows[0]?.pausedAt;
-      if (pausedAt) {
+      if (pausedAt && anchorWeekly) {
+        // v8: re-anchor the remaining coverage to Mondays from the current week
+        // (not a duration shift), so it matches the debt engine's weekly grid.
+        await client.query(
+          `WITH anchor AS (
+             SELECT date_trunc('week', (now() AT TIME ZONE $2)) AS monday_local
+           ), ordered AS (
+             SELECT sp.id, row_number() OVER (ORDER BY sp.period_start) - 1 AS idx
+             FROM subscription_payments sp
+             JOIN driver_subscriptions ds ON ds.id = sp.driver_subscription_id
+             WHERE ds.driver_id = $1 AND sp.status = 'paid'
+               AND sp.charge_kind = 'period' AND sp.period_end > now()
+           )
+           UPDATE subscription_payments sp SET
+             period_start = (a.monday_local + make_interval(days => o.idx * 7)) AT TIME ZONE $2,
+             period_end   = (a.monday_local + make_interval(days => (o.idx + 1) * 7)) AT TIME ZONE $2
+           FROM ordered o, anchor a WHERE o.id = sp.id`,
+          [driverId, timezone],
+        );
+        await client.query(
+          `UPDATE driver_subscriptions SET
+             current_period_start = date_trunc('week', (now() AT TIME ZONE $2)) AT TIME ZONE $2,
+             current_period_end = (date_trunc('week', (now() AT TIME ZONE $2)) + interval '7 days') AT TIME ZONE $2
+           WHERE driver_id = $1 AND status = 'active'`,
+          [driverId, timezone],
+        );
+      } else if (pausedAt) {
         // Shift the live subscription window(s) by the pause duration.
         await client.query(
           `UPDATE driver_subscriptions SET
@@ -217,24 +269,33 @@ export class EnrollmentRepository {
     periodInterval: string;
     timezone: string;
     reactivate: boolean;
+    /** v8: anchor weekly periods to Monday (debt engine on + weekly plan). */
+    anchorWeekly: boolean;
     registeredBy: string;
   }): Promise<{ invoiceNumbers: string[] }> {
     const client = await this.db.connect();
     try {
       await client.query('BEGIN');
 
-      // Anchor: expired -> restart from now; active -> chain after last paid period
+      // Anchor base. Weekly-anchored (v8): the Monday of the current week when
+      // reactivating or when there is no coverage, otherwise chain after the last
+      // paid period (already Monday-aligned). Prepaid (default): from now / the
+      // next midnight boundary, as before.
       const { rows: anchorRows } = await client.query<{ base: Date }>(
         input.reactivate
-          ? `SELECT date_trunc('day', (now() + $2::interval) AT TIME ZONE $3) AT TIME ZONE $3 AS base
+          ? `SELECT CASE WHEN $4::boolean
+                        THEN date_trunc('week', (now() AT TIME ZONE $3)) AT TIME ZONE $3
+                        ELSE date_trunc('day', (now() + $2::interval) AT TIME ZONE $3) AT TIME ZONE $3 END AS base
              FROM driver_subscriptions WHERE id = $1 FOR UPDATE`
           : `SELECT COALESCE(
                (SELECT max(period_end) FROM subscription_payments
                 WHERE driver_subscription_id = $1 AND status = 'paid'),
-               date_trunc('day', (now() + $2::interval) AT TIME ZONE $3) AT TIME ZONE $3
+               CASE WHEN $4::boolean
+                    THEN date_trunc('week', (now() AT TIME ZONE $3)) AT TIME ZONE $3
+                    ELSE date_trunc('day', (now() + $2::interval) AT TIME ZONE $3) AT TIME ZONE $3 END
              ) AS base
              FROM driver_subscriptions WHERE id = $1 FOR UPDATE`,
-        [input.subscriptionId, input.periodInterval, input.timezone],
+        [input.subscriptionId, input.periodInterval, input.timezone, input.anchorWeekly],
       );
       const base = anchorRows[0]!.base;
 
@@ -249,11 +310,13 @@ export class EnrollmentRepository {
              (driver_subscription_id, invoice_id, period_start, period_end,
               amount_usd, status, paid_at, registered_by)
            VALUES ($1, $2,
-                   CASE WHEN $7::boolean
+                   CASE WHEN $9::boolean THEN $3::timestamptz + ($5::interval * $4)
+                        WHEN $7::boolean
                         THEN CASE WHEN $4 = 0 THEN now()
                                   ELSE $3::timestamptz + ($5::interval * ($4 - 1)) END
                         ELSE $3::timestamptz + ($5::interval * $4) END,
-                   CASE WHEN $7::boolean
+                   CASE WHEN $9::boolean THEN $3::timestamptz + ($5::interval * ($4 + 1))
+                        WHEN $7::boolean
                         THEN $3::timestamptz + ($5::interval * $4)
                         ELSE $3::timestamptz + ($5::interval * ($4 + 1)) END,
                    $6, 'paid', now(), $8)`,
@@ -266,6 +329,7 @@ export class EnrollmentRepository {
             input.planPriceUsd,
             input.reactivate,
             input.registeredBy,
+            input.anchorWeekly,
           ],
         );
       }
@@ -274,10 +338,11 @@ export class EnrollmentRepository {
         await client.query(
           `UPDATE driver_subscriptions SET
              status = 'active',
-             current_period_start = now(),
-             current_period_end = $2::timestamptz
+             current_period_start = CASE WHEN $3::boolean THEN $2::timestamptz ELSE now() END,
+             current_period_end = CASE WHEN $3::boolean
+               THEN $2::timestamptz + interval '7 days' ELSE $2::timestamptz END
            WHERE id = $1`,
-          [input.subscriptionId, base],
+          [input.subscriptionId, base, input.anchorWeekly],
         );
       }
 
@@ -309,6 +374,8 @@ export class EnrollmentRepository {
     periodInterval: string;
     timezone: string;
     mode: 'scheduled' | 'immediate';
+    /** v8: anchor weekly periods to Monday (debt engine on + weekly plan). */
+    anchorWeekly: boolean;
     registeredBy: string;
   }): Promise<{ invoiceNumbers: string[]; startsAt: Date }> {
     const client = await this.db.connect();
@@ -316,17 +383,24 @@ export class EnrollmentRepository {
       await client.query('BEGIN');
 
       const immediate = input.mode === 'immediate';
+      // Anchor base: weekly-anchored (v8) uses the current week's Monday for an
+      // immediate change or when no coverage remains; otherwise chains after the
+      // last paid period (already Monday-aligned). Prepaid keeps the old behaviour.
       const { rows: anchorRows } = await client.query<{ base: Date }>(
         immediate
-          ? `SELECT date_trunc('day', (now() + $2::interval) AT TIME ZONE $3) AT TIME ZONE $3 AS base
+          ? `SELECT CASE WHEN $4::boolean
+                        THEN date_trunc('week', (now() AT TIME ZONE $3)) AT TIME ZONE $3
+                        ELSE date_trunc('day', (now() + $2::interval) AT TIME ZONE $3) AT TIME ZONE $3 END AS base
              FROM driver_subscriptions WHERE id = $1 FOR UPDATE`
           : `SELECT COALESCE(
                (SELECT max(period_end) FROM subscription_payments
                 WHERE driver_subscription_id = $1 AND status = 'paid'),
-               date_trunc('day', (now() + $2::interval) AT TIME ZONE $3) AT TIME ZONE $3
+               CASE WHEN $4::boolean
+                    THEN date_trunc('week', (now() AT TIME ZONE $3)) AT TIME ZONE $3
+                    ELSE date_trunc('day', (now() + $2::interval) AT TIME ZONE $3) AT TIME ZONE $3 END
              ) AS base
              FROM driver_subscriptions WHERE id = $1 FOR UPDATE`,
-        [input.currentSubscriptionId, input.periodInterval, input.timezone],
+        [input.currentSubscriptionId, input.periodInterval, input.timezone, input.anchorWeekly],
       );
       const base = anchorRows[0]!.base;
 
@@ -336,10 +410,13 @@ export class EnrollmentRepository {
            (driver_id, plan_id, status, started_at, current_period_start, current_period_end)
          VALUES ($1, $2, $3::subscription_status,
                  CASE WHEN $3::text = 'active' THEN now() END,
-                 CASE WHEN $3::text = 'active' THEN now() END,
-                 CASE WHEN $3::text = 'active' THEN $4::timestamptz END)
+                 CASE WHEN $3::text = 'active' THEN
+                      CASE WHEN $5::boolean THEN $4::timestamptz ELSE now() END END,
+                 CASE WHEN $3::text = 'active' THEN
+                      CASE WHEN $5::boolean THEN $4::timestamptz + interval '7 days'
+                           ELSE $4::timestamptz END END)
          RETURNING id`,
-        [input.driverId, input.newPlanId, immediate ? 'active' : 'scheduled', base],
+        [input.driverId, input.newPlanId, immediate ? 'active' : 'scheduled', base, input.anchorWeekly],
       );
       const newSubscriptionId = subRows[0]!.id;
 
@@ -349,17 +426,20 @@ export class EnrollmentRepository {
           client, input.driverId, input.planPriceUsd, input.registeredBy,
         );
         invoiceNumbers.push(invoice.invoiceNumber);
-        // Immediate mode: the first period runs from now to the aligned base.
+        // Weekly-anchored: Monday-based windows. Immediate (prepaid): first period
+        // runs from now to the aligned base.
         await client.query(
           `INSERT INTO subscription_payments
              (driver_subscription_id, invoice_id, period_start, period_end,
               amount_usd, status, paid_at, registered_by)
            VALUES ($1, $2,
-                   CASE WHEN $7::boolean
+                   CASE WHEN $9::boolean THEN $3::timestamptz + ($5::interval * $4)
+                        WHEN $7::boolean
                         THEN CASE WHEN $4 = 0 THEN now()
                                   ELSE $3::timestamptz + ($5::interval * ($4 - 1)) END
                         ELSE $3::timestamptz + ($5::interval * $4) END,
-                   CASE WHEN $7::boolean
+                   CASE WHEN $9::boolean THEN $3::timestamptz + ($5::interval * ($4 + 1))
+                        WHEN $7::boolean
                         THEN $3::timestamptz + ($5::interval * $4)
                         ELSE $3::timestamptz + ($5::interval * ($4 + 1)) END,
                    $6, 'paid', now(), $8)`,
@@ -372,6 +452,7 @@ export class EnrollmentRepository {
             input.planPriceUsd,
             immediate,
             input.registeredBy,
+            input.anchorWeekly,
           ],
         );
       }

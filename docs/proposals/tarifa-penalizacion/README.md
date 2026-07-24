@@ -8,6 +8,12 @@
 > 🛠️ **Análisis de impacto técnico (diseño v8, Fase B):** [analisis-impacto-v8.md](analisis-impacto-v8.md)
 > — modelado de la deuda, impacto por capa, decisiones abiertas con recomendación y sub-fases.
 > **Siguiente paso: cerrar las 5 decisiones** de ese documento antes de escribir código.
+>
+> ✅ **ACTUALIZACIÓN 2026-07-24:** modelo **cerrado formalmente** y motor implementado (B1–B3 +
+> B4-dashboard) pero **apagado** (`debt_engine_enabled = false`). Las preguntas abiertas de más
+> abajo quedaron resueltas — ver [analisis-impacto-v8 §3](analisis-impacto-v8.md) y el
+> [decisions-log](../../decisions/decisions-log.md). El plan de migración de datos ya está diseñado
+> ([plan-migracion-anclaje.md](plan-migracion-anclaje.md)); falta aprobarlo e implementarlo antes de encender.
 
 ## Por qué es una propuesta y no una decisión cerrada
 

@@ -105,7 +105,7 @@ réplica activa automáticamente (quien pagó conserva precio y beneficios de su
 
 | Método | Ruta | Descripción |
 |---|---|---|
-| GET | `/dashboard/summary` | Resumen operativo: afiliados (aprobados/pendientes/suspendidos/**en pausa** + `approvedLast7`/`approvedPrev7` desde el log de auditoría, 2026-07-22), tarifas por vencer (cobertura pagada ≤ `payment_reminder_days`, adelantos incluidos) y vencidas, documentos por vencer (≤ 30 días) y vencidos, facturación de los últimos 7 días (monto + cantidad + `prev7DaysUsd` para la tendencia semana a semana, anuladas excluidas). El feed de actividad del panel reutiliza `GET /audit-logs` |
+| GET | `/dashboard/summary` | Resumen operativo: afiliados (aprobados/pendientes/suspendidos/**en pausa**/**en mora**/**penalizados** + `approvedLast7`/`approvedPrev7` desde el log de auditoría, 2026-07-22; `overdue`/`penalized` los deriva el motor de deuda v8, hoy 0 con el motor apagado, B4 2026-07-24), tarifas por vencer (cobertura pagada ≤ `payment_reminder_days`, adelantos incluidos) y vencidas, documentos por vencer (≤ 30 días) y vencidos, facturación de los últimos 7 días (monto + cantidad + `prev7DaysUsd` para la tendencia semana a semana, anuladas excluidas). El feed de actividad del panel reutiliza `GET /audit-logs` |
 | GET | `/dashboard/revenue-series` | Serie diaria de facturación para el gráfico del panel (2026-07-22). Query: `days` (7–90, default 30). Devuelve un punto por **día calendario en `business_timezone`** (`{ date, totalUsd, count }`), anuladas excluidas; los días sin facturas vienen en cero (eje continuo) |
 
 ## Documentos (vista global, solo lectura)

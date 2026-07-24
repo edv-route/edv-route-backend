@@ -449,10 +449,13 @@ export class DriversService {
     }
 
     const timezone = await this.getSetting('business_timezone', 'America/Caracas');
+    const anchorWeekly =
+      subscription.billingPeriod === 'weekly' && (await this.isDebtEngineOn());
     await this.enrollment.approve(
       driverId,
       PERIOD_INTERVALS[subscription.billingPeriod]!,
       String(timezone),
+      anchorWeekly,
     );
     await this.audit(adminId, 'driver.approved', 'drivers', driverId, null);
   }
@@ -560,7 +563,11 @@ export class DriversService {
     if (detail['status'] !== 'paused') {
       throw this.app.httpErrors.conflict('Solo se puede reanudar a un afiliado en pausa');
     }
-    await this.enrollment.resume(driverId);
+    const subscription = detail['subscription'] as { billingPeriod: string } | null;
+    const timezone = String(await this.getSetting('business_timezone', 'America/Caracas'));
+    const anchorWeekly =
+      subscription?.billingPeriod === 'weekly' && (await this.isDebtEngineOn());
+    await this.enrollment.resume(driverId, timezone, anchorWeekly);
     await this.audit(adminId, 'driver.resumed', 'drivers', driverId, null);
     return this.getDetail(driverId);
   }
@@ -625,6 +632,7 @@ export class DriversService {
         periodInterval: PERIOD_INTERVALS[subscription.billingPeriod]!,
         timezone,
         reactivate,
+        anchorWeekly: subscription.billingPeriod === 'weekly' && (await this.isDebtEngineOn()),
         registeredBy: adminId,
       });
       await this.audit(adminId, 'subscription.renewed', 'drivers', driverId, {
@@ -651,6 +659,7 @@ export class DriversService {
       periodInterval: PERIOD_INTERVALS[newPlan.billingPeriod]!,
       timezone,
       mode,
+      anchorWeekly: newPlan.billingPeriod === 'weekly' && (await this.isDebtEngineOn()),
       registeredBy: adminId,
     });
 
@@ -707,6 +716,11 @@ export class DriversService {
       [key],
     );
     return rows[0]?.value ?? fallback;
+  }
+
+  /** Debt engine master switch (v8): gates the Monday-anchoring of weekly periods. */
+  private async isDebtEngineOn(): Promise<boolean> {
+    return (await this.getSetting('debt_engine_enabled', false)) === true;
   }
 
   async reject(driverId: string, adminId: string): Promise<RejectionResult> {
