@@ -271,7 +271,14 @@ const driversRoutes: FastifyPluginAsync = async (app) => {
     },
   );
 
-  app.post<{ Params: { id: string }; Body: { periods: number; planId?: number } }>(
+  app.post<{
+    Params: { id: string };
+    Body: { periods: number; planId?: number } & {
+      paymentMethodId?: number | null;
+      reference?: string | null;
+      payerBank?: string | null;
+    };
+  }>(
     '/:id/subscription/renew',
     {
       schema: {
@@ -284,6 +291,8 @@ const driversRoutes: FastifyPluginAsync = async (app) => {
             periods: { type: 'integer', minimum: 1, maximum: 52 },
             // Optional: a different plan turns the renewal into a plan change
             planId: { type: 'integer', minimum: 1 },
+            // Optional payment details (Pieza 2): stamped on the renewal's invoice
+            ...paymentMetaProps,
           },
         },
       },

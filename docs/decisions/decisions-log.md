@@ -334,7 +334,7 @@ auditoría. Detalle completo y cronología: [database/README.md](../database/REA
 | **Comprobante ≠ factura**: el comprobante es la prueba del **pagador** (captura de la transferencia); se adjunta como evidencia, no reemplaza la factura interna | Son dos documentos distintos; evita confundir el recibo de la empresa con la prueba del chofer |
 | Lo sube el **admin** (no el chofer): el chofer manda la captura por WhatsApp y el admin la adjunta al registrar el pago | La app del chofer no existe aún; cuando exista, se le pasa sin rehacer el modelo |
 | Frontend: los modales de **enroll** y **pago externo** capturan método (select de activos) + referencia + banco emisor (select de bancos) + archivo; **Facturación** muestra método/referencia y **"Ver comprobante"** (URL firmada) | Cierra el ciclo capturar→ver. El bloque de captura es un `ng-template` reutilizado en ambos modales |
-| **Pendiente**: la **renovación** (`renew`) aún no captura metadatos (el backend `setInvoicePaymentMeta` es genérico, falta cablear su modal); y la **imagen QR** de cripto en Métodos de pago (Pieza 1) sigue diferida | Acotar el alcance; ambos son extensiones triviales sobre lo ya construido |
+| **Pendiente**: la **imagen QR** de cripto en Métodos de pago (Pieza 1) sigue diferida (la renovación ya captura el pago — ver 2026-07-24) | Acotar el alcance; es una extensión trivial sobre lo ya construido |
 
 ## 2026-07-23 — 🧾 Tarifa única, cobro post-registro y detalle del afiliado enriquecido
 
@@ -409,3 +409,40 @@ semanal y validar el ciclo con reloj real.
 | Convención: semanas **lunes-a-lunes desde el lunes de la semana en curso**, redondeo **a favor del chofer** | Coincide con el guard de idempotencia del motor (`period_start = lunes`) y con el re-anclaje del plan de migración, así el motor reconoce la cobertura y no recobra |
 | `resume` con el motor on **re-ancla** al lunes (no hace *shift* por duración de pausa) | El modelo weekly realinea las ventanas a la rejilla semanal, no las desplaza |
 | `enroll` no cambia: sus períodos nacen `scheduled` y se anclan en `approve` | El anclaje real ocurre al aprobar; evita duplicar la lógica |
+
+## 2026-07-24 — 🧾 Comprobante también en la renovación / cambio de tarifa (cierre de la Pieza 2)
+
+> `POST /drivers/:id/subscription/renew` gana los datos de pago opcionales (método + referencia +
+> banco + comprobante), estampados en la factura primaria como en `enroll` y el pago externo. Cierra
+> el único cobro que faltaba. Typecheck + build limpios.
+
+| Decisión | Motivo |
+|---|---|
+| `renewSubscription` (service) estampa el `paymentMeta` en la **factura primaria** (`invoiceNumbers[0]`) y devuelve `primaryInvoiceId`; aplica también al **cambio de tarifa** | Renovar y cambiar de tarifa son cobros que emiten factura; deben registrar cómo se pagó, igual que el resto. Reutiliza `setInvoicePaymentMeta` (ya genérico) |
+| El modal *Renovar tarifa* reutiliza el `ng-template #paymentCapture` y sube el comprobante con `afterCobro` | Mismo patrón que enroll/pago externo; sin código nuevo de captura/subida |
+
+## 2026-07-24 — 🧩 Componente `payment-capture` compartido + captura de pago en el registro
+
+> El bloque de pago (método + datos de cuenta + referencia + banco + comprobante) se extrae a
+> `features/drivers/payment-capture` y se reutiliza en el wizard de registro y en los 3 modales de
+> cobro del detalle. El registro ahora también captura el pago (el backend ya lo aceptaba). Build limpio.
+
+| Decisión | Motivo |
+|---|---|
+| El componente vive en **`features/drivers/`**, no en `shared/` | La regla es *"shared sin estado"* y este tiene estado (carga los métodos de pago, valida el archivo). Sus dos consumidores viven en la feature `drivers` |
+| Expone el valor por **`[(value)]`** (`PaymentCaptureValue`) y los rechazos de archivo por **`fileError`**; los `ngModel` internos son **standalone** | Un consumidor está dentro de un `<form>` (wizard) y otro no (modales); standalone lo desacopla del form del padre |
+| El **registro** (wizard, paso 4) captura método+referencia+banco+comprobante y lo sube best-effort tras el alta | El alta es un cobro que emite facturas, igual que enroll/renovación/pago externo. Cierra los **4 cobros** con el mismo bloque |
+| Layout de **2 columnas en web** dentro del componente (método y comprobante a lo ancho; referencia+banco lado a lado) | Reduce la altura del modal/paso; una sola fuente de verdad para el layout |
+
+## 2026-07-24 — 🧾 Historial de pagos por chofer (vista reducida de Facturación)
+
+> Botón *"Historial de pagos"* en la cabecera del detalle → página nueva `/drivers/:id/payments`
+> con los pagos del chofer (membresía + tarifa) y el detalle de cada uno (método/referencia/banco/
+> comprobante de su factura). Reutiliza los endpoints de Facturación. Build limpio.
+
+| Decisión | Motivo |
+|---|---|
+| Página propia (`drivers/:id/payments`) enlazada por un **botón** en la cabecera, no una pestaña embebida | Pedido de Luis: un botón que lleva a una sección enfocada al chofer, sin recargar el detalle |
+| **Reutiliza** `GET /payments?driverId` + `GET /invoices?driverId` + `invoiceProofUrl` (`BillingApi`), sin endpoints nuevos | Es una vista **reducida** de `/billing`; no se duplica lógica de backend |
+| El detalle del pago toma método/referencia/banco/comprobante de la **factura asociada** (`invoiceId`) | Esos datos viven en `invoices` (Pieza 2); el pago solo referencia su factura |
+| `/billing` (Facturación global) **se mantiene**; su gráfica mensual podría llevarse al dashboard | Vista global útil; idea futura anotada por Luis |

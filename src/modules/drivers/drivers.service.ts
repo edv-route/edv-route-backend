@@ -583,13 +583,14 @@ export class DriversService {
    */
   async renewSubscription(
     driverId: string,
-    input: { periods: number; planId?: number },
+    input: { periods: number; planId?: number } & PaymentMeta,
     adminId: string,
   ): Promise<{
     invoiceNumbers: string[];
     reactivated: boolean;
     planChanged: boolean;
     startsAt?: string;
+    primaryInvoiceId: string | null;
   }> {
     const detail = await this.getDetail(driverId);
     if (detail['status'] !== 'approved') {
@@ -635,12 +636,16 @@ export class DriversService {
         anchorWeekly: subscription.billingPeriod === 'weekly' && (await this.isDebtEngineOn()),
         registeredBy: adminId,
       });
+      // Stamp the payment details on the renewal's primary invoice (Pieza 2).
+      const primaryInvoiceId = result.invoiceNumbers[0]
+        ? await this.enrollment.setInvoicePaymentMeta(result.invoiceNumbers[0], this.normalizeMeta(input))
+        : null;
       await this.audit(adminId, 'subscription.renewed', 'drivers', driverId, {
         periods: input.periods,
         invoices: result.invoiceNumbers,
         reactivated: reactivate,
       });
-      return { ...result, reactivated: reactivate, planChanged: false };
+      return { ...result, reactivated: reactivate, planChanged: false, primaryInvoiceId };
     }
 
     // --- plan change ---
@@ -663,6 +668,9 @@ export class DriversService {
       registeredBy: adminId,
     });
 
+    const primaryInvoiceId = result.invoiceNumbers[0]
+      ? await this.enrollment.setInvoicePaymentMeta(result.invoiceNumbers[0], this.normalizeMeta(input))
+      : null;
     await this.audit(adminId, 'subscription.plan_changed', 'drivers', driverId, {
       fromPlanId: subscription.planId,
       toPlanId: newPlan.id,
@@ -675,6 +683,7 @@ export class DriversService {
       reactivated: mode === 'immediate',
       planChanged: true,
       startsAt: result.startsAt.toISOString(),
+      primaryInvoiceId,
     };
   }
 
