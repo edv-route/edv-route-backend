@@ -197,3 +197,47 @@ test('anchoring: weekly renew lands on Mondays when ON, now-based when OFF', asy
     await removeDriver(off.driverId);
   }
 });
+
+test('anchoring: resume re-anchors weekly coverage to Mondays when ON', async () => {
+  const repo = new EnrollmentRepository(pool);
+  const tz = 'America/Caracas';
+  const { driverId, subId } = await makeDriver();
+  try {
+    // Paused driver with two future moving-window paid weeks (NOT Monday-aligned).
+    await pool.query(
+      `UPDATE drivers SET status = 'paused', paused_at = now() - interval '2 days' WHERE user_id = $1`,
+      [driverId],
+    );
+    await pool.query(
+      `INSERT INTO subscription_payments
+         (driver_subscription_id, period_start, period_end, amount_usd, status, charge_kind)
+       VALUES ($1, now() + interval '2 days', now() + interval '9 days', 10, 'paid', 'period'),
+              ($1, now() + interval '9 days', now() + interval '16 days', 10, 'paid', 'period')`,
+      [subId],
+    );
+
+    await repo.resume(driverId, tz, true);
+
+    const { rows } = await pool.query<{ start: Date; end: Date; dow: number; midnight: boolean }>(
+      `SELECT period_start AS start, period_end AS "end",
+              extract(isodow from (period_start AT TIME ZONE $2))::int AS dow,
+              (period_start AT TIME ZONE $2)::time = time '00:00' AS midnight
+       FROM subscription_payments
+       WHERE driver_subscription_id = $1 AND status = 'paid'
+       ORDER BY period_start`,
+      [subId, tz],
+    );
+    assert.equal(rows.length, 2, 're-ancla las 2 semanas de cobertura');
+    for (const r of rows) {
+      assert.equal(r.dow, 1, 'cada semana arranca un lunes');
+      assert.ok(r.midnight, 'a las 00:00 hora del negocio');
+    }
+    assert.equal(
+      new Date(rows[0]!.end).getTime(), new Date(rows[1]!.start).getTime(),
+      'semanas consecutivas',
+    );
+    assert.equal(await statusOf(driverId), 'approved', 'reanudar deja al chofer aprobado');
+  } finally {
+    await removeDriver(driverId);
+  }
+});

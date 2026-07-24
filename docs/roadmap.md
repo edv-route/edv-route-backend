@@ -75,8 +75,9 @@
   apagado). **Modelo de negocio cerrado formalmente + anclaje al lunes de los flujos de cobro
   (`approve`/`renew`/`changePlan`/`resume`) implementado detrás del flag (2026-07-24)**; el **plan
   de migración** al anclaje semanal está diseñado
-  ([plan-migracion-anclaje.md](proposals/tarifa-penalizacion/plan-migracion-anclaje.md)). Queda,
-  **antes de encender el motor**, ejecutar esa migración de datos y validar el ciclo con reloj real.
+  ([plan-migracion-anclaje.md](proposals/tarifa-penalizacion/plan-migracion-anclaje.md)) con su
+  **script `npm run db:reanchor`** (dry-run verificado). Queda, **antes de encender el motor**,
+  ejecutar el `--apply` en la ventana de corte y validar el ciclo con reloj real.
 - ¿Un documento obligatorio vencido **bloquea** la operación del chofer? Hoy solo alerta.
 - Contrato de afiliación firmado: Storage ya está listo, falta el flujo de subida.
 - Facturación fiscal SENIAT: análisis con el contador.

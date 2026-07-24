@@ -18,7 +18,8 @@
     "migrate:down": "node-pg-migrate -m src/db/migrations down && npm run db:types",
     "migrate:create": "node-pg-migrate -m src/db/migrations create",
     "seed:admin": "tsx src/db/seed-admin.ts",
-    "db:types": "kanel"
+    "db:types": "kanel",
+    "db:reanchor": "node --import tsx scripts/reanchor-weekly.ts"
   },
   "keywords": [
     "fastify",

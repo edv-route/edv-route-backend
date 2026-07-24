@@ -146,8 +146,10 @@ Con `k` = nº de filas re-ancladas (semanas de cobertura restante), quedan cubie
 1. ✅ **Código §1 (2026-07-24)**: anclaje al lunes en `approve`(enroll)/`renew`/`changePlan` y
    re-anclaje en `resume` para weekly, **detrás del flag** `debt_engine_enabled`; verificado
    (typecheck + prueba de anclaje en `tests/debt-engine.test.ts`).
-2. **Script de migración de datos** `scripts/reanchor-weekly.ts` (o SQL versionado): dry-run +
-   apply transaccional + auditoría. **No** es una migración de esquema → no regenera modelos.
+2. ✅ **Script `scripts/reanchor-weekly.ts` (2026-07-24)**: `npm run db:reanchor` (dry-run,
+   read-only) / `npm run db:reanchor -- --apply` (transaccional + auditoría `subscription.reanchored`).
+   Aborta si alguna suscripción weekly activa no tiene cobertura vigente (pre-condición). **No** es
+   migración de esquema → no regenera modelos. **Dry-run verificado contra dev.**
 3. **Validación con reloj simulado** en branch (§6).
 4. **Runbook de corte** firmado con Luis (día/hora, responsable, criterio de rollback).
 

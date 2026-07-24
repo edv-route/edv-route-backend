@@ -200,7 +200,7 @@ export class EnrollmentRepository {
           `WITH anchor AS (
              SELECT date_trunc('week', (now() AT TIME ZONE $2)) AS monday_local
            ), ordered AS (
-             SELECT sp.id, row_number() OVER (ORDER BY sp.period_start) - 1 AS idx
+             SELECT sp.id, (row_number() OVER (ORDER BY sp.period_start) - 1)::int AS idx
              FROM subscription_payments sp
              JOIN driver_subscriptions ds ON ds.id = sp.driver_subscription_id
              WHERE ds.driver_id = $1 AND sp.status = 'paid'
