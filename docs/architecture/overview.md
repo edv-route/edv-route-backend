@@ -1,6 +1,6 @@
 # Arquitectura del sistema
 
-> Actualizado: 2026-07-10
+> Actualizado: 2026-07-16
 
 ## Visión general
 
@@ -55,12 +55,37 @@ src/plugins/subscription-scheduler.ts
                       Job del ciclo de vida de tarifas (cada 60 s y al arrancar): consume
                       adelantos, expira suscripciones sin cobertura (suspensión inmediata,
                       gracia configurable) y audita con actor "sistema".
+src/plugins/storage.ts     Proveedor de archivos configurado (`app.storage`); null si no hay
+                      credenciales → las subidas responden 503 y el resto funciona.
+src/storage/          Abstracción de almacenamiento: `StorageProvider` (interfaz + límites)
+                      y `SupabaseStorageProvider` (REST + fetch nativo, sin SDK). Cambiar de
+                      proveedor = otra implementación + configuración; nada más se entera.
+src/plugins/document-scheduler.ts
+                      Job de vencimiento de documentos (misma cadencia): marca `expired`
+                      los documentos cuya fecha pasó (medianoche en tz de negocio) y
+                      audita con actor "sistema". El vencimiento alerta, no bloquea.
+src/plugins/debt-scheduler.ts
+                      Motor de deuda y penalización (diseño v8, Fase B). **Interruptor
+                      maestro `debt_engine_enabled` (false por defecto): mientras esté
+                      apagado no hace nada y el cobro sigue siendo el prepago actual.**
+                      Alcance: solo planes semanales. Emite el cargo de la semana
+                      siguiente (`pending`, sin factura: la factura se emite al cobrar),
+                      marca `overdue` las semanas ya arrancadas sin pagar y **deriva** el
+                      estado del chofer (0 = approved · 1..tope = overdue · >tope =
+                      penalized). Un penalizado no recibe cargos nuevos: la deuda queda
+                      congelada en el tope. Emite la **multa** (`charge_kind='penalty'`)
+                      en la transición a penalizado — una por episodio — y gestiona la
+                      **reactivación diferida** (`drivers.reactivates_at`: en modo `auto`
+                      el que saldó vuelve el lunes siguiente). Exporta `runDebtEngineTick`
+                      para poder ejercitarlo sin esperar al timer.
 src/app.ts            Ensambla todo (testeable sin puerto). src/server.ts es el entrypoint.
 ```
 
 **Seguridad:** contraseñas con argon2id · bloqueo tras 5 intentos fallidos (15 min) · JWT de
 8 h · validación estricta de entrada en cada endpoint (`additionalProperties: false`) ·
-mensajes de negocio en español listos para UI · helmet + CORS restringido.
+mensajes de negocio en español listos para UI · helmet + CORS restringido · archivos en
+bucket **privado**: subida solo vía backend con validación por contenido (magic number) y
+lectura con URL firmada de 60 s.
 
 ## Frontend — `edv-route-admin`
 
@@ -70,13 +95,22 @@ UI, tema de marca EDV en `src/styles.css`.
 ```
 src/app/
 ├── core/          Singletons: AuthService, interceptor JWT, guards, modelos (contratos de la API)
-├── shared/        Componentes/pipes/directivas reutilizables sin estado
+├── shared/        Reutilizables sin estado. components/: select (desplegable de marca con
+│                  teclado + ARIA, ControlValueAccessor), password-input (ojo mostrar/ocultar).
+│                  directives/: password-policy (validador de contraseña reactivo)
 ├── features/      Un directorio por pantalla de dominio, lazy-loaded por ruta
 └── layouts/       Shells: main-layout (navbar + sidebar), login standalone
 ```
 
 Reglas: `core` nunca importa de `features` · `shared` no tiene estado · cada feature se carga
 perezosamente desde `app.routes.ts` · ningún archivo supera las 1000 líneas.
+
+**Formularios (patrón obligatorio):** Angular añade `novalidate` a todo `<form>` con
+`FormsModule`, así que el `required` nativo no avisa por sí solo. Cada formulario usa
+`#f="ngForm"` + `markAllAsTouched()` al enviar; una regla global en `styles.css` pinta
+`.ng-invalid.ng-touched` en rojo (incluidos los controles propios, que llevan `ng-*` en el
+host); el error se muestra **junto al botón**, nunca arriba. Los desplegables usan
+`shared/components/select`, nunca `<select>` nativo (solo se puede estilizar cerrado).
 
 ## Flujo de una petición (ejemplo: aprobar un afiliado)
 
@@ -96,3 +130,13 @@ perezosamente desde `app.routes.ts` · ningún archivo supera las 1000 líneas.
   continua global; los reembolsos anulan con rastro (`voided`), nunca borran.
 - **Integración Supabase Auth**: pospuesta (modo prueba). `users.id` es propio; existe
   `users.auth_user_id` para vincular después sin migrar claves.
+- **Archivos**: Supabase Storage tras la interfaz `StorageProvider` (decisión 2026-07-15);
+  la BD guarda solo la referencia, nunca el binario.
+- **Registro de afiliado transaccional** (decisión 2026-07-21): el alta es un wizard de
+  **4 pasos** (datos → documentos → vehículo → pago) que **acumula en el cliente** y envía un
+  único `POST /drivers/register`. El servicio crea identidad + vehículos + metadatos de
+  documentos + (si hay pago) membresía + tarifa en **una sola transacción** vía el helper
+  `withTransaction` (`src/db/tx.ts`): los repositorios `drivers` y `enrollment` escriben sobre
+  el mismo `client`, así todo persiste o nada, nunca a medias. Los **archivos** de documentos se
+  suben después (best-effort, contra los ids devueltos). Flota y documentos son datos vivos:
+  también se gestionan desde el perfil.

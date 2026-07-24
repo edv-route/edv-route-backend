@@ -9,6 +9,10 @@ export interface AppConfig {
   DATABASE_URL: string;
   JWT_SECRET: string;
   JWT_EXPIRES_IN: string;
+  /** File storage. Optional: without them the app boots with uploads disabled. */
+  SUPABASE_URL: string;
+  SUPABASE_SERVICE_ROLE_KEY: string;
+  STORAGE_BUCKET: string;
 }
 
 const schema = {
@@ -31,6 +35,9 @@ const schema = {
     DATABASE_URL: { type: 'string' },
     JWT_SECRET: { type: 'string', minLength: 32 },
     JWT_EXPIRES_IN: { type: 'string', default: '8h' },
+    SUPABASE_URL: { type: 'string', default: '' },
+    SUPABASE_SERVICE_ROLE_KEY: { type: 'string', default: '' },
+    STORAGE_BUCKET: { type: 'string', default: 'documents' },
   },
 } as const;
 

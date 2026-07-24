@@ -1,6 +1,6 @@
 # API REST — Referencia de endpoints
 
-> Actualizado: 2026-07-13 · Base URL: `http://localhost:3000/api/v1`
+> Actualizado: 2026-07-16 · Base URL: `http://localhost:3000/api/v1`
 
 ## Convenciones
 
@@ -37,6 +37,8 @@
 | PATCH / DELETE | `/requirements/:id` | Editar / eliminar (409 si tiene documentos) |
 | GET / POST | `/benefits` | Beneficios del gremio |
 | PATCH / DELETE | `/benefits/:id` | Editar / eliminar (409 si pertenece a una membresía) |
+| GET / POST | `/payment-methods` | Cuentas donde los afiliados pagan (`type`: `bank_transfer`\|`pago_movil`\|`zelle`\|`paypal`\|`binance`\|`crypto`\|`contact`; `details` jsonb validado por tipo en el service; `name` etiqueta libre) |
+| PATCH / DELETE | `/payment-methods/:id` | Editar (tipo+`details` van juntos) / activar-desactivar (`isActive`) / eliminar (409 si está en uso → desactivar) |
 | GET | `/settings` | Configuración (las claves nacen por migración, nunca por API) |
 | PATCH | `/settings/:key` | Actualizar el valor de una clave existente |
 
@@ -55,32 +57,85 @@ réplica activa automáticamente (quien pagó conserva precio y beneficios de su
 | PUT | `/subscription-plans/:id` | Editar (versionado condicional) |
 | PATCH | `/subscription-plans/:id/active` | Archivar / reactivar |
 
-## Afiliados (wizard + ciclo de vida)
+## Afiliados (registro + ciclo de vida)
+
+> **Registro transaccional (2026-07-21):** el alta ocurre en una sola transacción vía
+> `POST /drivers/register` (datos personales + vehículos + documentos + pago, todos
+> opcionales salvo los datos). Los **archivos** de los documentos se suben **después** del
+> registro contra los ids devueltos (`createdDocumentIds`). Flota y documentos también se
+> gestionan como datos vivos desde el perfil (`POST /drivers/:id/vehicles`,
+> `POST /drivers/:id/documents`). Ver [decisions-log.md](../decisions/decisions-log.md#2026-07-21).
 
 | Método | Ruta | Descripción |
 |---|---|---|
-| GET | `/drivers` | Listado paginado. Query: `status`, `search` (nombre/email/cédula), `page`, `limit` |
-| POST | `/drivers` | **Paso 1**: crear (solo `fullName` obligatorio por panel; `nationalId` opcional) |
-| GET | `/drivers/:id` | Perfil completo: vehículos, documentos, membresía, suscripción |
-| PATCH | `/drivers/:id` | Editar datos / suspender / reactivar |
-| POST | `/drivers/:id/documents` | **Paso 2** (opcional): registrar documento contra un requerimiento |
-| POST | `/drivers/:id/vehicles` | **Paso 3**: registrar vehículo (por panel nace aprobado) |
-| POST | `/drivers/:id/enroll` | **Paso 4**: `{ planId, periods }` — cobra membresía + tarifa; `periods > 1` = adelanto ×N. Emite facturas (la #1 agrupa membresía + primer período) |
-| POST | `/drivers/:id/subscription/renew` | `{ periods }` — cobra N períodos (factura c/u). Si la tarifa está **vencida**, reactiva la operación automáticamente. Vencimientos a las 00:00 (`business_timezone`) |
-| POST | `/drivers/:id/approve` | Aprobar (exige pagos registrados; la tarifa comienza a correr) |
+| GET | `/drivers` | Listado paginado. Query: `status` (`pending`\|`approved`\|`rejected`\|`suspended`\|`paused`\|`overdue`\|`penalized`), `search` (nombre/email/cédula), `page`, `limit` |
+| POST | `/drivers/register` | **Registro transaccional**: datos personales + `payment`, `vehicles[]` y `documents[]` opcionales, **todo en una transacción** (si algo falla, no queda afiliado/vehículo/factura). `payment` = `{ planId, periods }` (`periods > 1` = adelanto ×N, emite facturas; `null` → `pending`). `vehicles[]` = `{ vehicleTypeId?, brand?, model?, year?, color?, plate? }` (nacen aprobados). `documents[]` = `{ requirementId, expiresAt? }` (solo requerimientos de **chofer**; el archivo se sube luego con `POST /documents/:id/file` usando `createdDocumentIds`, mismo orden). Campos de persona: obligatorios `firstName`, `lastName`; opcionales validados `middleName`, `secondLastName`, `birthDate` (≥18), `address`, `email`, `nationalId` (`V`\|`E`\|`J` + `-` + 5–9 dígitos), `phone` (`+58` + 10 dígitos), `password` (login de la app: usuario = documento; **≥6**, admite solo números; exige `nationalId`). ⚠️ El **panel exige documento + contraseña**. Devuelve el detalle del afiliado + `invoiceNumbers` + `createdDocumentIds`. `hasAppPassword` booleano; el hash **nunca** viaja |
+| POST | `/drivers` | Alta **solo-persona** (mismos campos de persona que `/register`, sin `payment`). Se conserva para compatibilidad; el panel registra por `/register` |
+| GET | `/drivers/:id` | Perfil completo: vehículos, documentos, membresía, **`benefits`** (los de la versión de membresía que pagó), suscripción (con `priceUsd`/`startedAt`) y **`debt`** (cargos pendientes/en mora del motor v8: `totalUsd`, `weeksOwed`, `penaltyCount`, `charges[]`; ceros si no debe). Todo el dinero como string decimal |
+| PATCH | `/drivers/:id` | Editar datos personales (mismo contrato que el POST; `password` vacía = conservar la actual) / suspender / reactivar |
+| POST | `/drivers/:id/documents` | Registrar (desde el perfil) un documento contra un requerimiento → `{ id }` (para adjuntarle el archivo) |
+| POST | `/drivers/:id/vehicles` | Registrar (desde el perfil) un vehículo (por panel nace aprobado) |
+| POST | `/drivers/:id/enroll` | Cobra membresía + tarifa a un afiliado existente: `{ planId, periods }`, `periods > 1` = adelanto ×N. Emite facturas (la #1 agrupa membresía + primer período). **Metadatos de pago opcionales (Pieza 2)**: `{ paymentMethodId?, reference?, payerBank? }` se estampan en la factura primaria. Devuelve `invoiceNumbers` + **`primaryInvoiceId`** (para adjuntar el comprobante). Disponible para cobrar a un `pending` registrado sin pago |
+| POST | `/drivers/:id/subscription/renew` | `{ periods, planId? }` — cobra N períodos (factura c/u). Si la tarifa está **vencida**, reactiva la operación automáticamente. Con `planId` distinto = **cambio de tarifa**: con cobertura pagada queda `scheduled` y arranca al agotarla (el scheduler la activa); sin cobertura arranca ya. 409 si ya hay un cambio programado |
+| POST | `/drivers/:id/subscription/cancel-change` | Cancela el cambio programado: reembolsa sus períodos y anula sus facturas (conservan número). La tarifa en curso no se toca |
+| POST | `/drivers/:id/approve` | Aprobar (exige pagos registrados; la tarifa comienza a correr; el chofer queda `approved` + disponible `is_available = true`) |
 | POST | `/drivers/:id/reject` | Rechazar: reembolsa ambos pagos y anula sus facturas (conservan número) |
+| POST | `/drivers/:id/pause` | **Pausar — licencia (2026-07-23)**: `approved` → `paused`. Exige la tarifa **al día** (409 si no); **congela** la tarifa (el scheduler la salta). Devuelve el detalle |
+| POST | `/drivers/:id/resume` | **Reanudar**: `paused` → `approved` + disponible; la tarifa corre de nuevo **desplazada** por el tiempo que estuvo pausada. Devuelve el detalle |
+| POST | `/drivers/:id/external-payment` | **Pago externo (v8)**: registra dinero entregado al admin fuera del sistema. Salda **todos los cargos pendientes** (deuda + penalización) en una transacción y emite **una factura** que los agrupa. Body opcional `{ note, paymentMethodId?, reference?, payerBank? }` (constancia + metadatos de pago). Devuelve `invoiceNumber` + **`primaryInvoiceId`**. 409 si no hay cargos pendientes. El estado **no se fuerza**: el motor deriva al chofer fuera de `overdue`/`penalized` al quedar sin deuda |
+| POST | `/drivers/:id/reactivate` | **Reactivación manual (v8)**: `penalized` → `approved` + disponible **de inmediato**, en vez de esperar al día de reincorporación automática (`reactivation_mode = auto` → lunes siguiente). **Exige deuda 0** (409 si aún debe): primero el dinero, después el estado |
 
-## Facturación
+## Facturación (historiales, solo lectura)
 
 - Numeración **continua global** (`invoice_number` desde una secuencia única, sin reinicio anual).
 - Las facturas nunca se borran: los reembolsos las marcan `voided` con fecha y admin responsable.
 - Comprobante **interno no fiscal** (la facturación SENIAT es un análisis aparte).
+- Facturas y pagos se **crean únicamente** desde los flujos de afiliación/renovación; estos
+  endpoints solo consultan. Los pagos salen de la vista `v_driver_payments`.
+
+| Método | Ruta | Descripción |
+|---|---|---|
+| GET | `/invoices` | Historial global de facturas, número descendente. Query: `status` (`issued`\|`voided`), `driverId` (historial por afiliado), `search` (afiliado o Nº), `page`, `limit`. Incluye afiliado, admin que anuló y **datos de pago (Pieza 2)**: `paymentMethodName`, `paymentReference`, `payerBank`, `hasProof` |
+| POST | `/invoices/:id/proof` | **Comprobante (Pieza 2)**: adjunta el archivo (multipart, campo `file`; **PDF/JPG/PNG, 10 MB**, validado por magic-number). La ruta la decide el servidor (`proofs/driverId/invoiceId.ext`). 503 si el storage no está configurado |
+| GET | `/invoices/:id/proof` | `{ url, expiresIn }` — URL **firmada de 60 s** del comprobante (bucket privado). 404 si la factura no tiene comprobante |
+| GET | `/invoices/monthly-series` | Serie mensual de facturación para el gráfico de barras del panel (2026-07-22). Query: `months` (3–24, default 12). Un punto por **mes calendario en `business_timezone`** (`{ month, totalUsd, count }`), anuladas excluidas; meses sin facturas en cero (eje continuo) |
+| GET | `/payments` | Historial unificado de pagos (membresía + tarifas). Query: `kind` (`membership`\|`subscription`), `status` (`pending`\|`paid`\|`refunded`), `driverId`, `search`, `page`, `limit`. Incluye concepto (nombre de la versión pagada), período (solo tarifas) y Nº de factura |
 
 ## Dashboard
 
 | Método | Ruta | Descripción |
 |---|---|---|
-| GET | `/dashboard/summary` | Resumen operativo: afiliados (aprobados/pendientes/suspendidos), tarifas por vencer (cobertura pagada ≤ `payment_reminder_days`, adelantos incluidos) y vencidas, facturación de los últimos 7 días (monto + cantidad, anuladas excluidas). El feed de actividad del panel reutiliza `GET /audit-logs` |
+| GET | `/dashboard/summary` | Resumen operativo: afiliados (aprobados/pendientes/suspendidos/**en pausa** + `approvedLast7`/`approvedPrev7` desde el log de auditoría, 2026-07-22), tarifas por vencer (cobertura pagada ≤ `payment_reminder_days`, adelantos incluidos) y vencidas, documentos por vencer (≤ 30 días) y vencidos, facturación de los últimos 7 días (monto + cantidad + `prev7DaysUsd` para la tendencia semana a semana, anuladas excluidas). El feed de actividad del panel reutiliza `GET /audit-logs` |
+| GET | `/dashboard/revenue-series` | Serie diaria de facturación para el gráfico del panel (2026-07-22). Query: `days` (7–90, default 30). Devuelve un punto por **día calendario en `business_timezone`** (`{ date, totalUsd, count }`), anuladas excluidas; los días sin facturas vienen en cero (eje continuo) |
+
+## Documentos (vista global, solo lectura)
+
+Los documentos se registran desde el perfil/wizard del afiliado (módulo drivers). Un
+scheduler los marca `expired` cuando pasa su fecha (medianoche en `business_timezone`,
+auditado con actor sistema). El vencimiento **alerta pero no bloquea** la operación.
+
+| Método | Ruta | Descripción |
+|---|---|---|
+| GET | `/documents` | Listado transversal paginado, próximos a vencer primero. Query: `status` (`valid`\|`expired`\|`rejected`), `requirementId`, `search` (afiliado o placa), `expiringDays` (válidos que vencen en ≤ N días), `page`, `limit`. Cada documento resuelve a su dueño: chofer directo o dueño del vehículo (con placa) |
+| POST | `/documents/:id/file` | Adjunta el archivo (multipart, campo `file`). **PDF, JPG o PNG, máx. 10 MB**; el tipo se valida por el contenido real (magic number), no por la extensión ni el `Content-Type` declarado. La ruta la decide el servidor. 503 si el storage no está configurado |
+| GET | `/documents/:id/file` | `{ url, expiresIn }` — URL **firmada de 60 s** para abrir el archivo (el bucket es privado; nada es público) |
+
+## Capacitaciones
+
+Se **cancelan, nunca se borran** (los asistentes conservan su historial). Solo se
+inscriben afiliados **aprobados o en pausa** (licencia; un pausado sigue siendo miembro);
+el control de cupo es atómico (dos inscripciones simultáneas no pueden sobrevender). Todo
+queda auditado.
+
+| Método | Ruta | Descripción |
+|---|---|---|
+| GET | `/trainings` | Listado paginado con `enrolledCount` (inscritos no cancelados). Query: `status` (`scheduled`\|`cancelled`\|`completed`), `page`, `limit` |
+| GET | `/trainings/:id` | Detalle + asistentes (nombre y cédula, orden alfabético) |
+| POST | `/trainings` | Crear: `title`, `startsAt` (obligatorios), `description?`, `location?`, `endsAt?` (> inicio), `capacity?` (null = sin límite) |
+| PUT | `/trainings/:id` | Editar (solo programadas; el cupo no puede bajar de los inscritos actuales) |
+| PATCH | `/trainings/:id/status` | `{ status: cancelled \| completed }` — transición única desde `scheduled` |
+| POST | `/trainings/:id/attendees` | Inscribir `{ driverId }` (409: no aprobado ni en pausa, ya inscrito o sin cupo). Reinscribir a un cancelado reutiliza su fila |
+| PATCH | `/trainings/:id/attendees/:attendeeId` | `{ status: attended \| absent \| cancelled }` — la asistencia puede marcarse incluso tras completar |
 
 ## Auditoría (solo lectura)
 

@@ -22,6 +22,20 @@ export default interface Users {
   created_at: Date;
 
   updated_at: Date;
+
+  first_name: string;
+
+  middle_name: string | null;
+
+  last_name: string;
+
+  second_last_name: string | null;
+
+  birth_date: Date | null;
+
+  address: string | null;
+
+  password_hash: string | null;
 }
 
 /** Represents the initializer for the table public.users */
@@ -47,6 +61,20 @@ export interface UsersInitializer {
 
   /** Default value: now() */
   updated_at?: Date;
+
+  first_name: string;
+
+  middle_name?: string | null;
+
+  last_name: string;
+
+  second_last_name?: string | null;
+
+  birth_date?: Date | null;
+
+  address?: string | null;
+
+  password_hash?: string | null;
 }
 
 /** Represents the mutator for the table public.users */
@@ -68,4 +96,18 @@ export interface UsersMutator {
   created_at?: Date;
 
   updated_at?: Date;
+
+  first_name?: string;
+
+  middle_name?: string | null;
+
+  last_name?: string;
+
+  second_last_name?: string | null;
+
+  birth_date?: Date | null;
+
+  address?: string | null;
+
+  password_hash?: string | null;
 }

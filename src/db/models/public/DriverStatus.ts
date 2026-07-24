@@ -3,6 +3,9 @@ type DriverStatus =
   | 'pending'
   | 'approved'
   | 'rejected'
-  | 'suspended';
+  | 'suspended'
+  | 'paused'
+  | 'overdue'
+  | 'penalized';
 
 export type { DriverStatus as default };

@@ -12,6 +12,22 @@ const dashboardRoutes: FastifyPluginAsync = async (app) => {
   app.addHook('onRequest', app.authenticate);
 
   app.get('/summary', async () => service.summary());
+
+  app.get<{ Querystring: { days?: number } }>(
+    '/revenue-series',
+    {
+      schema: {
+        querystring: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            days: { type: 'integer', minimum: 7, maximum: 90, default: 30 },
+          },
+        },
+      },
+    },
+    async (req) => service.revenueSeries(req.query.days ?? 30),
+  );
 };
 
 export default dashboardRoutes;

@@ -292,5 +292,22 @@ Cancelaciones → resuelto · ambigüedad vehículos → resuelto · zonas tarif
 3. **Refinamiento lógico**: tipos, enums, constraints, índices, vistas, numeración secuencial de facturas (secuencia por año), lógica de réplica del versionado condicional.
 4. **Matriz de permisos**. 5. **DDL y migraciones** — solo con autorización explícita.
 
+## 10. Hacia v8 (aprobado, próximo a implementar)
+
+- **Rediseño del estado del chofer** (modelo cerrado 2026-07-23): el estado se modela como
+  **`driver_status` + el boolean `is_available`**. El enum lleva la *situación* y se amplía
+  (sin backfill; `approved` **permanece** como estado sano base, badge visible) con `paused`
+  (licencia administrativa: deuda 0, congela la tarifa, la pone el admin), `overdue` (mora) y
+  `penalized`. El boolean `is_available` lleva la *disponibilidad* voluntaria del chofer
+  (`active`/`inactive`, default `true`, no congela la tarifa), ortogonal al enum.
+  `overdue`/`penalized` los deriva el motor de deuda (nunca a mano; override = pago externo).
+  **Dividido en fases**: A (enum + `paused`) ejecutable ya; B (`overdue`/`penalized` + motor)
+  depende de la propuesta de tarifa. Espec:
+  [proposals/estados-del-chofer/](../proposals/estados-del-chofer/README.md).
+- **Tarifa con deuda y penalización**: motor de mora/penalización que dispara `overdue`/
+  `penalized`. Espec: [proposals/tarifa-penalizacion/](../proposals/tarifa-penalizacion/README.md).
+
+Ambas son el mismo esfuerzo (Fase B) y requieren migración de enums + regeneración de modelos.
+
 ---
 *Documento vivo. Diagramas regenerables pidiendo "regenerar diagramas BD".*

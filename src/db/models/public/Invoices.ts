@@ -1,6 +1,7 @@
 import type { UsersId } from './Users.js';
 import type { default as InvoiceStatus } from './InvoiceStatus.js';
 import type { AdminsId } from './Admins.js';
+import type { PaymentMethodsId } from './PaymentMethods.js';
 
 /** Identifier type for public.invoices */
 export type InvoicesId = string & { __brand: 'public.invoices' };
@@ -26,6 +27,14 @@ export default interface Invoices {
   registered_by: AdminsId | null;
 
   created_at: Date;
+
+  payment_method_id: PaymentMethodsId | null;
+
+  payment_reference: string | null;
+
+  payer_bank: string | null;
+
+  proof_url: string | null;
 }
 
 /** Represents the initializer for the table public.invoices */
@@ -54,6 +63,14 @@ export interface InvoicesInitializer {
 
   /** Default value: now() */
   created_at?: Date;
+
+  payment_method_id?: PaymentMethodsId | null;
+
+  payment_reference?: string | null;
+
+  payer_bank?: string | null;
+
+  proof_url?: string | null;
 }
 
 /** Represents the mutator for the table public.invoices */
@@ -77,4 +94,12 @@ export interface InvoicesMutator {
   registered_by?: AdminsId | null;
 
   created_at?: Date;
+
+  payment_method_id?: PaymentMethodsId | null;
+
+  payment_reference?: string | null;
+
+  payer_bank?: string | null;
+
+  proof_url?: string | null;
 }

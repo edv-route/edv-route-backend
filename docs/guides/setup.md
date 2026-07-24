@@ -24,6 +24,12 @@ Editar `.env`:
    `[YOUR-PASSWORD]` por la contraseña de la base de datos.
 2. `JWT_SECRET`: generar uno propio:
    `node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"`
+3. **Storage** (subida de documentos), opcional en local: `SUPABASE_URL` (URL del proyecto)
+   y `SUPABASE_SERVICE_ROLE_KEY` (Supabase → Settings → API Keys → **Secret key**,
+   `sb_secret_…`; **nunca** la publishable). Sin ellas el backend arranca igual y solo las
+   subidas responden 503. El bucket privado (`STORAGE_BUCKET`, por defecto `documents`)
+   ya existe en el proyecto; si creas otro entorno, créalo privado con límite de 10 MB
+   y MIME `application/pdf,image/jpeg,image/png`.
 
 Luego:
 
@@ -52,6 +58,7 @@ Entrar con el usuario `admin` y la contraseña que imprimió el seed (cambiarla 
 | Dónde | Comando | Qué hace |
 |---|---|---|
 | backend | `npm run typecheck` | Verificación de tipos sin compilar |
+| backend | `npm test` | Tests de integración (`node:test` + tsx). No abren puerto: prueban contra la BD y con `app.inject()`; cada test crea y borra sus propios datos |
 | backend | `npm run migrate:create -- nombre` | Crea una migración nueva |
 | backend | `npm run migrate:down` | Revierte la última migración (y regenera modelos) |
 | backend | `npm run db:types` | Regenera `src/db/models` desde la BD |
@@ -75,3 +82,12 @@ Detalle completo: [../../src/db/README.md](../../src/db/README.md).
 - **`env must have required property 'JWT_SECRET'`**: falta esa variable en `.env`
   (mínimo 32 caracteres).
 - **401 constante en el panel**: el token expiró (8 h) — cerrar sesión y volver a entrar.
+- **503 al subir un archivo**: faltan `SUPABASE_URL` / `SUPABASE_SERVICE_ROLE_KEY` en `.env`.
+- **`EMAXCONNSESSION` al regenerar modelos**: el Session pooler admite 15 sesiones; cierra
+  los `npm run dev` abiertos, espera ~1 min y reintenta `npm run db:types`.
+- **`invalid input value for enum … "<valor nuevo>"` justo después de una migración** (code
+  `22P02`, routine `enum_in`), aunque la base sí tenga el valor: es el **pooler de Supabase**.
+  Una conexión de servidor abierta antes del `ALTER TYPE … ADD VALUE` conserva el catálogo
+  cacheado y rechaza el literal hasta reciclarse; **es intermitente y se pasa solo**. Por eso
+  el código compara los estados como texto (`status::text = '…'`, decisión 2026-07-23). Si te
+  topas con ello en una consulta nueva, usa el mismo cast en vez de esperar.

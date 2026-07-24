@@ -47,7 +47,7 @@ export interface AuditLogListFilters {
  */
 const DRIVER_REF = `(CASE
   WHEN al.entity = 'drivers' THEN al.entity_id
-  WHEN al.entity = 'driver_subscriptions' THEN al.data->>'driverId'
+  WHEN al.entity IN ('driver_subscriptions', 'documents', 'trainings') THEN al.data->>'driverId'
 END)::uuid`;
 
 export class AuditLogsRepository {

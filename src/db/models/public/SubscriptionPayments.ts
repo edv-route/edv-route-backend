@@ -2,6 +2,7 @@ import type { DriverSubscriptionsId } from './DriverSubscriptions.js';
 import type { InvoicesId } from './Invoices.js';
 import type { default as SubscriptionPaymentStatus } from './SubscriptionPaymentStatus.js';
 import type { AdminsId } from './Admins.js';
+import type { default as SubscriptionChargeKind } from './SubscriptionChargeKind.js';
 
 /** Identifier type for public.subscription_payments */
 export type SubscriptionPaymentsId = string & { __brand: 'public.subscription_payments' };
@@ -31,6 +32,8 @@ export default interface SubscriptionPayments {
   registered_by: AdminsId | null;
 
   created_at: Date;
+
+  charge_kind: SubscriptionChargeKind;
 }
 
 /** Represents the initializer for the table public.subscription_payments */
@@ -61,6 +64,9 @@ export interface SubscriptionPaymentsInitializer {
 
   /** Default value: now() */
   created_at?: Date;
+
+  /** Default value: 'period'::subscription_charge_kind */
+  charge_kind?: SubscriptionChargeKind;
 }
 
 /** Represents the mutator for the table public.subscription_payments */
@@ -88,4 +94,6 @@ export interface SubscriptionPaymentsMutator {
   registered_by?: AdminsId | null;
 
   created_at?: Date;
+
+  charge_kind?: SubscriptionChargeKind;
 }

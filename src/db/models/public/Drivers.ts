@@ -33,6 +33,10 @@ export default interface Drivers {
   created_at: Date;
 
   updated_at: Date;
+
+  paused_at: Date | null;
+
+  reactivates_at: Date | null;
 }
 
 /** Represents the initializer for the table public.drivers */
@@ -52,7 +56,7 @@ export interface DriversInitializer {
 
   current_vehicle_id?: VehiclesId | null;
 
-  /** Default value: false */
+  /** Default value: true */
   is_available?: boolean;
 
   avg_rating?: string | null;
@@ -70,6 +74,10 @@ export interface DriversInitializer {
 
   /** Default value: now() */
   updated_at?: Date;
+
+  paused_at?: Date | null;
+
+  reactivates_at?: Date | null;
 }
 
 /** Represents the mutator for the table public.drivers */
@@ -101,4 +109,8 @@ export interface DriversMutator {
   created_at?: Date;
 
   updated_at?: Date;
+
+  paused_at?: Date | null;
+
+  reactivates_at?: Date | null;
 }
