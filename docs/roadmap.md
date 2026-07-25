@@ -28,7 +28,7 @@
 | Comprobante de pago (Pieza 2) | Los **4 cobros** (registro/enroll/renovación-cambio de tarifa/pago externo) capturan **método + datos de la cuenta + referencia + banco emisor + comprobante** vía el componente compartido `features/drivers/payment-capture` (dropzone, **2 columnas en web**) y los estampan en la factura; Facturación muestra los datos y "Ver comprobante". Pendiente menor: el QR de cripto | ✅ |
 | Cambio de tarifa | `renew` con `planId`: programado (arranca al agotar lo pagado, lo activa el scheduler) o inmediato si está vencida · cancelación con reembolso y anulación | ✅ |
 | Credenciales app del chofer | `users.password_hash` (argon2id, mín. 6, admite solo números) · usuario = documento · se crean en el registro por panel · el chofer podrá entrar a la app cuando exista | ✅ |
-| Componentes de marca (UI) | `shared/components/select` (desplegable custodiado con teclado y ARIA) · `shared/components/password-input` (ojo mostrar/ocultar) · `shared/directives/password-policy` · validación visible global (`.ng-invalid.ng-touched`) · `cursor:pointer` global | ✅ |
+| Componentes de marca (UI) | `shared/components/select` (desplegable custodiado con teclado y ARIA) · `shared/components/password-input` (ojo mostrar/ocultar) · `shared/directives/password-policy` · validación visible global (`.ng-invalid.ng-touched`) · `cursor:pointer` global · **modal de confirmación con loading** para acciones importantes (suspender/pausar/reanudar/reactivar) y logout | ✅ |
 
 ## 🔜 Siguiente fase
 

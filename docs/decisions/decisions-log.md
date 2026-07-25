@@ -446,3 +446,15 @@ semanal y validar el ciclo con reloj real.
 | **Reutiliza** `GET /payments?driverId` + `GET /invoices?driverId` + `invoiceProofUrl` (`BillingApi`), sin endpoints nuevos | Es una vista **reducida** de `/billing`; no se duplica lógica de backend |
 | El detalle del pago toma método/referencia/banco/comprobante de la **factura asociada** (`invoiceId`) | Esos datos viven en `invoices` (Pieza 2); el pago solo referencia su factura |
 | `/billing` (Facturación global) **se mantiene**; su gráfica mensual podría llevarse al dashboard | Vista global útil; idea futura anotada por Luis |
+
+## 2026-07-24 — 🛡️ Confirmación + loading en acciones importantes de un clic
+
+> Suspender/reactivar, pausar (licencia), reanudar, reactivar (penalizado) y **cerrar sesión** pasan
+> por un modal de confirmación (patrón Flowbite Pro) que describe la acción; el botón Confirmar de las
+> acciones con backend muestra un **spinner** mientras corre. Build limpio.
+
+| Decisión | Motivo |
+|---|---|
+| Modal de confirmación **genérico** (`ConfirmDialog` + `runConfirm()` dispatcher) en el detalle del chofer | DRY: una sola pieza para las 4 acciones importantes en vez de un modal por acción |
+| El logout (main-layout) usa su propio modal **sin spinner** | El logout es síncrono (limpia la sesión y navega); un loading sería falso |
+| Aprobar/rechazar y cancelar cambio de tarifa ya tenían su modal (se dejan igual) | Solo faltaba confirmar las acciones que se ejecutaban de un clic |
