@@ -458,3 +458,29 @@ semanal y validar el ciclo con reloj real.
 | Modal de confirmación **genérico** (`ConfirmDialog` + `runConfirm()` dispatcher) en el detalle del chofer | DRY: una sola pieza para las 4 acciones importantes en vez de un modal por acción |
 | El logout (main-layout) usa su propio modal **sin spinner** | El logout es síncrono (limpia la sesión y navega); un loading sería falso |
 | Aprobar/rechazar y cancelar cambio de tarifa ya tenían su modal (se dejan igual) | Solo faltaba confirmar las acciones que se ejecutaban de un clic |
+
+## 2026-07-27 — 🎨 Ajustes de UI (visor en modal, selects de marca, wizard) — solo frontend
+
+> Pulido de UI sobre documentos, perfil, facturación y el wizard de registro. Sin cambios de API ni
+> de BD. Build de producción limpio.
+
+| Decisión | Motivo |
+|---|---|
+| **Visor de archivos en modal** compartido (`shared/components/file-viewer`, presentación pura: recibe la URL firmada + título, muestra PDF en `<iframe>` o imagen en `<img>`) reemplaza los "Ver" que abrían **pestaña nueva** en Documentos (global), perfil del chofer y Facturación; el historial de pagos también lo reutiliza | Un solo visor para los 4 sitios (DRY); ver un documento sin salir del panel. "Descargar" se mantiene como descarga real |
+| **Fuera los `<select>` nativos**: los 6 desplegables del wizard y el perfil (requerimiento, tipo de vehículo, tarifa, renovación) pasan a `shared/components/select` | Regla del proyecto: el `<select>` nativo no se puede estilizar abierto. La renovación usa un **centinela** (`value` = plan actual → mapeado a `null`) para conservar la opción "Renovar la actual" sin tocar el contrato de `renewPlanId` |
+| Wizard paso Documentos: grid de 2 columnas, **archivo a ancho completo** en su fila, y un **requerimiento solo se puede documentar una vez** (se excluye del desplegable) — mismo criterio en el perfil (botón "+ Agregar" deshabilitado si no queda ninguno) | Layout menos amontonado y evita documentos duplicados por requerimiento (guarda de UI; la BD aún no lo fuerza) |
+| **Operadora de teléfono preseleccionada** (primer valor) en `emptyPersonForm()`; regla CSS global que oculta las flechas de los `input[type=number]` | Detalles de pulido: el selector no nace en blanco y los campos numéricos no muestran los spinners nativos |
+
+## 2026-07-27 — 🚀 Despliegue en producción (Railway)
+
+> Backend y frontend en producción como dos servicios de Railway. Runbook completo en
+> [../guides/deploy-railway.md](../guides/deploy-railway.md).
+
+| Decisión | Motivo |
+|---|---|
+| **Ambos en Railway**, mismo proyecto; **mismo Supabase que desarrollo** (sin proyecto de prod separado por ahora) | Pedido de Luis: salir a producción ya. Aislar prod en un Supabase propio queda como mejora pendiente (riesgo asumido: prod comparte datos/credenciales con dev) |
+| **Backend con Nixpacks** (builder automático); el `Dockerfile`/`railway.json` preparados quedan **sin subir** | El backend levantó bien con Nixpacks y no se quiso tocar un servicio ya operativo. Los archivos Docker quedan como punto de partida si se migra |
+| **Frontend con Builder = Dockerfile** (multi-stage → Caddy) — **obligatorio** | Railpack (default de Railway) compila el Angular pero **no sirve** un SPA estático (sin fallback a `index.html`). El Dockerfile + `Caddyfile` montan el servidor con las rutas del router |
+| `CORS_ORIGIN` como **lista de orígenes exactos separados por coma sin espacios** | El backend hace `split(',')` sin `trim`: un espacio deja el origin como `" https://…"` y rompe el CORS. Mejora futura anotada: `trim()` |
+| Los **valores** de las variables (`DATABASE_URL`, `JWT_SECRET`, claves de Supabase) viven solo en Railway y en el `.env` local | Regla de oro #3: credenciales nunca versionadas. `.env.example` documenta los nombres |
+| **Gotcha de plataforma** documentado: la cola de build de Railway (región **US West**) se atascó en `Queued` >20 min sin ser culpa del proyecto (incidencia transitoria de GitHub + región degradada); se resolvió **recreando el servicio** | Que un despliegue lento no se confunda con un error de configuración; salidas: cambiar región, recrear servicio, o soporte |
