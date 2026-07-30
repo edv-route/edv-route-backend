@@ -41,6 +41,14 @@
 
 ## 🔧 Tareas aprobadas, pendientes de implementar
 
+- **🚧 Rediseño del perfil del afiliado + documentos por vehículo — EN CURSO (2026-07-28), sin
+  desplegar** — perfil en 3 pestañas, detalle de vehículo en pantalla propia, fotos de vehículo
+  (`vehicle_images`), documentos separados chofer/vehículo, `DELETE /documents/:id`, editar vehículo
+  (`PATCH …/vehicles/:vehicleId`), `register` anidado con `createdVehicles`, y **alta de vehículo y
+  documento del chofer por MODAL** en el wizard (`vehicle-draft-modal` / `document-draft-modal`). La
+  **fecha de vencimiento se retiró de la UI**; falta la **Fase 5 destructiva** (quitar `expires_at`
+  de BD/backend/scheduler/dashboard). Falta smoke test + push/deploy. Estado completo:
+  [proposals/rediseno-perfil-afiliado/README.md](proposals/rediseno-perfil-afiliado/README.md).
 - **⭐ Rediseño del estado del chofer — Fase A ✅ implementada (2026-07-23), Fase B pendiente** —
   el estado se modela como **un enum `driver_status` + el boolean `is_available`**. **Fase A
   implementada** (migración `1752250000000`): el enum incorpora **`paused`** (licencia

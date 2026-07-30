@@ -69,10 +69,15 @@ export interface RegisterDocumentInput {
   expiresAt?: string | null;
 }
 
+export interface RegisterVehicleInput extends VehicleInput {
+  /** Vehicle documents created against this vehicle (files uploaded afterwards). */
+  documents?: RegisterDocumentInput[];
+}
+
 /** Everything beyond the person that the transactional registration may carry. */
 export interface RegisterInput {
   payment: EnrollInput | null;
-  vehicles: VehicleInput[];
+  vehicles: RegisterVehicleInput[];
   documents: RegisterDocumentInput[];
 }
 
@@ -162,24 +167,37 @@ export class DriversService {
       };
     }
 
-    // Documents in the alta are DRIVER documents (vehicle docs live in the
-    // profile): validate every requirement is an active driver requirement
-    // before writing anything.
-    if (documents.length > 0) {
-      const { rows } = await this.app.db.query<{ id: number }>(
-        `SELECT id FROM requirements WHERE active AND applies_to = 'driver'`,
+    // Validate document requirements up front: top-level = DRIVER documents,
+    // per-vehicle = VEHICLE documents. Nothing is written until they all check.
+    const vehicleDocs = vehicles.flatMap((v) => v.documents ?? []);
+    if (documents.length > 0 || vehicleDocs.length > 0) {
+      const { rows } = await this.app.db.query<{ id: number; appliesTo: string }>(
+        `SELECT id, applies_to AS "appliesTo" FROM requirements WHERE active`,
       );
-      const valid = new Set(rows.map((r) => r.id));
+      const driverReqs = new Set(rows.filter((r) => r.appliesTo === 'driver').map((r) => r.id));
+      const vehicleReqs = new Set(rows.filter((r) => r.appliesTo === 'vehicle').map((r) => r.id));
       for (const doc of documents) {
-        if (!valid.has(doc.requirementId)) {
+        if (!driverReqs.has(doc.requirementId)) {
           throw this.app.httpErrors.badRequest(
             'Uno de los documentos no corresponde a un requerimiento de chofer vigente',
           );
         }
       }
+      for (const doc of vehicleDocs) {
+        if (!vehicleReqs.has(doc.requirementId)) {
+          throw this.app.httpErrors.badRequest(
+            'Uno de los documentos de vehículo no corresponde a un requerimiento vigente',
+          );
+        }
+      }
     }
 
-    let result: { userId: string; invoiceNumbers: string[]; documentIds: string[] };
+    let result: {
+      userId: string;
+      invoiceNumbers: string[];
+      documentIds: string[];
+      createdVehicles: { id: string; documentIds: string[] }[];
+    };
     try {
       result = await withTransaction(this.app.db, async (client) => {
         // The whole alta is transactional: no incremental step to resume (null).
@@ -188,19 +206,27 @@ export class DriversService {
           { ...person, registeredBy: adminId },
           null,
         );
+        const createdVehicles: { id: string; documentIds: string[] }[] = [];
         for (const vehicle of vehicles) {
-          await this.drivers.insertVehicle(client, userId, vehicle, adminId);
+          const vehicleId = await this.drivers.insertVehicle(client, userId, vehicle, adminId);
+          const vDocIds: string[] = [];
+          for (const doc of vehicle.documents ?? []) {
+            vDocIds.push(await this.drivers.insertDocument(client, { vehicleId }, doc, adminId));
+          }
+          createdVehicles.push({ id: vehicleId, documentIds: vDocIds });
         }
         const documentIds: string[] = [];
         for (const doc of documents) {
-          documentIds.push(await this.drivers.insertDocument(client, userId, doc, adminId));
+          documentIds.push(
+            await this.drivers.insertDocument(client, { driverId: userId }, doc, adminId),
+          );
         }
         let invoiceNumbers: string[] = [];
         if (money) {
           const enrolled = await this.enrollment.enrollOnClient(client, { ...money, driverId: userId });
           invoiceNumbers = enrolled.invoiceNumbers;
         }
-        return { userId, invoiceNumbers, documentIds };
+        return { userId, invoiceNumbers, documentIds, createdVehicles };
       });
     } catch (err) {
       const e = err as { code?: string; constraint?: string };
@@ -252,6 +278,7 @@ export class DriversService {
       ...detail,
       invoiceNumbers: result.invoiceNumbers,
       createdDocumentIds: result.documentIds,
+      createdVehicles: result.createdVehicles,
       primaryInvoiceId,
     };
   }
@@ -314,13 +341,13 @@ export class DriversService {
   }
 
   /** Wizard step 3: vehicle (admin-registered vehicles are approved directly). */
-  async addVehicle(driverId: string, input: VehicleInput, adminId: string): Promise<void> {
+  async addVehicle(driverId: string, input: VehicleInput, adminId: string): Promise<{ id: string }> {
     await this.assertDriver(driverId);
     try {
-      await this.app.db.query(
+      const { rows } = await this.app.db.query<{ id: string }>(
         `INSERT INTO vehicles
            (driver_id, vehicle_type_id, brand, model, year, color, plate, approval_status, registered_by)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, 'approved', $8)`,
+         VALUES ($1, $2, $3, $4, $5, $6, $7, 'approved', $8) RETURNING id`,
         [
           driverId,
           input.vehicleTypeId ?? null,
@@ -333,6 +360,42 @@ export class DriversService {
         ],
       );
       await this.audit(adminId, 'vehicle.registered', 'drivers', driverId, { plate: input.plate });
+      return { id: rows[0]!.id };
+    } catch (err) {
+      if ((err as { code?: string }).code === UNIQUE_VIOLATION) {
+        throw this.app.httpErrors.conflict('Ya existe un vehículo con esa placa');
+      }
+      throw err;
+    }
+  }
+
+  /** Edits a vehicle's data (from the profile / vehicle detail). */
+  async updateVehicle(
+    driverId: string,
+    vehicleId: string,
+    input: VehicleInput,
+    adminId: string,
+  ): Promise<void> {
+    await this.assertDriver(driverId);
+    try {
+      const { rowCount } = await this.app.db.query(
+        `UPDATE vehicles
+            SET vehicle_type_id = $3, brand = $4, model = $5, year = $6, color = $7, plate = $8,
+                updated_at = now()
+          WHERE id = $1 AND driver_id = $2`,
+        [
+          vehicleId,
+          driverId,
+          input.vehicleTypeId ?? null,
+          input.brand ?? null,
+          input.model ?? null,
+          input.year ?? null,
+          input.color ?? null,
+          input.plate?.trim().toUpperCase() || null,
+        ],
+      );
+      if (rowCount === 0) throw this.app.httpErrors.notFound('Vehículo no encontrado');
+      await this.audit(adminId, 'vehicle.updated', 'drivers', driverId, { vehicleId });
     } catch (err) {
       if ((err as { code?: string }).code === UNIQUE_VIOLATION) {
         throw this.app.httpErrors.conflict('Ya existe un vehículo con esa placa');
@@ -434,12 +497,19 @@ export class DriversService {
     return { ...result, primaryInvoiceId };
   }
 
-  /** Approval requires both wizard payments (doc v7: money, not papers). */
-  async approve(driverId: string, adminId: string): Promise<void> {
-    const detail = await this.getDetail(driverId);
-    if (detail['status'] !== 'pending') {
-      throw this.app.httpErrors.conflict('Solo se puede aprobar un afiliado pendiente');
-    }
+  /** Outstanding debt (arrears + penalty) in USD; 0 when the driver is clear. */
+  private debtTotal(detail: Record<string, unknown>): number {
+    const debt = detail['debt'] as { totalUsd?: string } | null;
+    return debt ? Number(debt.totalUsd ?? 0) : 0;
+  }
+
+  /**
+   * Shared gate for every path that moves a driver into `approved`: both wizard
+   * payments settled (membership `paid` + a tariff) and zero outstanding debt.
+   * Centralised so approve() and the PATCH status change cannot drift apart — a
+   * driver with arrears (or with no payment at all) must never reach `approved`.
+   */
+  private assertApprovable(detail: Record<string, unknown>): void {
     const membershipPayment = detail['membershipPayment'] as { status: string } | null;
     const subscription = detail['subscription'] as { billingPeriod: string } | null;
     if (!membershipPayment || membershipPayment.status !== 'paid' || !subscription) {
@@ -447,6 +517,21 @@ export class DriversService {
         'No se puede aprobar: faltan los pagos de membresía y tarifa (paso 4)',
       );
     }
+    if (this.debtTotal(detail) > 0) {
+      throw this.app.httpErrors.conflict(
+        'No se puede aprobar: el afiliado tiene deuda pendiente por saldar',
+      );
+    }
+  }
+
+  /** Approval requires both wizard payments (doc v7: money, not papers) and zero debt. */
+  async approve(driverId: string, adminId: string): Promise<void> {
+    const detail = await this.getDetail(driverId);
+    if (detail['status'] !== 'pending') {
+      throw this.app.httpErrors.conflict('Solo se puede aprobar un afiliado pendiente');
+    }
+    this.assertApprovable(detail);
+    const subscription = detail['subscription'] as { billingPeriod: string };
 
     const timezone = await this.getSetting('business_timezone', 'America/Caracas');
     const anchorWeekly =
@@ -533,14 +618,7 @@ export class DriversService {
     if (detail['status'] !== 'penalized') {
       throw this.app.httpErrors.conflict('Solo se puede reactivar a un afiliado penalizado');
     }
-    const { rows } = await this.app.db.query<{ n: string }>(
-      `SELECT count(*)::text AS n
-       FROM subscription_payments sp
-       JOIN driver_subscriptions ds ON ds.id = sp.driver_subscription_id
-       WHERE ds.driver_id = $1 AND sp.status = 'overdue'`,
-      [driverId],
-    );
-    if (rows[0]!.n !== '0') {
+    if (this.debtTotal(detail) > 0) {
       throw this.app.httpErrors.conflict(
         'No se puede reactivar: el afiliado todavía tiene deuda pendiente',
       );
@@ -583,7 +661,7 @@ export class DriversService {
    */
   async renewSubscription(
     driverId: string,
-    input: { periods: number; planId?: number } & PaymentMeta,
+    input: { periods: number; planId?: number; note?: string | null } & PaymentMeta,
     adminId: string,
   ): Promise<{
     invoiceNumbers: string[];
@@ -644,6 +722,7 @@ export class DriversService {
         periods: input.periods,
         invoices: result.invoiceNumbers,
         reactivated: reactivate,
+        note: input.note ?? null,
       });
       return { ...result, reactivated: reactivate, planChanged: false, primaryInvoiceId };
     }
@@ -677,6 +756,7 @@ export class DriversService {
       periods: input.periods,
       invoices: result.invoiceNumbers,
       mode,
+      note: input.note ?? null,
     });
     return {
       invoiceNumbers: result.invoiceNumbers,
@@ -786,6 +866,13 @@ export class DriversService {
         );
       }
       if (input.status !== undefined) {
+        // Forcing "approved" via PATCH (e.g. lifting a suspension) must honour the
+        // same gate as approve(): membership + tariff paid and zero debt. Without
+        // this the endpoint would bypass every approval rule (approve with arrears,
+        // or with no payment at all).
+        if (input.status === 'approved') {
+          this.assertApprovable(await this.getDetail(driverId));
+        }
         // Clear the pause anchor on any status change: the PATCH only sets
         // approved/suspended (pause/resume have their own endpoints), so leaving
         // `paused` this way must not leave an orphan `paused_at` behind.

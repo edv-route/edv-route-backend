@@ -20,6 +20,13 @@ export default fp(
       connectionTimeoutMillis: 10_000,
     });
 
+    // An idle client can drop (the Supabase pooler recycles connections). Without
+    // this listener the pool emits an *unhandled* 'error' event that crashes the
+    // whole process; here we log it and let pg discard the dead connection.
+    pool.on('error', (err) => {
+      app.log.error({ err }, 'idle database client error (connection dropped)');
+    });
+
     // Fail fast: verify connectivity on boot instead of on first request
     await pool.query('SELECT 1');
     app.log.info('database connection established');

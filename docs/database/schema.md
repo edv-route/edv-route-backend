@@ -293,8 +293,10 @@ aspirante rechazado sí (rechazo = reembolso registrado).
 | `created_at` | timestamptz | no | `now()` | — |
 
 - La factura **agrupa pagos**: sus "líneas" son los pagos que la referencian vía `invoice_id`.
-  En el wizard, la **factura #1 = membresía + primer período de tarifa**; cada período
-  adelantado adicional emite su propia factura.
+  En el alta/enroll, **una sola factura agrupa membresía + todos los períodos prepagados**
+  (decisión 2026-07-28: pagar N semanas por adelantado = 1 factura por el total; cada semana
+  sigue siendo su propia fila `subscription_payments` de cobertura). ⚠️ `renew`/`changePlan`
+  todavía emiten una factura por período (pendiente unificar).
 - **Anulación con rastro**: el reembolso marca `voided` (fecha + admin) y **conserva el
   número** — sin huecos en la numeración.
 - Es un comprobante **interno, no fiscal** (⚠️ la facturación SENIAT es un análisis aparte).
@@ -452,6 +454,23 @@ fuera y el comprobante se adjunta después (Pieza 2, pendiente). Reutiliza Supab
 imágenes (QR), no un proveedor nuevo.
 
 ## Tablas futuras (diseñadas, no implementadas)
+
+### `vehicle_images` — fotos del vehículo (máx 3)
+
+| Columna | Tipo | Null | Default | Descripción |
+|---|---|---|---|---|
+| `id` | uuid | no | `gen_random_uuid()` | PK |
+| `vehicle_id` | uuid | no | — | FK → `vehicles.id` (CASCADE) |
+| `file_url` | text | no | — | Referencia (path) en el bucket privado de Supabase Storage; se lee con URL firmada |
+| `position` | smallint | no | — | Orden 1-3. **CHECK** `position BETWEEN 1 AND 3` |
+| `uploaded_by` | uuid | sí | — | FK → `admins.id` (SET NULL) |
+| `created_at` | timestamptz | no | `now()` | — |
+
+**UNIQUE `(vehicle_id, position)`**: cada vehículo tiene a lo sumo 3 fotos, ordenadas; el UNIQUE
+también acota el conteo sin un contador. Solo JPG/PNG (validado por magic number). Migración
+`1752310000000_vehicle-images`. Endpoints en `/drivers/:id/vehicles/:vehicleId/images`.
+
+---
 
 Del modelo v7 quedan pendientes para los módulos siguientes: `clients`, `trip_requests`,
 `trip_offers`, `trips`, `trip_route_points`, `ratings`, `fare_rules`, `time_multipliers`,

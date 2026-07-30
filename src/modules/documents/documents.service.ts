@@ -90,6 +90,27 @@ export class DocumentsService {
     return { url, expiresIn: SIGNED_URL_TTL_SECONDS };
   }
 
+  /** Removes a document record and its stored file (best-effort on the file). */
+  async deleteDocument(documentId: string, adminId: string): Promise<void> {
+    const document = await this.requireDocument(documentId);
+    await this.documents.delete(documentId);
+    if (document.fileUrl && this.app.storage) {
+      await this.app.storage.remove(document.fileUrl).catch((err: unknown) => {
+        this.app.log.warn(
+          { err, path: document.fileUrl },
+          'failed to remove document file from storage',
+        );
+      });
+    }
+    await writeAudit(this.app.db, {
+      actorAdminId: adminId,
+      eventType: 'document.deleted',
+      entity: 'documents',
+      entityId: documentId,
+      data: { driverId: document.driverId },
+    });
+  }
+
   private requireStorage(): StorageProvider {
     if (!this.app.storage) {
       throw this.app.httpErrors.serviceUnavailable(

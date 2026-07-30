@@ -79,6 +79,16 @@ const documentsRoutes: FastifyPluginAsync = async (app) => {
   app.get<{ Params: { id: string } }>('/:id/file', { schema: { params: documentIdParam } }, async (req) =>
     service.getFileUrl(req.params.id),
   );
+
+  /** Removes a document (and its stored file). Used from the profile and vehicle detail. */
+  app.delete<{ Params: { id: string } }>(
+    '/:id',
+    { schema: { params: documentIdParam } },
+    async (req, reply) => {
+      await service.deleteDocument(req.params.id, req.user.sub);
+      return reply.code(204).send();
+    },
+  );
 };
 
 export default documentsRoutes;

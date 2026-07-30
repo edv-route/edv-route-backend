@@ -108,6 +108,15 @@ export async function runDebtEngineTick(db: pg.Pool): Promise<DebtTickResult> {
              AND x.charge_kind = 'period'
              AND x.status <> 'refunded'
          )
+         -- Never bill a week already covered by paid coverage. The engine must
+         -- reason about coverage (paidUntil), NOT exact Monday alignment: an
+         -- advance anchored to any weekday (approved while the engine was off) is
+         -- honoured, so no phantom charge is emitted. Root-cause fix 2026-07-29.
+         AND (m.next_start AT TIME ZONE $1) >= COALESCE(
+           (SELECT max(cov.period_end) FROM subscription_payments cov
+            WHERE cov.driver_subscription_id = ds.id
+              AND cov.status = 'paid' AND cov.charge_kind = 'period'),
+           (m.next_start AT TIME ZONE $1))
        RETURNING id, driver_subscription_id
      )
      SELECT i.id, ds.driver_id AS "driverId"
@@ -150,6 +159,13 @@ export async function runDebtEngineTick(db: pg.Pool): Promise<DebtTickResult> {
        FROM subscription_payments sp
        JOIN driver_subscriptions ds ON ds.id = sp.driver_subscription_id
        WHERE sp.status = 'overdue'
+         -- A covered period charge is not debt (defence in depth): only count an
+         -- overdue week whose period is NOT within the paid coverage. Penalties
+         -- always count. Root-cause fix 2026-07-29.
+         AND (sp.charge_kind <> 'period' OR sp.period_start >= COALESCE(
+               (SELECT max(cov.period_end) FROM subscription_payments cov
+                WHERE cov.driver_subscription_id = sp.driver_subscription_id
+                  AND cov.status = 'paid' AND cov.charge_kind = 'period'), sp.period_start))
        GROUP BY ds.driver_id
      ), target AS (
        SELECT d.user_id,

@@ -63,6 +63,10 @@ export class DocumentsRepository {
     await this.db.query('UPDATE documents SET file_url = $2 WHERE id = $1', [id, fileUrl]);
   }
 
+  async delete(id: string): Promise<void> {
+    await this.db.query('DELETE FROM documents WHERE id = $1', [id]);
+  }
+
   async list(opts: DocumentListFilters): Promise<DocumentListResult> {
     const where: string[] = [];
     const values: unknown[] = [];

@@ -7,6 +7,7 @@ import {
   type DocumentInput,
   type EnrollInput,
   type RegisterDocumentInput,
+  type RegisterVehicleInput,
   type VehicleInput,
 } from './drivers.service.js';
 
@@ -71,7 +72,7 @@ const registerBody = {
       additionalProperties: false,
       properties: {
         planId: { type: 'integer', minimum: 1 },
-        periods: { type: 'integer', minimum: 1, maximum: 52 },
+        periods: { type: 'integer', minimum: 1, maximum: 520 },
         ...paymentMetaProps,
       },
     },
@@ -88,6 +89,19 @@ const registerBody = {
           year: { type: ['integer', 'null'], minimum: 1950, maximum: 2100 },
           color: { type: ['string', 'null'], maxLength: 30 },
           plate: { type: ['string', 'null'], maxLength: 15 },
+          documents: {
+            type: 'array',
+            maxItems: 30,
+            items: {
+              type: 'object',
+              required: ['requirementId'],
+              additionalProperties: false,
+              properties: {
+                requirementId: { type: 'integer', minimum: 1 },
+                expiresAt: { type: ['string', 'null'], format: 'date' },
+              },
+            },
+          },
         },
       },
     },
@@ -160,7 +174,7 @@ const driversRoutes: FastifyPluginAsync = async (app) => {
   app.post<{
     Body: CreateDriverInput & {
       payment?: EnrollInput | null;
-      vehicles?: VehicleInput[];
+      vehicles?: RegisterVehicleInput[];
       documents?: RegisterDocumentInput[];
     };
   }>(
@@ -219,8 +233,40 @@ const driversRoutes: FastifyPluginAsync = async (app) => {
       },
     },
     async (req, reply) => {
-      await service.addVehicle(req.params.id, req.body, req.user.sub);
-      return reply.code(201).send({ ok: true });
+      const vehicle = await service.addVehicle(req.params.id, req.body, req.user.sub);
+      return reply.code(201).send(vehicle);
+    },
+  );
+
+  app.patch<{ Params: { id: string; vehicleId: string }; Body: VehicleInput }>(
+    '/:id/vehicles/:vehicleId',
+    {
+      schema: {
+        params: {
+          type: 'object',
+          required: ['id', 'vehicleId'],
+          properties: {
+            id: { type: 'string', format: 'uuid' },
+            vehicleId: { type: 'string', format: 'uuid' },
+          },
+        },
+        body: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            vehicleTypeId: { type: ['integer', 'null'], minimum: 1 },
+            brand: { type: ['string', 'null'], maxLength: 60 },
+            model: { type: ['string', 'null'], maxLength: 60 },
+            year: { type: ['integer', 'null'], minimum: 1950, maximum: 2100 },
+            color: { type: ['string', 'null'], maxLength: 30 },
+            plate: { type: ['string', 'null'], maxLength: 15 },
+          },
+        },
+      },
+    },
+    async (req, reply) => {
+      await service.updateVehicle(req.params.id, req.params.vehicleId, req.body, req.user.sub);
+      return reply.code(200).send({ ok: true });
     },
   );
 
@@ -259,7 +305,7 @@ const driversRoutes: FastifyPluginAsync = async (app) => {
           additionalProperties: false,
           properties: {
             planId: { type: 'integer', minimum: 1 },
-            periods: { type: 'integer', minimum: 1, maximum: 52 },
+            periods: { type: 'integer', minimum: 1, maximum: 520 },
             ...paymentMetaProps,
           },
         },
@@ -273,7 +319,7 @@ const driversRoutes: FastifyPluginAsync = async (app) => {
 
   app.post<{
     Params: { id: string };
-    Body: { periods: number; planId?: number } & {
+    Body: { periods: number; planId?: number; note?: string | null } & {
       paymentMethodId?: number | null;
       reference?: string | null;
       payerBank?: string | null;
@@ -288,9 +334,11 @@ const driversRoutes: FastifyPluginAsync = async (app) => {
           required: ['periods'],
           additionalProperties: false,
           properties: {
-            periods: { type: 'integer', minimum: 1, maximum: 52 },
+            periods: { type: 'integer', minimum: 1, maximum: 520 },
             // Optional: a different plan turns the renewal into a plan change
             planId: { type: 'integer', minimum: 1 },
+            // Optional note (constancia), e.g. "part by transfer, rest in cash"
+            note: { type: ['string', 'null'], maxLength: 300 },
             // Optional payment details (Pieza 2): stamped on the renewal's invoice
             ...paymentMetaProps,
           },

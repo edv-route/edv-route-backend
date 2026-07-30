@@ -13,7 +13,7 @@
 |---|---|---|
 | 1 | **Requerimientos por origen**: `is_required` solo bloquea en el registro **desde la app** (chofer y vehículo); el registro por admin puede omitir cualquier documento (queda visible como incompleto, no bloqueante) | El admin tiene los papeles en mano o criterio para postergar |
 | 2 | **Paso 4 con elección**: pagar la tarifa básica (1 período) o **adelantar N períodos** del plan elegido — el adelanto ×N existente, disponible desde el registro | Confirmación del flujo |
-| 3 | **NUEVA `invoices`**: facturación **uniforme** (todo pago registrado emite factura), como **comprobante interno** (no fiscal), con **anulación con rastro** (`voided`). La factura agrupa pagos: en el wizard, la #1 = membresía + primera tarifa; una factura por cada período adelantado (10 semanas → 10 facturas) | Requisito del negocio |
+| 3 | **NUEVA `invoices`**: facturación **uniforme** (todo pago registrado emite factura), como **comprobante interno** (no fiscal), con **anulación con rastro** (`voided`). La factura agrupa pagos: en el alta, **una sola factura agrupa membresía + todos los períodos prepagados** (decisión 2026-07-28; antes: 10 semanas → 10 facturas). `renew`/`changePlan` aún emiten una por período (pendiente unificar) | Requisito del negocio |
 
 **Conteo v7: 33 tablas en 8 dominios** (32 + invoices) + 1 vista.
 
@@ -48,8 +48,9 @@ Paso 2  Documentos requeridos   → documents contra requirements
 Paso 3  Datos del vehículo      → vehicles (+ documentos; misma regla por origen)
 Paso 4  Pagos                   → membresía + tarifa del plan elegido
                                    · elección: tarifa básica (1 período) o ADELANTAR N períodos
-                                   · FACTURAS: la #1 agrupa membresía + tarifa período 1;
-                                     una factura por cada período adicional (10 semanas → 10 facturas)
+                                   · FACTURAS: UNA sola factura agrupa membresía + todos los
+                                     períodos prepagados (2026-07-28); cada semana sigue como
+                                     su propia fila de cobertura subscription_payments
                                    · la tarifa queda 'scheduled': arranca al aprobarse
 → [pending] → admin aprueba (exige pagos) → MIEMBRO + tarifa corre → [operativo]
 Rechazo → reembolso registrado de ambos pagos + facturas ANULADAS (voided, conservan número)
@@ -105,7 +106,7 @@ Backend Fastify único punto de entrada · usuarios en Supabase Auth (email veri
 
 ### Facturación (v7 — nueva)
 
-31. **Facturación uniforme**: toda recepción de pago registrada emite su factura (`invoices`), que **agrupa pagos** (sus líneas son los pagos que la referencian). En el wizard: factura #1 = membresía + tarifa período 1; una factura por período adicional.
+31. **Facturación uniforme**: toda recepción de pago registrada emite su factura (`invoices`), que **agrupa pagos** (sus líneas son los pagos que la referencian). En el alta/enroll: **una sola factura por el total** (membresía + todos los períodos prepagados, decisión 2026-07-28); cada semana sigue como una fila de cobertura. ⚠️ `renew`/`changePlan` aún emiten una factura por período (pendiente unificar).
 32. **Comprobante interno, no fiscal**: numeración secuencial propia. ⚠️ Si el negocio requiere factura fiscal (SENIAT: numeración autorizada, imprenta digital/máquina fiscal), es un análisis aparte con el contador — el modelo no lo cubre aún y el nombre en pantalla debe ser honesto ("recibo") mientras tanto.
 33. **Anulación con rastro**: reembolsos anulan la factura (`voided` + fecha + admin) conservando su número — sin huecos de numeración.
 

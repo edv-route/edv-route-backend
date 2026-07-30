@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import pg from 'pg';
 import { runDebtEngineTick } from '../src/plugins/debt-scheduler.js';
 import { EnrollmentRepository } from '../src/modules/drivers/enrollment.repository.js';
+import { DriversRepository } from '../src/modules/drivers/drivers.repository.js';
 
 /**
  * Integration tests for the debt & penalty engine (design v8). They run the
@@ -14,9 +15,11 @@ import { EnrollmentRepository } from '../src/modules/drivers/enrollment.reposito
  */
 
 let pool: pg.Pool;
+let repo: DriversRepository;
 
 before(() => {
   pool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
+  repo = new DriversRepository(pool);
 });
 after(async () => {
   await pool.end();
@@ -68,6 +71,48 @@ async function addDebtWeek(subId: string, weeksAgo: number, kind: 'period' | 'pe
   );
   return rows[0]!.id;
 }
+
+/** A PAID period charge from `fromExpr` for `days` days — the prepaid coverage. */
+const addPaid = (subId: string, fromExpr: string, days: number): Promise<unknown> =>
+  pool.query(
+    `INSERT INTO subscription_payments
+       (driver_subscription_id, period_start, period_end, amount_usd, status, charge_kind)
+     VALUES ($1, ${fromExpr}, ${fromExpr} + make_interval(days => $2), 10, 'paid', 'period')`,
+    [subId, days],
+  );
+
+/** A tariff charge in an arbitrary window/status (period unless stated). */
+const addCharge = (
+  subId: string,
+  startExpr: string,
+  endExpr: string,
+  status: string,
+  kind: 'period' | 'penalty' = 'period',
+): Promise<unknown> =>
+  pool.query(
+    `INSERT INTO subscription_payments
+       (driver_subscription_id, period_start, period_end, amount_usd, status, charge_kind)
+     VALUES ($1, ${startExpr}, ${endExpr}, 10, $2, $3)`,
+    [subId, status, kind],
+  );
+
+const countPendingWeeks = (subId: string): Promise<string> =>
+  pool
+    .query<{ n: string }>(
+      `SELECT count(*)::text AS n FROM subscription_payments
+       WHERE driver_subscription_id = $1 AND status = 'pending' AND charge_kind = 'period'`,
+      [subId],
+    )
+    .then((r) => r.rows[0]!.n);
+
+interface DebtView {
+  totalUsd: string;
+  weeksOwed: number;
+  penaltyCount: number;
+  capWeeks: number;
+  charges: unknown[];
+}
+type UpcomingView = { amountUsd: string; periodStart: string; periodEnd: string } | null;
 
 test('flag OFF: the engine is inert (cobro unchanged)', async () => {
   await setFlag(false);
@@ -307,5 +352,75 @@ test('ciclo v8 anclado: emite el lunes correcto (monto ok), idempotente, deriva 
     await setFlag(false);
     await pool.query(`UPDATE app_settings SET value = '5'::jsonb WHERE key = 'billing_day_of_week'`);
     await pool.query(`UPDATE app_settings SET value = '18'::jsonb WHERE key = 'billing_hour'`);
+  }
+});
+
+// --- Coverage-aware debt model (root-cause fix 2026-07-29) ---
+
+test('engine: does not bill a week already covered by paid coverage (no phantom charge)', async () => {
+  await setFlag(true);
+  // Deterministic emission moment: Monday 00:00 so emit_at is always in the past.
+  await pool.query(`UPDATE app_settings SET value = '1'::jsonb WHERE key = 'billing_day_of_week'`);
+  await pool.query(`UPDATE app_settings SET value = '0'::jsonb WHERE key = 'billing_hour'`);
+  const covered = await makeDriver();
+  const bare = await makeDriver();
+  try {
+    // Covered driver: coverage runs 30 days out (well past next Monday).
+    await addPaid(covered.subId, 'now()', 30);
+    await runDebtEngineTick(pool);
+    assert.equal(await countPendingWeeks(covered.subId), '0', 'una semana cubierta NO se cobra');
+    assert.equal(await countPendingWeeks(bare.subId), '1', 'sin cobertura SÍ se cobra la próxima semana');
+  } finally {
+    await removeDriver(covered.driverId);
+    await removeDriver(bare.driverId);
+    await setFlag(false);
+    await pool.query(`UPDATE app_settings SET value = '5'::jsonb WHERE key = 'billing_day_of_week'`);
+    await pool.query(`UPDATE app_settings SET value = '18'::jsonb WHERE key = 'billing_hour'`);
+  }
+});
+
+test('findDetail: splits overdue DEBT from the not-yet-due UPCOMING charge, exposes capWeeks', async () => {
+  const { driverId, subId } = await makeDriver();
+  try {
+    // An overdue (past-due, uncovered) week = real debt (red band).
+    await addCharge(subId, `now() - interval '2 days'`, `now() + interval '5 days'`, 'overdue');
+    // A pending (future, uncovered) week = the upcoming charge (amber band).
+    await addCharge(subId, `now() + interval '3 days'`, `now() + interval '10 days'`, 'pending');
+
+    const detail = (await repo.findDetail(driverId))!;
+    const debt = detail['debt'] as DebtView;
+    const upcoming = detail['upcoming'] as UpcomingView;
+
+    assert.equal(debt.weeksOwed, 1, 'la deuda cuenta solo la semana vencida');
+    assert.equal(debt.charges.length, 1, 'debt.charges = solo el cargo vencido');
+    assert.equal(debt.capWeeks, 2, 'expone el tope de deuda (advertencia de suspensión)');
+    // debt.totalUsd is what the approval debt-lock reads: > 0 blocks approve.
+    assert.ok(Number(debt.totalUsd) > 0, 'hay deuda vencida -> el candado de aprobación bloquearía');
+    assert.ok(upcoming, 'el cargo pendiente aparece como próximo cobro');
+    assert.equal(upcoming!.amountUsd, '10.00', 'monto del próximo cobro');
+  } finally {
+    await removeDriver(driverId);
+  }
+});
+
+test('findDetail: a charge covered by an advance is hidden from BOTH debt and upcoming (Ruth case)', async () => {
+  const { driverId, subId } = await makeDriver();
+  try {
+    // Coverage paid 30 days out (advance).
+    await addPaid(subId, 'now()', 30);
+    // Phantom charges INSIDE the covered window (period_start < paidUntil).
+    await addCharge(subId, `now() + interval '3 days'`, `now() + interval '10 days'`, 'pending');
+    await addCharge(subId, `now() - interval '1 days'`, `now() + interval '6 days'`, 'overdue');
+
+    const detail = (await repo.findDetail(driverId))!;
+    const debt = detail['debt'] as DebtView;
+    const upcoming = detail['upcoming'] as UpcomingView;
+
+    assert.equal(debt.weeksOwed, 0, 'nada vencido: la semana ya está cubierta');
+    assert.equal(debt.charges.length, 0, 'sin deuda visible');
+    assert.equal(Number(debt.totalUsd), 0, 'sin deuda -> el candado de aprobación NO bloquearía');
+    assert.equal(upcoming, null, 'sin próximo cobro: ya está pagado por adelantado');
+  } finally {
+    await removeDriver(driverId);
   }
 });

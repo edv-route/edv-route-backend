@@ -484,3 +484,83 @@ semanal y validar el ciclo con reloj real.
 | `CORS_ORIGIN` como **lista de orígenes exactos separados por coma sin espacios** | El backend hace `split(',')` sin `trim`: un espacio deja el origin como `" https://…"` y rompe el CORS. Mejora futura anotada: `trim()` |
 | Los **valores** de las variables (`DATABASE_URL`, `JWT_SECRET`, claves de Supabase) viven solo en Railway y en el `.env` local | Regla de oro #3: credenciales nunca versionadas. `.env.example` documenta los nombres |
 | **Gotcha de plataforma** documentado: la cola de build de Railway (región **US West**) se atascó en `Queued` >20 min sin ser culpa del proyecto (incidencia transitoria de GitHub + región degradada); se resolvió **recreando el servicio** | Que un despliegue lento no se confunda con un error de configuración; salidas: cambiar región, recrear servicio, o soporte |
+
+## 2026-07-28 — 🎨 Rediseño del perfil del afiliado (pestañas + documentos/fotos por vehículo)
+
+> Rediseño grande de `driver-detail` (frontend) + soporte backend. Todo compila; typecheck +
+> 7/7 tests OK. **No pusheado ni desplegado aún.** Estado completo en la memoria de sesión.
+
+| Decisión | Motivo |
+|---|---|
+| Perfil en **3 pestañas** (Datos personales / Vehículos / Documentos) a ancho completo | Las 3 tarjetas lado a lado quedaban apretadas; cada sección necesita espacio |
+| **Documentos separados por dueño**: la pestaña Documentos es solo del chofer; los de vehículo viven en la **pantalla de detalle del vehículo** (ruta nueva `/drivers/:id/vehicles/:vehicleId`) | El modelo ya soportaba `documents.driver_id` XOR `vehicle_id`; solo faltaba la UI (era "future") |
+| Tabla **`vehicle_images`** (1-3 por vehículo, `position` CHECK 1-3 + UNIQUE) para las fotos; binario en el bucket privado, solo la referencia en Postgres | Fila por imagen (orden, borrado individual, URL firmada propia); mismo patrón que documentos |
+| **`insertDocument` parametrizado** (dueño chofer XOR vehículo); el `register` transaccional acepta `vehicles[].documents[]` anidados y responde `createdVehicles:[{id,documentIds}]` | Crear vehículos con sus documentos en la misma transacción del alta; los archivos se suben después contra los ids devueltos |
+| **Borrar documentos** (`DELETE /documents/:id`: fila + archivo) y **editar vehículo** (`PATCH /drivers/:id/vehicles/:vehicleId`) | Faltaban; no se podían quitar documentos requeridos ni corregir datos de un vehículo |
+| CORS del backend ahora declara `methods` incluyendo **DELETE** | El default no lo permitía en el preflight; el primer endpoint DELETE del proyecto lo destapó |
+| **`pool.on('error')`** en `db.ts` | El pooler de Supabase recicla conexiones idle; sin el listener el proceso crasheaba y colgaba las peticiones |
+| Modal de agregar vehículo (perfil) extraído a **`features/drivers/vehicle-form`** (2 columnas: datos+fotos · documentos) | Límite de 1000 líneas + reutilización; diseño estilo Flowbite Pro |
+| **Wizard (paso Vehículo) → MODAL** `features/drivers/vehicle-draft-modal` (captura pura, sin HTTP; emite `VehicleDraft`; edita vía `initial`). Paso 3 = lista + tile "+ Agregar vehículo" + modal | Decisión de Luis: ocupa menos espacio y permite varios vehículos. **No persiste nada** — todo va en la transacción de `register()`, imposible un vehículo sin chofer. Object URLs de fotos con dueño claro (modal crea/revoca; al confirmar se ceden al wizard) |
+| **Wizard (paso Documentos del chofer) → MODAL** `features/drivers/document-draft-modal` (captura pura; emite `DocDraft`; edita vía `initial` + `takenIds`; solo requerimientos `appliesTo='driver'`). Paso 2 = lista + tile "+ Agregar documento" + modal | Mismo patrón que vehículos por consistencia; ocupa menos espacio. El perfil ya tenía su modal (persiste directo con `driverId`, como `vehicle-form`) |
+| **Fecha de vencimiento fuera de la UI** de documentos (wizard + modal del perfil + card): sin campo "Vence", sin "Sin vencimiento" ni badge "Vencido". El `register`/`addDocument` mandan `expiresAt: null` | Decisión de negocio: se elimina el vencimiento (queda solo fecha de registro). **No destructivo aún**: la columna `expires_at`, el `document-scheduler`, las alertas del dashboard y la vista global siguen intactos → **Fase 5** (migración `dropColumn`) pendiente. [Estado del esfuerzo](../proposals/rediseno-perfil-afiliado/README.md) |
+| Flag **`environment.unlockSteps`** (dev `true` / prod `false` vía `environment.prod.ts` + fileReplacements): salta el gate del paso 1 del wizard | Solo para visualizar pasos en desarrollo; imposible que llegue a producción |
+
+## 2026-07-28 — 🧾 Paso de pago del alta: 1 factura por el total + validación condicional
+
+> Rediseño del paso 4 del wizard y del cobro del alta. Backend: typecheck + **7/7 tests** OK
+> (incluye enroll/anclaje). Frontend: build de producción limpio. Cierra los puntos 1–4 de la
+> fase "ahora"; el resto (motor de deuda, emitida≠pagada) es v8.
+
+| Decisión | Motivo |
+|---|---|
+| **Una sola factura por el cobro adelantado** (`enrollOnClient`): membresía + **todos** los períodos = 1 factura por el total, en vez de "la #1 + una por cada período extra" | Pedido de Luis: pagar N semanas por adelantado = **un solo pago del total**, no N facturas. La cobertura sigue en N filas `subscription_payments` (una por semana) → el ciclo de tarifas las consume igual. **`reject` y `resume` no se afectan** (anulan por `driver_id` / operan por fila de pago) |
+| ⚠️ **Alcance:** el cambio es **solo `enrollOnClient`** (alta/enroll). `renew`/`changePlan` (cobros del perfil) **siguen emitiendo una factura por período** — pendiente unificarlos para consistencia | Luis acotó a la pantalla de registro; no tocar más flujos de dinero sin confirmar |
+| **Tarifa preseleccionada y bloqueada** si es la única activa; **card "Resumen de cobro"** (membresía + tarifa) con **total prominente** (`$membresía + $tarifa × N`) | Menos fricción y el total del cobro visible de un vistazo |
+| **Botón "Registrar y facturar" con validación condicional por método** (en `payment-capture.complete`): método + comprobante siempre; **referencia** salvo `Contactar al administrador`; **banco emisor** solo en Transferencia/Pago Móvil | No facturar sin los datos del pago, sin exigir campos que no aplican a cada método. El wizard lo consume por template-ref (`#pc`); reutilizable por los 4 cobros |
+| **`paidUntil`** nuevo en `GET /drivers/:id` (subscription) = `MAX(period_end)` de períodos pagados; la card Tarifa muestra **"Pagado hasta {fecha}" + "Próxima factura en X días"** y quita "N períodos pagados" | `current_period_end` es el fin del período **en curso**, no de la cobertura prepagada; para "pagado hasta" real hace falta el último período |
+| **Historial de pagos agrupado por factura**: 1 línea = el cobro real (membresía + semanas = un total) con su fecha; el detalle muestra el desglose + factura/comprobante | El chofer hizo **un** pago; verlo como N líneas confunde. Es agrupación de presentación (no toca datos) |
+
+## 2026-07-29 — 🛡️ Normalización de estados del perfil + candado de deuda en la aprobación
+
+> Estados visibles del perfil reordenados y la regla "sin aprobar con deuda" hecha cumplir en el
+> backend. Backend: typecheck + **7/7 tests** OK. Frontend: build de producción limpio. Solo local,
+> sin pushear.
+
+| Decisión | Motivo |
+|---|---|
+| **Badge junto al nombre = solo disponibilidad** (`Activo`/`Inactivo`), nunca el ciclo de vida. `Activo` solo si `is_available` **y** el chofer opera (`approved`/`overdue`); el resto (pendiente/pausado/penalizado/suspendido/rechazado) = `Inactivo` | Los estados salían duplicados y contradictorios (p. ej. "Activo" verde junto a "Vencida" rojo). El ciclo de vida vive **solo** en la card Estado |
+| **Card Estado = hogar único del ciclo de vida**, con descripción que explica qué es y **de dónde viene** (acción del admin vs. automático del motor de deuda). `pending` condicional: "faltan pagos" vs. "pagos completos, listo para aprobar" | Que el admin entienda el estado sin ambigüedad; el copy anterior mentía ("aún faltan sus pagos" a un chofer que ya había pagado) |
+| **Candado de deuda en la aprobación** (`assertApprovable`): membresía `paid` + tarifa + **deuda 0**. Aplica a `POST /approve` **y** a `PATCH /:id` con `status:'approved'`; `reactivate` unifica el criterio de deuda a `pending`+`overdue` (antes solo `overdue`) | Antes `approve()` no miraba deuda (seguro solo por efecto colateral de que el scheduler no cobra a `pending`) y `PATCH` **no validaba nada** → se podía forzar `approved` con deuda o sin pagos. Regla cerrada: primero el dinero, después el estado |
+| **Quitar una suspensión a un chofer con deuda queda BLOQUEADO** (409), no lo pasa a mora | Decisión de Luis (opción A): plata primero. Solo afecta ese caso puntual; el resto de aprobaciones no cambia |
+| **Modal de cobro renombrado**: "Renovar tarifa" → **"Generar pago"** (y "Pagar y reactivar" si la tarifa está vencida); botón "Cobrar y facturar" → **"Pagar"** | "Renovar" no describía pagar semanas por adelantado ni cambiar de plan; nombre general y claro |
+| **Bloque de pago del modal de cobro = requerido** (`[optional]="false"` en `payment-capture`): botón "Pagar" **bloqueado hasta `complete`** (mismo criterio del wizard). Enroll y pago de deuda **no se tocan** | Evitar pagos incompletos. El input solo cambia el rótulo y el gate en este modal, sin afectar los otros cobros |
+| **Tarifa preseleccionada y bloqueada cuando es la única activa** en el modal de cobro (además del wizard, decisión 2026-07-28) | Nada que elegir = candado; menos fricción |
+
+## 2026-07-29 — 🐛 Motor de deuda: cargos fantasma por desajuste de anclaje (fix de raíz, !DEEP-DEBUG)
+
+> Bug en producción: a un chofer con semanas pagadas por adelantado le aparecía "Deuda pendiente"
+> por una semana ya cubierta (y el lunes siguiente lo habría puesto "En mora" en falso). Investigado
+> con !DEEP-DEBUG. Backend: typecheck + **7/7 tests** OK. Falta correr `db:purge-phantom --apply`.
+
+| Decisión | Motivo |
+|---|---|
+| **La deuda se define por COBERTURA, no por coincidencia de fecha.** Un cargo de tarifa (`period`) cuenta como deuda solo si su semana **no** está cubierta por la cobertura pagada (`paidUntil`); las penalizaciones siempre cuentan. Aplicado en la subconsulta `debt` (`drivers.repository.ts`) **y** en la derivación de estado del motor (`debt-scheduler.ts`, paso 4) | Causa raíz: el motor emite cargos anclados a **lunes**, pero las coberturas aprobadas con el motor apagado quedan ancladas a la **fecha de registro**. La guardia comparaba `period_start` exacto → no reconocía el adelanto → cobraba semanas ya pagadas. Ahora el sistema tolera cualquier anclaje |
+| **El motor no emite cargos para semanas ya cubiertas** (`debt-scheduler.ts`, paso 1): guardia de cobertura (`next_start >= paidUntil`) sumada a la idempotencia por `period_start` | Corta la generación de fantasmas de raíz, sin depender de que todo esté anclado a lunes |
+| **Script `db:purge-phantom`** (dry-run + `--apply`, transaccional y auditado): elimina los cargos fantasma ya emitidos (`period`, `pending`/`overdue`, **sin factura**, cubiertos por adelantos) | Limpia los datos ya afectados. No toca filas con factura ni pagadas → no borra dinero (regla 7) |
+| **`db:reanchor` deja de ser prerequisito** para tener el motor encendido | El motor ya razona por cobertura; el re-anclaje pasa a ser opcional (consistencia), no un bloqueante |
+
+## 2026-07-29 — 💳 Ciclo de deuda/cobro en el perfil: próximo cobro vs. deuda + adelanto
+
+> Presentación del ciclo semanal tal como lo modela el motor: `pending` = aviso de cobro (viernes
+> 18:00 → domingo), `overdue` = deuda vencida (lunes 00:00+). Backend: typecheck + **10/10 tests**
+> (3 nuevos: guardia de cobertura del motor + división deuda/próximo cobro en `findDetail` + caso
+> Ruth). Frontend: build limpio. El pago sigue siendo **todo-o-nada** (sin abono parcial, decisión de Luis).
+
+| Decisión | Motivo |
+|---|---|
+| **Dos letreros EXCLUYENTES**: banda **roja "Deuda pendiente"** solo si hay cargos **vencidos** (`overdue`); banda **ámbar "Próximo cobro"** solo si está solvente y el cobro del próximo lunes ya se emitió (`pending`, viernes 18:00). Si debe, manda el rojo (nunca los dos) | El mismo cargo se veía como "deuda" antes de vencer. `pending`=aviso / `overdue`=deuda ya lo distingue el motor; faltaba separarlo en pantalla |
+| **`GET /drivers/:id` divide `debt` (vencido: `overdue` + penalización, con `capWeeks`) y `upcoming` (el `pending` no vencido)** | Cada banda muestra lo suyo sin mezclar; `capWeeks` alimenta la advertencia de suspensión |
+| **Advertencia de suspensión** en la banda roja cuando `weeksOwed >= capWeeks` y hay un `upcoming`: *"Paga antes del lunes 00:00 o la cuenta será suspendida"* | El próximo lunes cruzaría el tope → penalización; hay que avisar en la ventana viernes→domingo |
+| **"Adelantar pago"** (solvente) y **"Registrar pago"** (deuda) usan el **mismo** flujo (external-payment): saldan el/los cargos que el motor ya preparó, **sin crear filas nuevas** | Evita cobros dobles; coherente con el motor. El modal adapta el título (Adelantar/Registrar) |
+| **Modal de cobro con desglose**: *X semanas × $Y = $Z* + lista de cada semana con fechas + penalización | Que el admin vea qué semanas se saldan y el equivalente en semanas |
+| **Campo "Motivo / constancia (opcional)" también en "Generar pago"** (renovación); `note` opcional nuevo en `POST /subscription/renew` (guardado en auditoría) | Pagos mixtos ("parte por transferencia, resto en efectivo") necesitan dejar constancia también al renovar/adelantar |

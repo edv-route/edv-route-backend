@@ -11,7 +11,7 @@
 | [guides/setup.md](guides/setup.md) | Levantar el entorno de desarrollo desde cero |
 | [guides/deploy-railway.md](guides/deploy-railway.md) | **Despliegue en producción** (Railway): arquitectura, variables, runbook y gotchas |
 | [decisions/decisions-log.md](decisions/decisions-log.md) | Registro cronológico de decisiones de negocio y técnicas |
-| [proposals/](proposals/estados-del-chofer/README.md) | **Propuestas / próximos pasos**: [rediseño del estado del chofer](proposals/estados-del-chofer/README.md) (⭐ próximo), [tarifa con deuda y penalización](proposals/tarifa-penalizacion/README.md), y el [registro en 2 pasos](proposals/registro-2-pasos/README.md) (ya implementado) |
+| [proposals/](proposals/estados-del-chofer/README.md) | **Propuestas / próximos pasos**: [rediseño del perfil del afiliado](proposals/rediseno-perfil-afiliado/README.md) (🚧 en curso, sin desplegar), [rediseño del estado del chofer](proposals/estados-del-chofer/README.md) (⭐ próximo), [tarifa con deuda y penalización](proposals/tarifa-penalizacion/README.md), y el [registro en 2 pasos](proposals/registro-2-pasos/README.md) (ya implementado) |
 
 ⚠️ **Regla de oro**: toda modificación de la base de datos exige regenerar los modelos
 (`npm run migrate` lo hace automáticamente) **y actualizar

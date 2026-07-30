@@ -19,7 +19,8 @@
     "migrate:create": "node-pg-migrate -m src/db/migrations create",
     "seed:admin": "tsx src/db/seed-admin.ts",
     "db:types": "kanel",
-    "db:reanchor": "node --import tsx scripts/reanchor-weekly.ts"
+    "db:reanchor": "node --import tsx scripts/reanchor-weekly.ts",
+    "db:purge-phantom": "node --import tsx scripts/purge-phantom-charges.ts"
   },
   "keywords": [
     "fastify",

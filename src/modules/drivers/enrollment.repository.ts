@@ -20,8 +20,9 @@ export interface RejectionResult {
 
 /**
  * Wizard step 4 + approval/rejection money flows (design doc v7):
- * invoice #1 groups membership + first tariff period; each extra advance
- * period gets its own invoice. All inside one transaction.
+ * a single invoice groups membership + ALL prepaid tariff periods (one invoice
+ * for the whole advance payment, decision 2026-07-28). Each period still gets its
+ * own subscription_payments coverage row. All inside one transaction.
  */
 export class EnrollmentRepository {
   constructor(private readonly db: pg.Pool) {}
@@ -39,15 +40,18 @@ export class EnrollmentRepository {
     client: pg.PoolClient,
     input: EnrollmentInput,
   ): Promise<{ invoiceNumbers: string[] }> {
-    // Invoice #1: membership + first tariff period
-    const firstTotal = input.membershipPriceUsd + input.planPriceUsd;
-    const inv1 = await this.createInvoice(client, input.driverId, firstTotal, input.registeredBy);
+    // A SINGLE invoice groups the whole advance payment: membership + EVERY
+    // tariff period (decision 2026-07-28). Paying N weeks up front = one invoice
+    // of the total; the per-week subscription_payments rows below still track
+    // coverage, so the tariff cycle keeps consuming the advances one week at a time.
+    const total = input.membershipPriceUsd + input.planPriceUsd * input.periods;
+    const invoice = await this.createInvoice(client, input.driverId, total, input.registeredBy);
 
     await client.query(
       `INSERT INTO membership_payments
          (driver_id, membership_id, invoice_id, amount_usd, status, paid_at, registered_by)
        VALUES ($1, $2, $3, $4, 'paid', now(), $5)`,
-      [input.driverId, input.membershipId, inv1.id, input.membershipPriceUsd, input.registeredBy],
+      [input.driverId, input.membershipId, invoice.id, input.membershipPriceUsd, input.registeredBy],
     );
 
     const { rows: subRows } = await client.query<{ id: string }>(
@@ -58,17 +62,9 @@ export class EnrollmentRepository {
     const subscriptionId = subRows[0]!.id;
 
     // Paid periods: N rows with exact consecutive windows (anchored at approval;
-    // stored relative for now - approval shifts them to real dates)
-    const invoiceNumbers = [inv1.invoiceNumber];
+    // stored relative for now - approval shifts them to real dates). They all
+    // share the single invoice above.
     for (let i = 0; i < input.periods; i++) {
-      let invoiceId = inv1.id;
-      if (i > 0) {
-        const inv = await this.createInvoice(
-          client, input.driverId, input.planPriceUsd, input.registeredBy,
-        );
-        invoiceId = inv.id;
-        invoiceNumbers.push(inv.invoiceNumber);
-      }
       await client.query(
         `INSERT INTO subscription_payments
            (driver_subscription_id, invoice_id, period_start, period_end,
@@ -76,7 +72,7 @@ export class EnrollmentRepository {
          VALUES ($1, $2,
                  now() + ($3::interval * $4), now() + ($3::interval * ($4 + 1)),
                  $5, 'paid', now(), $6)`,
-        [subscriptionId, invoiceId, input.periodInterval, i, input.planPriceUsd, input.registeredBy],
+        [subscriptionId, invoice.id, input.periodInterval, i, input.planPriceUsd, input.registeredBy],
       );
     }
 
@@ -85,7 +81,7 @@ export class EnrollmentRepository {
       [input.driverId],
     );
 
-    return { invoiceNumbers };
+    return { invoiceNumbers: [invoice.invoiceNumber] };
   }
 
   /**

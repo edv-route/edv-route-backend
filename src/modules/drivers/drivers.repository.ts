@@ -200,17 +200,19 @@ export class DriversRepository {
     return rows[0]!.id;
   }
 
-  /** Inserts a DRIVER document's metadata on the given client (file attached later). */
+  /** Inserts a document's metadata owned by a driver XOR a vehicle (file attached later). */
   async insertDocument(
     client: pg.PoolClient,
-    driverId: string,
+    owner: { driverId: string } | { vehicleId: string },
     input: { requirementId: number; expiresAt?: string | null },
     uploadedBy: string,
   ): Promise<string> {
+    const driverId = 'driverId' in owner ? owner.driverId : null;
+    const vehicleId = 'vehicleId' in owner ? owner.vehicleId : null;
     const { rows } = await client.query<{ id: string }>(
       `INSERT INTO documents (requirement_id, driver_id, vehicle_id, file_url, expires_at, uploaded_by)
-       VALUES ($1, $2, NULL, NULL, $3, $4) RETURNING id`,
-      [input.requirementId, driverId, input.expiresAt ?? null, uploadedBy],
+       VALUES ($1, $2, $3, NULL, $4, $5) RETURNING id`,
+      [input.requirementId, driverId, vehicleId, input.expiresAt ?? null, uploadedBy],
     );
     return rows[0]!.id;
   }
@@ -230,7 +232,11 @@ export class DriversRepository {
          (SELECT COALESCE(json_agg(json_build_object(
             'id', v.id, 'vehicleTypeId', v.vehicle_type_id, 'brand', v.brand,
             'model', v.model, 'year', v.year, 'color', v.color, 'plate', v.plate,
-            'approvalStatus', v.approval_status) ORDER BY v.created_at), '[]'::json)
+            'approvalStatus', v.approval_status,
+            'images', (SELECT COALESCE(json_agg(json_build_object('id', vi.id, 'position', vi.position)
+                         ORDER BY vi.position), '[]'::json)
+                       FROM vehicle_images vi WHERE vi.vehicle_id = v.id)
+          ) ORDER BY v.created_at), '[]'::json)
           FROM vehicles v WHERE v.driver_id = d.user_id) AS vehicles,
          (SELECT COALESCE(json_agg(json_build_object(
             'id', doc.id, 'requirementId', doc.requirement_id, 'requirementName', r.name,
@@ -260,19 +266,48 @@ export class DriversRepository {
             'totalUsd', COALESCE(sum(sp.amount_usd), 0)::text,
             'weeksOwed', count(*) FILTER (WHERE sp.charge_kind::text = 'period'),
             'penaltyCount', count(*) FILTER (WHERE sp.charge_kind::text = 'penalty'),
+            'capWeeks', COALESCE((SELECT (value#>>'{}')::int FROM app_settings WHERE key = 'debt_cap_weeks'), 2),
             'charges', COALESCE(json_agg(json_build_object(
                'id', sp.id, 'kind', sp.charge_kind, 'amountUsd', sp.amount_usd::text,
                'status', sp.status, 'periodStart', sp.period_start,
                'periodEnd', sp.period_end) ORDER BY sp.period_start), '[]'::json))
           FROM subscription_payments sp
           JOIN driver_subscriptions ds2 ON ds2.id = sp.driver_subscription_id
-          WHERE ds2.driver_id = d.user_id AND sp.status IN ('pending', 'overdue')) AS debt,
+          -- Debt (red band) = OVERDUE tariff weeks not covered by paid coverage +
+          -- penalties. A still-pending (not-yet-due) week is the UPCOMING charge
+          -- (amber band), reported separately below. Reasons by coverage, not date.
+          WHERE ds2.driver_id = d.user_id
+            AND ((sp.charge_kind::text = 'period' AND sp.status = 'overdue'
+                  AND sp.period_start >= COALESCE(
+                    (SELECT max(cov.period_end) FROM subscription_payments cov
+                     WHERE cov.driver_subscription_id = sp.driver_subscription_id
+                       AND cov.status = 'paid' AND cov.charge_kind::text = 'period'), sp.period_start))
+                 OR (sp.charge_kind::text = 'penalty' AND sp.status IN ('pending', 'overdue')))) AS debt,
+         -- Próximo cobro (v8): the next weekly charge already emitted (Friday 18:00)
+         -- but NOT yet due — the solvent driver's "advance pay" prompt. Null if none.
+         (SELECT json_build_object(
+            'amountUsd', sp.amount_usd::text,
+            'periodStart', sp.period_start, 'periodEnd', sp.period_end)
+          FROM subscription_payments sp
+          JOIN driver_subscriptions ds4 ON ds4.id = sp.driver_subscription_id
+          WHERE ds4.driver_id = d.user_id
+            AND sp.charge_kind::text = 'period' AND sp.status = 'pending'
+            AND sp.period_start >= COALESCE(
+              (SELECT max(cov.period_end) FROM subscription_payments cov
+               WHERE cov.driver_subscription_id = sp.driver_subscription_id
+                 AND cov.status = 'paid' AND cov.charge_kind::text = 'period'), sp.period_start)
+          ORDER BY sp.period_start LIMIT 1) AS upcoming,
          (SELECT json_build_object(
             'id', ds.id, 'planId', ds.plan_id, 'planName', sp.name, 'status', ds.status,
             'billingPeriod', sp.billing_period, 'priceUsd', sp.price_usd::text,
             'startedAt', ds.started_at,
             'currentPeriodStart', ds.current_period_start,
             'currentPeriodEnd', ds.current_period_end,
+            -- Paid-through: end of the LAST prepaid period (advances included),
+            -- i.e. the date coverage actually runs out (not just the running one).
+            'paidUntil', (SELECT max(spp.period_end) FROM subscription_payments spp
+                          WHERE spp.driver_subscription_id = ds.id AND spp.status = 'paid'
+                            AND spp.charge_kind::text = 'period'),
             'paidPeriods', (SELECT count(*) FROM subscription_payments spp
                             WHERE spp.driver_subscription_id = ds.id AND spp.status = 'paid'))
           FROM driver_subscriptions ds JOIN subscription_plans sp ON sp.id = ds.plan_id

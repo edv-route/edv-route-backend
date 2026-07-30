@@ -22,6 +22,7 @@ import membershipsRoutes from './modules/memberships/memberships.routes.js';
 import subscriptionPlansRoutes from './modules/subscription-plans/subscription-plans.routes.js';
 import paymentMethodsRoutes from './modules/payment-methods/payment-methods.routes.js';
 import driversRoutes from './modules/drivers/drivers.routes.js';
+import vehicleImagesRoutes from './modules/vehicles/vehicle-images.routes.js';
 import auditLogsRoutes from './modules/audit-logs/audit-logs.routes.js';
 import dashboardRoutes from './modules/dashboard/dashboard.routes.js';
 import documentsRoutes from './modules/documents/documents.routes.js';
@@ -61,7 +62,10 @@ export async function buildApp(): Promise<FastifyInstance> {
 
   // Infrastructure plugins
   await app.register(helmet);
-  await app.register(cors, { origin: config.CORS_ORIGIN.split(',') });
+  await app.register(cors, {
+    origin: config.CORS_ORIGIN.split(','),
+    methods: ['GET', 'HEAD', 'POST', 'PATCH', 'DELETE'],
+  });
   await app.register(sensible);
   await app.register(multipart, {
     limits: { fileSize: MAX_FILE_BYTES, files: 1 },
@@ -87,6 +91,7 @@ export async function buildApp(): Promise<FastifyInstance> {
       await api.register(subscriptionPlansRoutes, { prefix: '/subscription-plans' });
       await api.register(paymentMethodsRoutes, { prefix: '/payment-methods' });
       await api.register(driversRoutes, { prefix: '/drivers' });
+      await api.register(vehicleImagesRoutes, { prefix: '/drivers' });
       await api.register(auditLogsRoutes, { prefix: '/audit-logs' });
       await api.register(dashboardRoutes, { prefix: '/dashboard' });
       await api.register(documentsRoutes, { prefix: '/documents' });
