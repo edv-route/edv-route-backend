@@ -52,9 +52,9 @@ test('payment methods: CRUD + per-type validation', async () => {
     // missing required field for the type -> 400
     const bad = await app.inject({
       method: 'POST', url: '/api/v1/payment-methods', headers: auth(),
-      payload: { name: 'TEST Cripto', type: 'crypto', details: {} },
+      payload: { name: 'TEST Binance', type: 'binance', details: {} },
     });
-    assert.equal(bad.statusCode, 400, 'crypto sin walletAddress debe fallar');
+    assert.equal(bad.statusCode, 400, 'binance sin identifier debe fallar');
 
     // unknown type rejected by the JSON schema (enum) -> 400
     const badType = await app.inject({

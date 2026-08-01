@@ -1,11 +1,15 @@
+/**
+ * Payment method types OFFERED by the business (decision 2026-07-31): only
+ * these 4. The DB enum `payment_method_type` still carries the old values
+ * (paypal/crypto/contact) — removing them would be a destructive enum migration
+ * for no gain — but the API refuses to create/update to anything outside this
+ * list, so they can no longer appear.
+ */
 export const PAYMENT_METHOD_TYPES = [
   'bank_transfer',
   'pago_movil',
   'zelle',
-  'paypal',
   'binance',
-  'crypto',
-  'contact',
 ] as const;
 
 const paymentMethodSchema = {

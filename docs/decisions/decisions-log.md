@@ -564,3 +564,96 @@ semanal y validar el ciclo con reloj real.
 | **"Adelantar pago"** (solvente) y **"Registrar pago"** (deuda) usan el **mismo** flujo (external-payment): saldan el/los cargos que el motor ya preparó, **sin crear filas nuevas** | Evita cobros dobles; coherente con el motor. El modal adapta el título (Adelantar/Registrar) |
 | **Modal de cobro con desglose**: *X semanas × $Y = $Z* + lista de cada semana con fechas + penalización | Que el admin vea qué semanas se saldan y el equivalente en semanas |
 | **Campo "Motivo / constancia (opcional)" también en "Generar pago"** (renovación); `note` opcional nuevo en `POST /subscription/renew` (guardado en auditoría) | Pagos mixtos ("parte por transferencia, resto en efectivo") necesitan dejar constancia también al renovar/adelantar |
+
+## 2026-07-30 — 💳 Registro con deuda (opción A) + cobro unificado + UI (EN CURSO, sin pushear)
+
+> Bloque grande **aún sin pushear**. Backend Fases 1-2 (typecheck + **10/10 tests**) y frontend
+> Fase 4 hechos; falta la **Fase 3** (factura Emitida/Pagada + fechas en Facturación). Handoff
+> detallado en la memoria del proyecto (`registro-deuda-cobro-unificado`).
+
+| Decisión | Motivo |
+|---|---|
+| **Registro sin pago = factura de DEUDA (opción A)**: emite 1 factura "Emitida" por membresía + 1 semana (`membership_payments` + 1 `subscription_payments` en `pending`, con `invoice_id`); el chofer queda pendiente y no se activa hasta saldar (`enrollDebtOnClient`) | El admin ve el total que debe (no solo la tarifa) y queda registrado como deuda formal con rastro |
+| **Estado "Emitida/Pagada" y fechas DERIVADOS, sin migración**: `issued_at` = emisión; fecha de pago = `max(paid_at)` de los cargos; "Pagada" cuando todos sus cargos están `paid` | El esquema ya lo soporta (membresía default `pending`, cargos con `paid_at`); menos riesgo que tocar la tabla de facturas (regla del dinero) |
+| **La deuda del perfil incluye la MEMBRESÍA** (`debt.totalUsd` += membresía pendiente; expone `membershipDue`); el saldo (`registerExternalPayment`) salda membresía + tarifa; cargos con factura (alta) se marcan paid sin factura nueva, la mora sin factura recibe una nueva | Antes la deuda y el saldo ignoraban la membresía; el candado de aprobación (lee `debt.totalUsd`) ahora exige saldarla toda |
+| **El motor no marca en mora la semana de un chofer `pending`** (`debt-scheduler.ts` paso 2 filtra `approved/overdue/penalized`) | La deuda del alta se salda al aprobar; el motor no la toca mientras el chofer no opera |
+| **Un solo botón de cobro adaptativo** en el perfil: "Registrar pago" (formato deuda, con membresía) si debe / "Generar pago" (adelanto) si al día; se quitan los botones de las bandas y los redundantes del header | Había 3-4 botones de pago que confundían; el adelanto va por "Generar pago", las bandas quedan como info |
+| **Wizard paso 4 de pago → modal** (`payment-draft-modal`, patrón vehículo/documento); tarifa+semanas se bloquean tras agregar el pago; campo "Semanas" 1-999 saneado (nunca vacío/0) | Consistencia con los otros pasos; evitar cambiar el monto tras registrar el pago y valores inválidos |
+| **Estilos globales de campos** (`styles.css`, reglas sin capa): editables en **blanco** (vs gris deshabilitado), borde **1.5px** un poco más oscuro; línea **punteada solo en dropzones de archivo** (los tiles que abren modal quedan rectos) | Los campos parecían deshabilitados; la punteada debe señalar "sube un archivo aquí", no "abre un modal" |
+
+## 2026-07-30 — 🧾 Fase 3: estado Emitida/Pagada y fechas de cobro en Facturación (cierra el bloque)
+
+> Última pieza pendiente del bloque de registro con deuda. Backend: typecheck + **16/16 tests**
+> (6 nuevos en `tests/invoice-state.test.ts`). Frontend: build de producción limpio. Sin migración.
+
+| Decisión | Motivo |
+|---|---|
+| **`GET /invoices` expone `status` DERIVADO de los cargos** (`voided` manda > `paid` si **todos** los cargos de la factura están pagados > `issued`), no la columna física; el **filtro** usa la misma expresión | La opción A emite facturas que nacen impagas: el listado decía "Emitida" en verde para una factura pagada y para una de pura deuda, sin distinguirlas. El esquema ya tiene la verdad en los cargos (regla del dinero: no se toca la tabla de facturas) |
+| Se **reemplaza** el campo `status` en vez de añadir uno paralelo (`paymentState`) | Dos campos de estado en la misma respuesta son una invitación a que la UI pinte uno y filtre por el otro. Una sola fuente de verdad de presentación; el estado físico sigue íntegro en la BD |
+| Nuevo **`paidAt`** = `max(paid_at)` de sus cargos, **null salvo que esté saldada por completo** | Una factura a medio pagar no tiene "fecha de pago": exponer el `paid_at` del primer cargo fecharía como cobrado algo que no lo está |
+| Una factura **sin cargos** se reporta `issued`, nunca `paid` (`ch.total > 0` en la condición) | `count(*) FILTER (...) = count(*)` es cierto con cero filas: sin la guarda, una factura huérfana se leería como pagada (cazado por test) |
+| Un **LATERAL compartido** por el count y el select (agrega `membership_payments` + `subscription_payments`); enums comparados como **texto** | Un solo lugar donde vive la derivación (listado y filtro no pueden divergir); el cast a texto sigue la regla del pooler (2026-07-23) |
+| UI: badge tri-estado (ámbar **Emitida** + "Por cobrar" · verde **Pagada** · rojo **Anulada**), columna **Pagada** con la fecha y filtro **Por cobrar / Pagadas / Anuladas** | El verde debe significar "el dinero entró"; el ámbar es el mismo código de color que la banda "Próximo cobro" del perfil |
+
+## 2026-07-30 — 🛡️ Tests: el motor de dinero jamás debe quedar encendido (incidente real)
+
+> Detectado corriendo la suite: un test murió en su limpieza **antes** de restaurar el flag y
+> dejó `debt_engine_enabled = true` en la BD — que es la **misma que usa producción**.
+
+| Decisión | Motivo |
+|---|---|
+| **`--test-concurrency=1`** en `npm test` | Cada archivo levanta su propia app (`max: 10` conexiones) y el pooler de Supabase admite **15 sesiones**: en paralelo la suite reventaba con `EMAXCONNSESSION`. En serie también desaparece la interferencia cruzada entre archivos que ya sufría el motor (global por diseño) |
+| **`restoreDebtEngineDefaults` en un hook `after()`**, además de en cada `finally`, y el flag se apaga **antes** de borrar los datos del test | Red de seguridad: ningún fallo puede dejar el motor de deuda operando sobre choferes reales. Apagarlo primero cierra además la ventana de carrera durante la limpieza |
+| **`removeDriver` transaccional con `SELECT … FOR UPDATE`** sobre las suscripciones (`tests/helpers/db-fixtures.ts`, compartido por los 3 archivos) | Un scheduler de **otro proceso** (backend desplegado contra la misma BD) insertaba un cargo entre el borrado de pagos y el de suscripciones → violación de FK. El lock de la fila referenciada bloquea ese INSERT mientras dura la limpieza |
+| ⚠️ Pendiente de infraestructura: **la suite corre contra la BD de producción** (mismo Supabase, decisión del 2026-07-27) | Mitigado, no resuelto: los tests escriben `app_settings` globales. La solución real es una BD/proyecto Supabase separado para dev+tests |
+
+## 2026-07-30 — 📅 La semana del alta arranca el PRÓXIMO lunes (corrección de la regla de anclaje)
+
+> Corrección pedida por Luis al revisar el perfil: un alta pagada un jueves mostraba cobertura
+> jueves→jueves. **Rectifica la convención del 2026-07-24** ("desde el lunes de la semana en
+> curso"). Verificado: typecheck + **17/17 tests** (uno nuevo, dedicado al alta anclada).
+
+| Decisión | Motivo |
+|---|---|
+| **El alta compra la semana que empieza el PRÓXIMO lunes**; pagar **en lunes** compra la semana que ya está corriendo (`approve`, rama `anchorWeekly`) | Es prepago: se paga por adelantado la semana siguiente, no por la que está terminando. La regla anterior cobraba una semana completa por los días que quedaban (pagar un jueves dejaba 4 días de cobertura) |
+| Entre el pago y ese lunes el chofer **no opera**: la tarifa nace **`scheduled`** y el `subscription-scheduler` la activa al empezar su semana | Decisión de negocio de Luis: no hay días gratis. Reutiliza el paso que ya existía desde el 2026-07-15 (activar una tarifa programada cuando empieza su período pagado); no hace falta estado nuevo |
+| El perfil muestra **"Inicia el dd/MM · no puede recibir viajes hasta esa fecha"** en vez de "Próxima factura en X días" mientras la tarifa esté programada | Sin esto la card decía "Programada · Pagado hasta …" sin la única fecha que importa: cuándo empieza a trabajar |
+| **Solo cambia el alta.** `renew` (adelanto) sigue encadenando tras `max(period_end)`; el pago de deuda sigue saldando los cargos que el motor ya emitió; `resume` sigue re-anclando a la semana en curso | Verificado uno por uno: un chofer que ya pagó su semana de inicio no está comprando "la próxima semana", está pagando deuda o adelantando. Y quien vuelve de una licencia no puede tener deuda, así que su semana ya está pagada y opera de inmediato (criterio de Luis) |
+| El **seed de demo** genera semanas ancladas (alta → próximo lunes; chofer al día → semana en curso) | El dato sembrado con `now()` fue lo que disparó la falsa alarma: una demo que miente sobre la regla es peor que no tenerla |
+
+## 2026-07-30 — 🔴 Motor de deuda ENCENDIDO (`debt_engine_enabled = true`)
+
+> Autorizado por Luis. Antes de encender se purgó el único cargo fantasma pendiente
+> (`db:purge-phantom --apply`, el de Ruth: semana 03/08 ya cubierta hasta el 26/08).
+
+| Decisión | Motivo |
+|---|---|
+| Se enciende el interruptor maestro: desde ahora el cobro semanal es **automático** (emisión viernes 18:00, mora el lunes 00:00, penalización al superar 2 semanas, reactivación el lunes siguiente) | El modelo v8 quedó cerrado el 2026-07-24 y la última dependencia de código (anclaje del alta) ya está resuelta. `db:reanchor` dejó de ser prerequisito el 2026-07-29 (el motor razona por cobertura) |
+| Se acepta que **producción corre código anterior** hasta el próximo despliegue | Decisión de Luis: dev y producción comparten la misma base y el proyecto sigue en desarrollo. El efecto acotado es que un alta registrada en producción antes del deploy anclaría con la regla vieja |
+| El mismo interruptor gobierna anclaje y cobranza (no se separó en dos) | Se evaluó desacoplarlos; Luis optó por encender el modelo completo. Menos superficie de configuración que mantener |
+
+## 2026-07-31 — ✅ Validación integral de formularios (frontend + backend alineados)
+
+> Barrido de todos los formularios de captura del panel tras detectar que aceptaban basura
+> (`f5454/-+#$%` en nombres, fechas escritas a mano, etc.). Backend: typecheck + **23/23 tests**
+> (6 nuevos en `tests/validation.test.ts`). Frontend: build de producción limpio.
+
+| Decisión | Motivo |
+|---|---|
+| **3 directivas compartidas** (`shared/directives/input-filter.directive.ts`): `appLetters` (letras+acentos+ñ+espacio/guion/apóstrofo), `appDigits` (solo números), `appAlnum` (alfanumérico), `appAlnumDash` (alfanumérico+guion). Cada una **filtra al teclear** (re-despacha `input`, sin inyectar `NgControl` para evitar el DI circular) **y** es `NG_VALIDATOR` (pinta rojo + bloquea submit) | Dos capas: el filtro es UX (el campo no puede *contener* basura), el validador es la garantía (pegar/autocompletar). Una directiva sirve a todos los formularios presentes y futuros |
+| **`date-picker` editable con validación de formato** (rectifica el "readonly" del mismo día): se puede teclear la fecha, pero **enmascarada a dd/mm/aaaa** y validada — un valor incompleto/imposible (31/02) o posterior al `max` marca el control inválido (`NG_VALIDATOR` + rojo global + bloquea submit). `updateOnBlur:false` conserva el texto para que el error se vea. Arregla **todos** los campos de fecha (nacimiento, fecha de pago, filtros de auditoría) | Petición de Luis: el campo debe ser editable, no solo elegible en el calendario, pero solo en el formato establecido. El componente es compartido, así que la regla vale para todos de una vez |
+| **Nombres: solo letras (+acentos/ñ), espacio, guion y apóstrofo, máx 80**; el backend sube de 60→80 y añade el pattern | Cubre nombres compuestos reales ("De La Cruz", "Ángel-María", "O'Brien") sin números ni símbolos. Frontend y backend comparten el mismo criterio (`composePerson` + JSON Schema) |
+| **Vehículo: marca/modelo alfanumérico+guion, color solo letras, año → SELECTOR** (últimos ~101 años) | Modelos reales llevan números ("Mazda 3", "F-150"); el color no. El año como desplegable no se puede escribir mal (el backend amplía `year` a 1900–2100 para que cualquier opción valide) |
+| **Cédula y teléfono: solo dígitos** (`appDigits`); email valida formato aunque sea opcional (validador `email` de Angular + regex en `composePerson`) | El pattern canónico ya existía en el backend (`^[VEJ]-\d{5,9}$`, `^\+58\d{10}$`); faltaba que el campo no dejara teclear letras y que el email no pasara "rosa" |
+| **Referencia de pago: ≤25, solo alfanumérico + espacio** (`appAlnum` + pattern backend). Se ajustó un dato de test viejo (`REF-12345`→`REF12345`) | Decisión de Luis: "sin caracteres especiales". El guion cuenta como especial; una referencia es un código, no puntuación |
+| **3 columnas nuevas en `invoices`** (migración `1752320000000`, aditiva, nullable): `paid_on` (día del pago, default hoy en la UI), `payer_phone`, `payer_id` (**solo Pago Móvil**) | La factura es el documento de dinero; los datos del pagador viven con ella (mismo criterio que método/referencia/banco de la Pieza 2). Nullable → no rompe facturas existentes |
+| **`payment-capture` extendido**: fecha del pago (hoy por defecto, tope hoy) + teléfono/cédula del pagador condicionados a Pago Móvil, compuestos a formato canónico; `complete()` los exige. Reutilizado por los **4 cobros** (alta, enroll, renovación, pago externo) vía `PaymentMeta` | Un solo bloque de captura; al ser todos los cobros el mismo componente, los campos nuevos aparecen en los cuatro sin código extra |
+| **Métodos de pago: validación de formato por campo** (`FIELD_FORMATS` en el service + `paymentFieldError` en el modelo del front): email estricto en PayPal, "email si tiene @" en Zelle/Binance (aceptan email **o** teléfono/id), cédula V/E/J en los `idDocument` | Pedido de Luis: los campos de correo se validan sí o sí. Zelle/Binance admiten alternativa, así que el email solo se exige cuando el valor parece uno |
+
+## 2026-07-31 — 🧹 Auditoría fuera del panel del admin + reset de datos de prueba
+
+| Decisión | Motivo |
+|---|---|
+| Se **quita del frontend** la "Actividad reciente" del dashboard, el ítem de menú "Auditoría" y su ruta `/audit`; se borran `features/audit/*` y `core/models/audit-log.model.ts` | El feed mostraba el log crudo (`payment_method.deleted · payment_methods`): lenguaje de desarrollador, no de admin. Si se necesita un panel de actividad, se hará aparte con info legible |
+| El **backend NO cambia**: `writeAudit` sigue registrando todo y `GET /audit-logs` sigue existiendo (queda sin consumidor en la UI) | El rastro es un activo; solo deja de exponerse. Los endpoints quedan para un futuro panel |
+| **Reset de datos de prueba**: borrados todos los choferes y su info relacionada (users, drivers, vehículos, documentos, suscripciones, pagos, facturas, 730 audit-logs de choferes) en una transacción; `invoice_number_seq` reiniciada en 1; catálogo/config intactos | Pre-producción: arrancar limpio para probar todo lo nuevo. Archivos del bucket quedaron huérfanos (inofensivos) |

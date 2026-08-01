@@ -35,6 +35,14 @@ export default interface Invoices {
   payer_bank: string | null;
 
   proof_url: string | null;
+
+  paid_on: Date | null;
+
+  payer_phone: string | null;
+
+  payer_id: string | null;
+
+  payer_account: string | null;
 }
 
 /** Represents the initializer for the table public.invoices */
@@ -71,6 +79,14 @@ export interface InvoicesInitializer {
   payer_bank?: string | null;
 
   proof_url?: string | null;
+
+  paid_on?: Date | null;
+
+  payer_phone?: string | null;
+
+  payer_id?: string | null;
+
+  payer_account?: string | null;
 }
 
 /** Represents the mutator for the table public.invoices */
@@ -102,4 +118,12 @@ export interface InvoicesMutator {
   payer_bank?: string | null;
 
   proof_url?: string | null;
+
+  paid_on?: Date | null;
+
+  payer_phone?: string | null;
+
+  payer_id?: string | null;
+
+  payer_account?: string | null;
 }

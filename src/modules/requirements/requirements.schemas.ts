@@ -30,7 +30,7 @@ export const createRequirementSchema = {
     additionalProperties: false,
     properties: {
       name: { type: 'string', minLength: 3, maxLength: 120 },
-      description: { type: ['string', 'null'], maxLength: 500 },
+      description: { type: ['string', 'null'], maxLength: 1000 },
       appliesTo: { type: 'string', enum: ['driver', 'vehicle'] },
       isRequired: { type: 'boolean', default: false },
     },
@@ -46,7 +46,7 @@ export const updateRequirementSchema = {
     minProperties: 1,
     properties: {
       name: { type: 'string', minLength: 3, maxLength: 120 },
-      description: { type: ['string', 'null'], maxLength: 500 },
+      description: { type: ['string', 'null'], maxLength: 1000 },
       appliesTo: { type: 'string', enum: ['driver', 'vehicle'] },
       isRequired: { type: 'boolean' },
       active: { type: 'boolean' },

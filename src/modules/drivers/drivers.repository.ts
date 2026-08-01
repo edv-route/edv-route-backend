@@ -263,7 +263,11 @@ export class DriversRepository {
          -- object (zeros when there is nothing owed). Read-only view; charges
          -- are settled via renew or external-payment, never registered by hand.
          (SELECT json_build_object(
-            'totalUsd', COALESCE(sum(sp.amount_usd), 0)::text,
+            'totalUsd', (COALESCE(sum(sp.amount_usd), 0)
+              + COALESCE((SELECT sum(mp.amount_usd) FROM membership_payments mp
+                          WHERE mp.driver_id = d.user_id AND mp.status = 'pending'), 0))::text,
+            'membershipDue', COALESCE((SELECT sum(mp.amount_usd) FROM membership_payments mp
+                                       WHERE mp.driver_id = d.user_id AND mp.status = 'pending'), 0)::text,
             'weeksOwed', count(*) FILTER (WHERE sp.charge_kind::text = 'period'),
             'penaltyCount', count(*) FILTER (WHERE sp.charge_kind::text = 'penalty'),
             'capWeeks', COALESCE((SELECT (value#>>'{}')::int FROM app_settings WHERE key = 'debt_cap_weeks'), 2),
@@ -273,15 +277,17 @@ export class DriversRepository {
                'periodEnd', sp.period_end) ORDER BY sp.period_start), '[]'::json))
           FROM subscription_payments sp
           JOIN driver_subscriptions ds2 ON ds2.id = sp.driver_subscription_id
-          -- Debt (red band) = OVERDUE tariff weeks not covered by paid coverage +
-          -- penalties. A still-pending (not-yet-due) week is the UPCOMING charge
-          -- (amber band), reported separately below. Reasons by coverage, not date.
+          -- Debt (red band) = OVERDUE tariff weeks (not covered by paid coverage)
+          -- + penalties + the ALTA debt (membership pending, added into totalUsd
+          -- above; and the first week, a pending row that carries an invoice_id).
+          -- A pending week WITHOUT an invoice is the UPCOMING charge (amber), not debt.
           WHERE ds2.driver_id = d.user_id
-            AND ((sp.charge_kind::text = 'period' AND sp.status = 'overdue'
-                  AND sp.period_start >= COALESCE(
-                    (SELECT max(cov.period_end) FROM subscription_payments cov
-                     WHERE cov.driver_subscription_id = sp.driver_subscription_id
-                       AND cov.status = 'paid' AND cov.charge_kind::text = 'period'), sp.period_start))
+            AND ((sp.charge_kind::text = 'period' AND (
+                    (sp.status = 'overdue' AND sp.period_start >= COALESCE(
+                       (SELECT max(cov.period_end) FROM subscription_payments cov
+                        WHERE cov.driver_subscription_id = sp.driver_subscription_id
+                          AND cov.status = 'paid' AND cov.charge_kind::text = 'period'), sp.period_start))
+                    OR (sp.status = 'pending' AND sp.invoice_id IS NOT NULL)))
                  OR (sp.charge_kind::text = 'penalty' AND sp.status IN ('pending', 'overdue')))) AS debt,
          -- Próximo cobro (v8): the next weekly charge already emitted (Friday 18:00)
          -- but NOT yet due — the solvent driver's "advance pay" prompt. Null if none.

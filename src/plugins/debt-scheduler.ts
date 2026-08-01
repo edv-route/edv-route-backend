@@ -124,11 +124,15 @@ export async function runDebtEngineTick(db: pg.Pool): Promise<DebtTickResult> {
     [cfg.timezone, cfg.billingDayOfWeek, cfg.billingHour],
   );
 
-  // 2) Charges whose week already started and were not paid = debt.
+  // 2) Charges whose week already started and were not paid = debt. Only for
+  // operating drivers (approved/overdue): a `pending` driver's alta-debt week
+  // must NOT be flipped to overdue by the engine — it settles at approval.
   const overdue = await db.query<{ id: string; driverId: string }>(
     `UPDATE subscription_payments sp SET status = 'overdue'
      FROM driver_subscriptions ds
+     JOIN drivers d ON d.user_id = ds.driver_id
      WHERE sp.driver_subscription_id = ds.id
+       AND d.status::text IN ('approved', 'overdue', 'penalized')
        AND sp.status = 'pending'
        AND sp.period_start <= now()
      RETURNING sp.id, ds.driver_id AS "driverId"`,

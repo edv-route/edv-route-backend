@@ -85,16 +85,87 @@ export class EnrollmentRepository {
   }
 
   /**
-   * Approval: membership stands, tariff starts running from now. Two anchoring
-   * modes:
+   * Registration WITHOUT payment (option A, 2026-07-30): emits a single UNPAID
+   * invoice = membership + ONE tariff week, held as debt. The membership row and
+   * the first tariff week are inserted `pending` (no `paid_at`), tied to that
+   * invoice; the subscription is `scheduled`. The driver stays pending and cannot
+   * be approved until the debt is settled (settling flips these rows to `paid`,
+   * and then the invoice reads as paid). Dates anchor at approval, like the paid
+   * flow. The debt engine ignores these rows while the driver is not approved.
+   */
+  async enrollDebtOnClient(
+    client: pg.PoolClient,
+    input: {
+      driverId: string;
+      membershipId: number;
+      membershipPriceUsd: number;
+      planId: number;
+      planPriceUsd: number;
+      registeredBy: string;
+      /** Debt engine on + weekly: anchor the first week to the buying Monday. */
+      anchorWeekly: boolean;
+      timezone: string;
+    },
+  ): Promise<{ invoiceNumber: string }> {
+    const total = input.membershipPriceUsd + input.planPriceUsd; // membership + 1 week
+    const invoice = await this.createInvoice(client, input.driverId, total, input.registeredBy);
+
+    // Membership owed (pending, no paid_at) — occupies the single valid slot.
+    await client.query(
+      `INSERT INTO membership_payments
+         (driver_id, membership_id, invoice_id, amount_usd, status, registered_by)
+       VALUES ($1, $2, $3, $4, 'pending', $5)`,
+      [input.driverId, input.membershipId, invoice.id, input.membershipPriceUsd, input.registeredBy],
+    );
+
+    const { rows: subRows } = await client.query<{ id: string }>(
+      `INSERT INTO driver_subscriptions (driver_id, plan_id, status)
+       VALUES ($1, $2, 'scheduled') RETURNING id`,
+      [input.driverId, input.planId],
+    );
+    const subscriptionId = subRows[0]!.id;
+
+    // First tariff week owed (pending, no paid_at). Carries the invoice_id so it
+    // is recognised as alta debt. When the debt engine anchors weekly, the week
+    // is the one the alta BUYS: the next Monday (or this week if today is Monday),
+    // so the panel shows the real coverage (e.g. registered a Thu → week starts
+    // Monday). Otherwise a placeholder re-anchored at approval.
+    await client.query(
+      `WITH anchor AS (
+         SELECT CASE WHEN $5::boolean THEN
+                       (CASE WHEN extract(isodow FROM (now() AT TIME ZONE $6)) = 1
+                             THEN date_trunc('week', (now() AT TIME ZONE $6))
+                             ELSE date_trunc('week', (now() AT TIME ZONE $6)) + interval '7 days'
+                        END) AT TIME ZONE $6
+                     ELSE now() END AS start
+       )
+       INSERT INTO subscription_payments
+         (driver_subscription_id, invoice_id, period_start, period_end,
+          amount_usd, status, registered_by)
+       SELECT $1, $2, a.start, a.start + interval '7 days', $3, 'pending', $4 FROM anchor a`,
+      [subscriptionId, invoice.id, input.planPriceUsd, input.registeredBy, input.anchorWeekly, input.timezone],
+    );
+
+    await client.query(
+      `UPDATE drivers SET registration_step = NULL WHERE user_id = $1`,
+      [input.driverId],
+    );
+
+    return { invoiceNumber: invoice.invoiceNumber };
+  }
+
+  /**
+   * Approval: membership stands, tariff starts running. Two anchoring modes:
    *  - Prepaid (default / debt engine off): first period = now -> next midnight
    *    boundary of the interval; the rest are exact consecutive intervals
    *    (decision 2026-07-10).
    *  - Weekly anchored (`anchorWeekly`, debt engine on + weekly plan, v8): every
-   *    period is a calendar week [Monday 00:00, next Monday) starting on the
-   *    Monday of the current week, so the debt engine's idempotency guard
-   *    recognises the paid coverage. Rounds in the driver's favour (he gets the
-   *    running week whole).
+   *    period is a calendar week [Monday 00:00, next Monday). The alta buys the
+   *    week that starts on the NEXT Monday; paying ON a Monday buys the week
+   *    already running (decision 2026-07-30). The driver does NOT operate
+   *    between the payment and that Monday, so the subscription stays
+   *    `scheduled` and the subscription-scheduler activates it when its paid
+   *    period begins (the step that already exists since 2026-07-15).
    */
   async approve(
     driverId: string,
@@ -117,7 +188,11 @@ export class EnrollmentRepository {
         await client.query(
           `WITH anchor AS (
              SELECT date_trunc('day', (now() + $2::interval) AT TIME ZONE $3) AT TIME ZONE $3 AS first_end,
-                    date_trunc('week', (now() AT TIME ZONE $3)) AT TIME ZONE $3 AS monday
+                    -- Next Monday, except when today IS Monday (then, this week).
+                    (CASE WHEN extract(isodow FROM (now() AT TIME ZONE $3)) = 1
+                          THEN date_trunc('week', (now() AT TIME ZONE $3))
+                          ELSE date_trunc('week', (now() AT TIME ZONE $3)) + interval '7 days'
+                     END) AT TIME ZONE $3 AS monday
            ), ordered AS (
              SELECT id, row_number() OVER (ORDER BY period_start) - 1 AS idx
              FROM subscription_payments
@@ -134,16 +209,29 @@ export class EnrollmentRepository {
            FROM ordered o, anchor a WHERE o.id = sp.id`,
           [sub.id, periodInterval, timezone, anchorWeekly],
         );
+        // The first paid week may start in the FUTURE (paid any day but Monday):
+        // the tariff is not in force until then, so it stays `scheduled` and the
+        // subscription-scheduler flips it to `active` at Monday 00:00.
         await client.query(
-          `UPDATE driver_subscriptions SET
-             status = 'active', started_at = now(),
+          `WITH anchor AS (
+             SELECT (CASE WHEN extract(isodow FROM (now() AT TIME ZONE $3)) = 1
+                          THEN date_trunc('week', (now() AT TIME ZONE $3))
+                          ELSE date_trunc('week', (now() AT TIME ZONE $3)) + interval '7 days'
+                     END) AT TIME ZONE $3 AS monday
+           )
+           UPDATE driver_subscriptions ds SET
+             status = (CASE WHEN $4::boolean AND a.monday > now()
+                            THEN 'scheduled' ELSE 'active' END)::subscription_status,
+             started_at = CASE WHEN $4::boolean AND a.monday > now()
+               THEN ds.started_at ELSE now() END,
              current_period_start = CASE WHEN $4::boolean
-               THEN date_trunc('week', (now() AT TIME ZONE $3)) AT TIME ZONE $3
+               THEN a.monday
                ELSE now() END,
              current_period_end = CASE WHEN $4::boolean
-               THEN (date_trunc('week', (now() AT TIME ZONE $3)) + interval '7 days') AT TIME ZONE $3
+               THEN a.monday + $2::interval
                ELSE date_trunc('day', (now() + $2::interval) AT TIME ZONE $3) AT TIME ZONE $3 END
-           WHERE id = $1`,
+           FROM anchor a
+           WHERE ds.id = $1`,
           [sub.id, periodInterval, timezone, anchorWeekly],
         );
       }
@@ -529,13 +617,15 @@ export class EnrollmentRepository {
   }
 
   /**
-   * External payment (design v8, Fase B): the driver settled with the admin
-   * outside the system (cash/transfer). Marks every outstanding charge - the
-   * arrears AND the penalty fine - as paid in one transaction and issues ONE
-   * invoice grouping them, so the money is recorded with a trace (regla de oro
-   * #7) instead of the state being forced by hand. The debt engine then derives
-   * the driver out of `overdue`/`penalized` on its own.
-   * Returns null when there is nothing outstanding.
+   * External payment (design v8 + option A, 2026-07-30): the driver settled with
+   * the admin outside the system. Settles ALL the debt in one transaction — the
+   * MEMBERSHIP (alta), the overdue tariff weeks (arrears), the penalty fine and
+   * the alta's first week — marking each `paid` with `paid_at = now()`. Charges
+   * that already carry a debt invoice (the alta) keep it (that invoice now reads
+   * as paid); engine arrears without an invoice get ONE fresh invoice grouping
+   * them (trace, regla de oro #7). A pending week WITHOUT an invoice is the
+   * upcoming charge, NOT debt, and is left untouched. Returns null when nothing
+   * is outstanding. The debt engine then derives the state out of overdue/penalized.
    */
   async registerExternalPayment(input: {
     driverId: string;
@@ -545,33 +635,79 @@ export class EnrollmentRepository {
     try {
       await client.query('BEGIN');
 
-      const { rows: charges } = await client.query<{ id: string; amountUsd: string }>(
-        `SELECT sp.id, sp.amount_usd AS "amountUsd"
+      type Row = { id: string; amountUsd: string; invoiceId: string | null };
+      const { rows: charges } = await client.query<Row>(
+        `SELECT sp.id, sp.amount_usd AS "amountUsd", sp.invoice_id AS "invoiceId"
          FROM subscription_payments sp
          JOIN driver_subscriptions ds ON ds.id = sp.driver_subscription_id
-         WHERE ds.driver_id = $1 AND sp.status IN ('pending', 'overdue')
+         WHERE ds.driver_id = $1
+           AND (sp.status = 'overdue' OR (sp.status = 'pending' AND sp.invoice_id IS NOT NULL))
          FOR UPDATE OF sp`,
         [input.driverId],
       );
-      if (charges.length === 0) {
+      const { rows: memberships } = await client.query<Row>(
+        `SELECT id, amount_usd AS "amountUsd", invoice_id AS "invoiceId"
+         FROM membership_payments
+         WHERE driver_id = $1 AND status = 'pending'
+         FOR UPDATE`,
+        [input.driverId],
+      );
+      if (charges.length === 0 && memberships.length === 0) {
         await client.query('ROLLBACK');
         return null;
       }
 
-      const total = charges.reduce((sum, c) => sum + Number(c.amountUsd), 0);
-      const invoice = await this.createInvoice(client, input.driverId, total, input.registeredBy);
+      // Engine arrears without an invoice get ONE fresh invoice grouping them.
+      const orphans = charges.filter((c) => !c.invoiceId);
+      let orphanInvoice: { id: string; invoiceNumber: string } | null = null;
+      if (orphans.length > 0) {
+        const orphanTotal = orphans.reduce((sum, c) => sum + Number(c.amountUsd), 0);
+        orphanInvoice = await this.createInvoice(client, input.driverId, orphanTotal, input.registeredBy);
+        await client.query(
+          `UPDATE subscription_payments
+              SET status = 'paid', paid_at = now(), invoice_id = $2, registered_by = $3
+            WHERE id = ANY($1::uuid[])`,
+          [orphans.map((c) => c.id), orphanInvoice.id, input.registeredBy],
+        );
+      }
+      // Charges that already carry a debt invoice (alta): just mark paid.
+      const invoiced = charges.filter((c) => c.invoiceId).map((c) => c.id);
+      if (invoiced.length > 0) {
+        await client.query(
+          `UPDATE subscription_payments
+              SET status = 'paid', paid_at = now(), registered_by = $2
+            WHERE id = ANY($1::uuid[])`,
+          [invoiced, input.registeredBy],
+        );
+      }
+      if (memberships.length > 0) {
+        await client.query(
+          `UPDATE membership_payments
+              SET status = 'paid', paid_at = now(), registered_by = $2
+            WHERE id = ANY($1::uuid[])`,
+          [memberships.map((c) => c.id), input.registeredBy],
+        );
+      }
 
-      await client.query(
-        `UPDATE subscription_payments
-            SET status = 'paid', paid_at = now(), invoice_id = $2, registered_by = $3
-          WHERE id = ANY($1::uuid[])`,
-        [charges.map((c) => c.id), invoice.id, input.registeredBy],
-      );
+      // Primary invoice (for payment meta + receipt): the fresh arrears invoice
+      // if any, else the alta invoice the settled charges already carry.
+      const altaInvoiceId =
+        charges.find((c) => c.invoiceId)?.invoiceId ?? memberships.find((c) => c.invoiceId)?.invoiceId ?? null;
+      let invoiceNumber = orphanInvoice?.invoiceNumber ?? '';
+      if (!invoiceNumber && altaInvoiceId) {
+        const { rows } = await client.query<{ n: string }>(
+          `SELECT invoice_number::text AS n FROM invoices WHERE id = $1`,
+          [altaInvoiceId],
+        );
+        invoiceNumber = rows[0]?.n ?? '';
+      }
+
+      const total = [...charges, ...memberships].reduce((sum, c) => sum + Number(c.amountUsd), 0);
 
       await client.query('COMMIT');
       return {
-        invoiceNumber: invoice.invoiceNumber,
-        settledCharges: charges.length,
+        invoiceNumber,
+        settledCharges: charges.length + memberships.length,
         totalUsd: total.toFixed(2),
       };
     } catch (err) {
@@ -635,14 +771,26 @@ export class EnrollmentRepository {
    */
   async setInvoicePaymentMeta(
     invoiceNumber: string,
-    meta: { paymentMethodId: number | null; reference: string | null; payerBank: string | null },
+    meta: {
+      paymentMethodId: number | null;
+      reference: string | null;
+      payerBank: string | null;
+      paidOn: string | null;
+      payerPhone: string | null;
+      payerId: string | null;
+      payerAccount: string | null;
+    },
   ): Promise<string | null> {
     const { rows } = await this.db.query<{ id: string }>(
       `UPDATE invoices
-          SET payment_method_id = $2, payment_reference = $3, payer_bank = $4
+          SET payment_method_id = $2, payment_reference = $3, payer_bank = $4,
+              paid_on = $5, payer_phone = $6, payer_id = $7, payer_account = $8
         WHERE invoice_number = $1::bigint AND status = 'issued'
         RETURNING id`,
-      [invoiceNumber, meta.paymentMethodId, meta.reference, meta.payerBank],
+      [
+        invoiceNumber, meta.paymentMethodId, meta.reference, meta.payerBank,
+        meta.paidOn, meta.payerPhone, meta.payerId, meta.payerAccount,
+      ],
     );
     return rows[0]?.id ?? null;
   }

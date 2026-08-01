@@ -16,12 +16,38 @@ const FOREIGN_KEY_VIOLATION = '23503';
 const REQUIRED_DETAILS: Record<string, string[]> = {
   bank_transfer: ['bank', 'accountNumber', 'accountType', 'accountHolder', 'idDocument'],
   pago_movil: ['bank', 'phone', 'idDocument'],
-  zelle: ['email'],
-  paypal: ['email'],
+  zelle: ['email', 'holder'],
   binance: ['identifier'],
-  crypto: ['walletAddress'],
-  contact: ['phone'],
 };
+
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const ID_DOC_RE = /^[VEJ]-?\d{5,9}$/i;
+
+/**
+ * Per-field format checks keyed by `${type}.${key}`, applied on top of the
+ * required-presence check. `email` = must be a valid address; `emailOrText` =
+ * validate as email only when it looks like one (zelle/binance accept an email
+ * OR a phone/pay-id); `idDocument` = canonical V/E/J document.
+ */
+const FIELD_FORMATS: Record<string, 'email' | 'emailOrText' | 'idDocument'> = {
+  'zelle.email': 'emailOrText',
+  'binance.identifier': 'emailOrText',
+  'bank_transfer.idDocument': 'idDocument',
+  'pago_movil.idDocument': 'idDocument',
+};
+
+function formatError(format: string, value: string): string | null {
+  switch (format) {
+    case 'email':
+      return EMAIL_RE.test(value) ? null : 'debe ser un correo válido';
+    case 'emailOrText':
+      return value.includes('@') && !EMAIL_RE.test(value) ? 'el correo no es válido' : null;
+    case 'idDocument':
+      return ID_DOC_RE.test(value) ? null : 'el documento debe ser tipo V/E/J (ej. V-12345678)';
+    default:
+      return null;
+  }
+}
 
 export interface CreatePaymentMethodInput {
   name: string;
@@ -124,6 +150,15 @@ export class PaymentMethodsService {
       throw this.app.httpErrors.badRequest(
         `Faltan datos obligatorios del método de pago: ${missing.join(', ')}`,
       );
+    }
+
+    // Format checks on the present string fields (email, cédula).
+    for (const [key, value] of Object.entries(clean)) {
+      const format = FIELD_FORMATS[`${type}.${key}`];
+      if (format && typeof value === 'string' && value) {
+        const problem = formatError(format, value);
+        if (problem) throw this.app.httpErrors.badRequest(`El campo "${key}" ${problem}`);
+      }
     }
     return clean;
   }

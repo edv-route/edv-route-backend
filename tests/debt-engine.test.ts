@@ -5,6 +5,7 @@ import pg from 'pg';
 import { runDebtEngineTick } from '../src/plugins/debt-scheduler.js';
 import { EnrollmentRepository } from '../src/modules/drivers/enrollment.repository.js';
 import { DriversRepository } from '../src/modules/drivers/drivers.repository.js';
+import { removeDriver as removeDriverFixture, restoreDebtEngineDefaults } from './helpers/db-fixtures.js';
 
 /**
  * Integration tests for the debt & penalty engine (design v8). They run the
@@ -22,6 +23,8 @@ before(() => {
   repo = new DriversRepository(pool);
 });
 after(async () => {
+  // Safety net: a test that dies mid-way must NEVER leave the money engine ON.
+  await restoreDebtEngineDefaults(pool);
   await pool.end();
 });
 
@@ -50,15 +53,7 @@ async function makeDriver(): Promise<{ driverId: string; subId: string }> {
   return { driverId, subId: s[0]!.id };
 }
 
-async function removeDriver(driverId: string): Promise<void> {
-  await pool.query(
-    `DELETE FROM subscription_payments WHERE driver_subscription_id IN
-       (SELECT id FROM driver_subscriptions WHERE driver_id = $1)`, [driverId]);
-  await pool.query(`DELETE FROM membership_payments WHERE driver_id = $1`, [driverId]);
-  await pool.query(`DELETE FROM invoices WHERE driver_id = $1`, [driverId]);
-  await pool.query(`DELETE FROM driver_subscriptions WHERE driver_id = $1`, [driverId]);
-  await pool.query(`DELETE FROM users WHERE id = $1`, [driverId]); // cascades to drivers
-}
+const removeDriver = (driverId: string): Promise<void> => removeDriverFixture(pool, driverId);
 
 /** Inserts an unpaid weekly charge whose week already started (= 1 week of debt). */
 async function addDebtWeek(subId: string, weeksAgo: number, kind: 'period' | 'penalty' = 'period'): Promise<string> {
@@ -182,8 +177,10 @@ test('debt cycle: overdue -> penalized (+fine) -> settle -> approved', async () 
     const again = await runDebtEngineTick(pool);
     assert.equal(again.moved.length, 0, 'idempotente');
   } finally {
-    await removeDriver(driverId);
+    // Switch OFF first: it closes the window in which a scheduler from another
+    // process could insert a charge while this driver is being deleted.
     await setFlag(false);
+    await removeDriver(driverId);
   }
 });
 
@@ -240,6 +237,68 @@ test('anchoring: weekly renew lands on Mondays when ON, now-based when OFF', asy
     assert.ok(rows[0]!.near, 'sin anclaje, el primer período arranca en now()');
   } finally {
     await removeDriver(off.driverId);
+  }
+});
+
+test('alta anclada: la semana comprada arranca el PRÓXIMO lunes y la tarifa no rige hasta entonces', async () => {
+  const repo = new EnrollmentRepository(pool);
+  const tz = 'America/Caracas';
+  // A pending driver as `enroll` leaves him: scheduled subscription + paid
+  // periods with placeholder dates, re-anchored at approval.
+  const { rows: u } = await pool.query<{ id: string }>(
+    `INSERT INTO users (first_name, last_name, full_name)
+     VALUES ('TEST', 'AltaAnclada', 'TEST AltaAnclada') RETURNING id`,
+  );
+  const driverId = u[0]!.id;
+  try {
+    await pool.query(`INSERT INTO drivers (user_id, source, status) VALUES ($1, 'admin', 'pending')`, [driverId]);
+    const { rows: p } = await pool.query<{ id: number }>(
+      `SELECT id FROM subscription_plans WHERE billing_period = 'weekly' AND active ORDER BY id LIMIT 1`,
+    );
+    const { rows: s } = await pool.query<{ id: string }>(
+      `INSERT INTO driver_subscriptions (driver_id, plan_id, status)
+       VALUES ($1, $2, 'scheduled') RETURNING id`,
+      [driverId, p[0]!.id],
+    );
+    const subId = s[0]!.id;
+    await pool.query(
+      `INSERT INTO subscription_payments
+         (driver_subscription_id, period_start, period_end, amount_usd, status, paid_at)
+       VALUES ($1, now(), now() + interval '7 days', 10, 'paid', now())`,
+      [subId],
+    );
+
+    await repo.approve(driverId, '7 days', tz, true);
+
+    const { rows } = await pool.query<{
+      dow: number; midnight: boolean; future: boolean; withinAWeek: boolean; today_is_monday: boolean;
+    }>(
+      `SELECT extract(isodow from (period_start AT TIME ZONE $2))::int AS dow,
+              (period_start AT TIME ZONE $2)::time = time '00:00' AS midnight,
+              period_start > now() AS future,
+              period_start <= now() + interval '7 days' AS "withinAWeek",
+              extract(isodow from (now() AT TIME ZONE $2))::int = 1 AS today_is_monday
+       FROM subscription_payments WHERE driver_subscription_id = $1`,
+      [subId, tz],
+    );
+    const week = rows[0]!;
+    assert.equal(week.dow, 1, 'la semana comprada arranca un lunes');
+    assert.ok(week.midnight, 'a las 00:00 hora del negocio');
+    assert.ok(week.withinAWeek, 'es el lunes inmediato, no uno lejano');
+    // Paying on a Monday buys the week already running; any other day, the next one.
+    assert.equal(week.future, !week.today_is_monday,
+      week.today_is_monday
+        ? 'pagando un lunes, la semana en curso arranca ya'
+        : 'pagando cualquier otro día, la semana arranca el lunes siguiente');
+
+    const { rows: sub } = await pool.query<{ status: string }>(
+      `SELECT status::text AS status FROM driver_subscriptions WHERE id = $1`, [subId]);
+    assert.equal(
+      sub[0]!.status, week.today_is_monday ? 'active' : 'scheduled',
+      'la tarifa no rige hasta que empieza su semana: queda programada',
+    );
+  } finally {
+    await removeDriver(driverId);
   }
 });
 
@@ -348,10 +407,8 @@ test('ciclo v8 anclado: emite el lunes correcto (monto ok), idempotente, deriva 
     assert.equal(await debt(), '0', 'sin deuda tras saldar');
     assert.equal(await statusOf(driverId), 'approved', 'saldado = aprobado');
   } finally {
+    await restoreDebtEngineDefaults(pool);
     await removeDriver(driverId);
-    await setFlag(false);
-    await pool.query(`UPDATE app_settings SET value = '5'::jsonb WHERE key = 'billing_day_of_week'`);
-    await pool.query(`UPDATE app_settings SET value = '18'::jsonb WHERE key = 'billing_hour'`);
   }
 });
 
@@ -371,11 +428,9 @@ test('engine: does not bill a week already covered by paid coverage (no phantom 
     assert.equal(await countPendingWeeks(covered.subId), '0', 'una semana cubierta NO se cobra');
     assert.equal(await countPendingWeeks(bare.subId), '1', 'sin cobertura SÍ se cobra la próxima semana');
   } finally {
+    await restoreDebtEngineDefaults(pool);
     await removeDriver(covered.driverId);
     await removeDriver(bare.driverId);
-    await setFlag(false);
-    await pool.query(`UPDATE app_settings SET value = '5'::jsonb WHERE key = 'billing_day_of_week'`);
-    await pool.query(`UPDATE app_settings SET value = '18'::jsonb WHERE key = 'billing_hour'`);
   }
 });
 

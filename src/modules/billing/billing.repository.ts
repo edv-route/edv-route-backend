@@ -6,18 +6,60 @@ import type { Camelize } from '../../db/case-types.js';
 type InvoiceRow = Camelize<Invoices>;
 type PaymentRow = Camelize<VDriverPayments>;
 
+/**
+ * Presentation state of an invoice, DERIVED from its charges (no migration,
+ * decision 2026-07-30): `voided` always wins; `paid` once every charge backing
+ * it is settled; `issued` while any charge is still owed (the debt invoice a
+ * registration without payment emits). The physical column only knows
+ * issued/voided — being "paid" is a fact of the charges, not of the document.
+ */
+export type InvoiceState = 'issued' | 'paid' | 'voided';
+
 export type InvoiceListItem = Pick<
   InvoiceRow,
-  'id' | 'invoiceNumber' | 'totalUsd' | 'status' | 'issuedAt' | 'voidedAt'
+  'id' | 'invoiceNumber' | 'totalUsd' | 'issuedAt' | 'voidedAt'
 > & {
+  status: InvoiceState;
+  /** When it was settled: max(paid_at) of its charges; null unless fully paid. */
+  paidAt: Date | null;
   driverId: string;
   driverName: string;
   voidedByName: string | null;
   paymentMethodName: string | null;
   paymentReference: string | null;
   payerBank: string | null;
+  /** Payer details (2026-07-31): date paid, phone/id (Pago Móvil), email/name (Zelle/Binance). */
+  paidOn: Date | null;
+  payerPhone: string | null;
+  payerId: string | null;
+  payerAccount: string | null;
   hasProof: boolean;
 };
+
+/**
+ * Charges backing an invoice: membership + tariff periods share one invoice
+ * (single-invoice cobro, 2026-07-28), so the aggregate spans both tables.
+ * Enum columns are compared as TEXT (pooler catalog-cache rule, 2026-07-23).
+ */
+const CHARGES_LATERAL = `LEFT JOIN LATERAL (
+         SELECT count(*) AS total,
+                count(*) FILTER (WHERE c.status = 'paid') AS paid,
+                max(c.paid_at) AS paid_at
+         FROM (
+           SELECT status::text AS status, paid_at FROM membership_payments WHERE invoice_id = i.id
+           UNION ALL
+           SELECT status::text AS status, paid_at FROM subscription_payments WHERE invoice_id = i.id
+         ) c
+       ) ch ON true`;
+
+/** Fully settled = it has charges and every one of them is paid. */
+const FULLY_PAID_SQL = `ch.total > 0 AND ch.paid = ch.total`;
+
+const INVOICE_STATE_SQL = `CASE
+         WHEN i.status::text = 'voided' THEN 'voided'
+         WHEN ${FULLY_PAID_SQL} THEN 'paid'
+         ELSE 'issued'
+       END`;
 
 /** Kanel cannot infer nullability in views: periods are NULL for memberships. */
 export type PaymentListItem = Omit<PaymentRow, 'periodStart' | 'periodEnd' | 'refundedBy'> & {
@@ -88,8 +130,9 @@ export class BillingRepository {
     const values: unknown[] = [];
 
     if (opts.status) {
+      // Filters on the DERIVED state, so "Pagadas" matches what the list shows.
       values.push(opts.status);
-      where.push(`i.status = $${values.length}`);
+      where.push(`${INVOICE_STATE_SQL} = $${values.length}`);
     }
     if (opts.driverId) {
       values.push(opts.driverId);
@@ -100,7 +143,7 @@ export class BillingRepository {
       where.push(`(u.full_name ILIKE $${values.length} OR i.invoice_number::text ILIKE $${values.length})`);
     }
     const whereSql = where.length > 0 ? `WHERE ${where.join(' AND ')}` : '';
-    const fromSql = `FROM invoices i JOIN users u ON u.id = i.driver_id`;
+    const fromSql = `FROM invoices i JOIN users u ON u.id = i.driver_id ${CHARGES_LATERAL}`;
 
     const countResult = await this.db.query<{ count: string }>(
       `SELECT count(*) AS count ${fromSql} ${whereSql}`,
@@ -110,11 +153,16 @@ export class BillingRepository {
     values.push(opts.limit, (opts.page - 1) * opts.limit);
     const { rows } = await this.db.query<InvoiceListItem>(
       `SELECT i.id, i.invoice_number AS "invoiceNumber", i.total_usd AS "totalUsd",
-              i.status, i.issued_at AS "issuedAt", i.voided_at AS "voidedAt",
+              ${INVOICE_STATE_SQL} AS status,
+              i.issued_at AS "issuedAt", i.voided_at AS "voidedAt",
+              CASE WHEN ${FULLY_PAID_SQL} THEN ch.paid_at END AS "paidAt",
               i.driver_id AS "driverId", u.full_name AS "driverName",
               va.full_name AS "voidedByName",
               pm.name AS "paymentMethodName", i.payment_reference AS "paymentReference",
-              i.payer_bank AS "payerBank", (i.proof_url IS NOT NULL) AS "hasProof"
+              i.payer_bank AS "payerBank", i.paid_on AS "paidOn",
+              i.payer_phone AS "payerPhone", i.payer_id AS "payerId",
+              i.payer_account AS "payerAccount",
+              (i.proof_url IS NOT NULL) AS "hasProof"
        ${fromSql}
        LEFT JOIN admins va ON va.id = i.voided_by
        LEFT JOIN payment_methods pm ON pm.id = i.payment_method_id

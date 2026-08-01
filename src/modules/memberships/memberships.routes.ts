@@ -23,7 +23,7 @@ const bodySchema = {
   additionalProperties: false,
   properties: {
     name: { type: 'string', minLength: 3, maxLength: 120 },
-    description: { type: ['string', 'null'], maxLength: 500 },
+    description: { type: ['string', 'null'], maxLength: 1000 },
     priceUsd: { type: 'number', minimum: 0, maximum: 100000 },
     benefitIds: { type: 'array', items: { type: 'integer', minimum: 1 }, maxItems: 100 },
   },

@@ -48,20 +48,25 @@ export interface DocumentInput {
   expiresAt?: string | null;
 }
 
-export interface EnrollInput {
-  planId: number;
-  periods: number;
-  /** Payment details (v8, Pieza 2): stamped on the primary invoice. Optional. */
-  paymentMethodId?: number | null;
-  reference?: string | null;
-  payerBank?: string | null;
-}
-
-/** Payment details captured at cobro time; stamped on the primary invoice. */
+/**
+ * Payment details captured at cobro time; stamped on the primary invoice.
+ * `paidOn`/`payerPhone`/`payerId` added 2026-07-31 (payer details): the phone
+ * and id are Pago-Móvil-only in the UI but the type carries them for every cobro.
+ */
 export interface PaymentMeta {
   paymentMethodId?: number | null;
   reference?: string | null;
   payerBank?: string | null;
+  paidOn?: string | null;
+  payerPhone?: string | null;
+  payerId?: string | null;
+  /** Email or name the payment came FROM (Zelle/Binance). */
+  payerAccount?: string | null;
+}
+
+export interface EnrollInput extends PaymentMeta {
+  planId: number;
+  periods: number;
 }
 
 export interface RegisterDocumentInput {
@@ -138,6 +143,10 @@ export class DriversService {
     // Resolve catalog prices before opening the transaction (read-only lookups;
     // amounts are snapshotted at insert time). Mirrors the checks in `enroll`.
     let money: Omit<Parameters<EnrollmentRepository['enrollOnClient']>[1], 'driverId'> | null = null;
+    // Registration WITHOUT payment (option A): the alta is emitted as DEBT
+    // (membership + 1 week, unpaid) whenever a membership and a weekly tariff
+    // exist; otherwise the driver stays pending with nothing to owe.
+    let debtAlta: Omit<Parameters<EnrollmentRepository['enrollDebtOnClient']>[1], 'driverId'> | null = null;
     if (payment) {
       const { rows: mRows } = await this.app.db.query<{ id: number; priceUsd: string }>(
         'SELECT id, price_usd AS "priceUsd" FROM memberships WHERE active',
@@ -165,6 +174,30 @@ export class DriversService {
         periodInterval: PERIOD_INTERVALS[plan.billingPeriod]!,
         registeredBy: adminId,
       };
+    } else {
+      const { rows: mRows } = await this.app.db.query<{ id: number; priceUsd: string }>(
+        'SELECT id, price_usd AS "priceUsd" FROM memberships WHERE active',
+      );
+      const membership = mRows[0];
+      const { rows: pRows } = await this.app.db.query<{ id: number; priceUsd: string }>(
+        `SELECT id, price_usd AS "priceUsd" FROM subscription_plans
+         WHERE active AND billing_period = 'weekly' ORDER BY id LIMIT 1`,
+      );
+      const plan = pRows[0];
+      if (membership && plan) {
+        // The debt plan is weekly by query; anchor to Monday when the engine is on.
+        const anchorWeekly = await this.isDebtEngineOn();
+        const timezone = String(await this.getSetting('business_timezone', 'America/Caracas'));
+        debtAlta = {
+          membershipId: membership.id,
+          membershipPriceUsd: Number(membership.priceUsd),
+          planId: plan.id,
+          planPriceUsd: Number(plan.priceUsd),
+          registeredBy: adminId,
+          anchorWeekly,
+          timezone,
+        };
+      }
     }
 
     // Validate document requirements up front: top-level = DRIVER documents,
@@ -225,6 +258,9 @@ export class DriversService {
         if (money) {
           const enrolled = await this.enrollment.enrollOnClient(client, { ...money, driverId: userId });
           invoiceNumbers = enrolled.invoiceNumbers;
+        } else if (debtAlta) {
+          const debt = await this.enrollment.enrollDebtOnClient(client, { ...debtAlta, driverId: userId });
+          invoiceNumbers = [debt.invoiceNumber];
         }
         return { userId, invoiceNumbers, documentIds, createdVehicles };
       });
@@ -442,11 +478,19 @@ export class DriversService {
     paymentMethodId: number | null;
     reference: string | null;
     payerBank: string | null;
+    paidOn: string | null;
+    payerPhone: string | null;
+    payerId: string | null;
+    payerAccount: string | null;
   } {
     return {
       paymentMethodId: input.paymentMethodId ?? null,
       reference: input.reference?.trim() || null,
       payerBank: input.payerBank?.trim() || null,
+      paidOn: input.paidOn?.trim() || null,
+      payerPhone: input.payerPhone?.trim() || null,
+      payerId: input.payerId?.trim() || null,
+      payerAccount: input.payerAccount?.trim() || null,
     };
   }
 
@@ -514,7 +558,7 @@ export class DriversService {
     const subscription = detail['subscription'] as { billingPeriod: string } | null;
     if (!membershipPayment || membershipPayment.status !== 'paid' || !subscription) {
       throw this.app.httpErrors.conflict(
-        'No se puede aprobar: faltan los pagos de membresía y tarifa (paso 4)',
+        'No se puede aprobar: faltan los pagos de membresía y tarifa',
       );
     }
     if (this.debtTotal(detail) > 0) {

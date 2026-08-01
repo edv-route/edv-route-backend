@@ -13,14 +13,15 @@
     "prestart": "npm run build",
     "start": "node dist/server.js",
     "typecheck": "tsc --noEmit",
-    "test": "node --import tsx --test tests/**/*.test.ts",
+    "test": "node --import tsx --test --test-concurrency=1 tests/**/*.test.ts",
     "migrate": "node-pg-migrate -m src/db/migrations up && npm run db:types",
     "migrate:down": "node-pg-migrate -m src/db/migrations down && npm run db:types",
     "migrate:create": "node-pg-migrate -m src/db/migrations create",
     "seed:admin": "tsx src/db/seed-admin.ts",
     "db:types": "kanel",
     "db:reanchor": "node --import tsx scripts/reanchor-weekly.ts",
-    "db:purge-phantom": "node --import tsx scripts/purge-phantom-charges.ts"
+    "db:purge-phantom": "node --import tsx scripts/purge-phantom-charges.ts",
+    "db:seed-demo": "node --import tsx scripts/seed-demo-drivers.ts"
   },
   "keywords": [
     "fastify",

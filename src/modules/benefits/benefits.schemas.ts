@@ -27,7 +27,7 @@ export const createBenefitSchema = {
     additionalProperties: false,
     properties: {
       name: { type: 'string', minLength: 3, maxLength: 120 },
-      description: { type: ['string', 'null'], maxLength: 500 },
+      description: { type: ['string', 'null'], maxLength: 1000 },
     },
   },
   response: { 201: benefitSchema },
@@ -41,7 +41,7 @@ export const updateBenefitSchema = {
     minProperties: 1,
     properties: {
       name: { type: 'string', minLength: 3, maxLength: 120 },
-      description: { type: ['string', 'null'], maxLength: 500 },
+      description: { type: ['string', 'null'], maxLength: 1000 },
       active: { type: 'boolean' },
     },
   },

@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import pg from 'pg';
 import type { FastifyInstance } from 'fastify';
 import { buildApp } from '../src/app.js';
+import { removeDriver as removeDriverFixture } from './helpers/db-fixtures.js';
 
 /**
  * Payment details on the invoice (Pieza 2): method + reference + payer bank are
@@ -33,15 +34,7 @@ after(async () => {
 
 const auth = () => ({ authorization: `Bearer ${token}` });
 
-async function removeDriver(driverId: string): Promise<void> {
-  await pool.query(
-    `DELETE FROM subscription_payments WHERE driver_subscription_id IN
-       (SELECT id FROM driver_subscriptions WHERE driver_id = $1)`, [driverId]);
-  await pool.query(`DELETE FROM membership_payments WHERE driver_id = $1`, [driverId]);
-  await pool.query(`DELETE FROM invoices WHERE driver_id = $1`, [driverId]);
-  await pool.query(`DELETE FROM driver_subscriptions WHERE driver_id = $1`, [driverId]);
-  await pool.query(`DELETE FROM users WHERE id = $1`, [driverId]);
-}
+const removeDriver = (driverId: string): Promise<void> => removeDriverFixture(pool, driverId);
 
 test('enroll stamps payment method + reference on the invoice', async () => {
   let driverId = '';
@@ -55,7 +48,7 @@ test('enroll stamps payment method + reference on the invoice', async () => {
     // a payment method to reference
     const m = await app.inject({
       method: 'POST', url: '/api/v1/payment-methods', headers: auth(),
-      payload: { name: 'TEST Pago', type: 'zelle', details: { email: 'pagos@test.com' } },
+      payload: { name: 'TEST Pago', type: 'zelle', details: { email: 'pagos@test.com', holder: 'EDV' } },
     });
     methodId = (m.json() as { id: number }).id;
 
@@ -71,7 +64,7 @@ test('enroll stamps payment method + reference on the invoice', async () => {
       method: 'POST', url: `/api/v1/drivers/${driverId}/enroll`, headers: auth(),
       payload: {
         planId: weekly.id, periods: 1,
-        paymentMethodId: methodId, reference: 'REF-12345', payerBank: '0134 - Banesco',
+        paymentMethodId: methodId, reference: 'REF12345', payerBank: '0134 - Banesco',
       },
     });
     assert.equal(e.statusCode, 201);
@@ -85,7 +78,7 @@ test('enroll stamps payment method + reference on the invoice', async () => {
     const invoice = list.items.find((i) => i.id === enrolled.primaryInvoiceId);
     assert.ok(invoice, 'la factura primaria aparece en el listado');
     assert.equal(invoice.paymentMethodName, 'TEST Pago');
-    assert.equal(invoice.paymentReference, 'REF-12345');
+    assert.equal(invoice.paymentReference, 'REF12345');
     assert.equal(invoice.payerBank, '0134 - Banesco');
     assert.equal(invoice.hasProof, false, 'sin comprobante todavía');
 
