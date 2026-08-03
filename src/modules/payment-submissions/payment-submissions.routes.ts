@@ -63,8 +63,11 @@ const paymentSubmissionsRoutes: FastifyPluginAsync = async (app) => {
               ? 'advance'
               : fields['purpose'] === 'enroll'
                 ? 'enroll'
-                : 'debt',
+                : fields['purpose'] === 'change_plan'
+                  ? 'change_plan'
+                  : 'debt',
           periods: fields['periods'] ? Number(fields['periods']) : null,
+          planId: fields['planId'] ? Number(fields['planId']) : null,
           source: 'admin',
           submittedBy: req.user.sub,
         },

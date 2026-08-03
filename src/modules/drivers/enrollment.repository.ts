@@ -823,6 +823,100 @@ export class EnrollmentRepository {
     return { invoiceId: invoice.id, invoiceNumber: invoice.invoiceNumber };
   }
 
+  /**
+   * Settles a PLAN CHANGE on a caller-provided client (v9 approval): creates the
+   * new subscription and prepays N weeks in ONE invoice, linking them to the
+   * submission. `scheduled` starts when the current coverage runs out; `immediate`
+   * starts now and cancels the old subscription. Same windows as `changePlan`.
+   */
+  async settleChangePlanOnClient(
+    client: pg.PoolClient,
+    input: {
+      driverId: string;
+      currentSubscriptionId: string;
+      newPlanId: number;
+      planPriceUsd: number;
+      periods: number;
+      periodInterval: string;
+      timezone: string;
+      mode: 'scheduled' | 'immediate';
+      anchorWeekly: boolean;
+      registeredBy: string;
+      submissionId: string;
+    },
+  ): Promise<{ invoiceId: string; invoiceNumber: string; startsAt: Date }> {
+    const immediate = input.mode === 'immediate';
+    const { rows: anchorRows } = await client.query<{ base: Date }>(
+      immediate
+        ? `SELECT CASE WHEN $4::boolean
+                      THEN date_trunc('week', (now() AT TIME ZONE $3)) AT TIME ZONE $3
+                      ELSE date_trunc('day', (now() + $2::interval) AT TIME ZONE $3) AT TIME ZONE $3 END AS base
+             FROM driver_subscriptions WHERE id = $1 FOR UPDATE`
+        : `SELECT COALESCE(
+               (SELECT max(period_end) FROM subscription_payments
+                WHERE driver_subscription_id = $1 AND status = 'paid'),
+               CASE WHEN $4::boolean
+                    THEN date_trunc('week', (now() AT TIME ZONE $3)) AT TIME ZONE $3
+                    ELSE date_trunc('day', (now() + $2::interval) AT TIME ZONE $3) AT TIME ZONE $3 END
+             ) AS base
+             FROM driver_subscriptions WHERE id = $1 FOR UPDATE`,
+      [input.currentSubscriptionId, input.periodInterval, input.timezone, input.anchorWeekly],
+    );
+    const base = anchorRows[0]!.base;
+
+    const { rows: subRows } = await client.query<{ id: string }>(
+      `INSERT INTO driver_subscriptions
+         (driver_id, plan_id, status, started_at, current_period_start, current_period_end)
+       VALUES ($1, $2, $3::subscription_status,
+               CASE WHEN $3::text = 'active' THEN now() END,
+               CASE WHEN $3::text = 'active' THEN
+                    CASE WHEN $5::boolean THEN $4::timestamptz ELSE now() END END,
+               CASE WHEN $3::text = 'active' THEN
+                    CASE WHEN $5::boolean THEN $4::timestamptz + interval '7 days'
+                         ELSE $4::timestamptz END END)
+       RETURNING id`,
+      [input.driverId, input.newPlanId, immediate ? 'active' : 'scheduled', base, input.anchorWeekly],
+    );
+    const newSubscriptionId = subRows[0]!.id;
+
+    const total = input.planPriceUsd * input.periods;
+    const invoice = await this.createInvoice(client, input.driverId, total, input.registeredBy);
+
+    for (let i = 0; i < input.periods; i++) {
+      await client.query(
+        `INSERT INTO subscription_payments
+           (driver_subscription_id, invoice_id, period_start, period_end,
+            amount_usd, status, paid_at, registered_by, submission_id)
+         VALUES ($1, $2,
+                 CASE WHEN $9::boolean THEN $3::timestamptz + ($5::interval * $4)
+                      WHEN $7::boolean
+                      THEN CASE WHEN $4 = 0 THEN now()
+                                ELSE $3::timestamptz + ($5::interval * ($4 - 1)) END
+                      ELSE $3::timestamptz + ($5::interval * $4) END,
+                 CASE WHEN $9::boolean THEN $3::timestamptz + ($5::interval * ($4 + 1))
+                      WHEN $7::boolean
+                      THEN $3::timestamptz + ($5::interval * $4)
+                      ELSE $3::timestamptz + ($5::interval * ($4 + 1)) END,
+                 $6, 'paid', now(), $8, $10)`,
+        [
+          newSubscriptionId, invoice.id, base, i, input.periodInterval,
+          input.planPriceUsd, immediate, input.registeredBy, input.anchorWeekly,
+          input.submissionId,
+        ],
+      );
+    }
+
+    if (immediate) {
+      await client.query(
+        `UPDATE driver_subscriptions SET status = 'cancelled', cancelled_at = now()
+         WHERE id = $1 AND status <> 'cancelled'`,
+        [input.currentSubscriptionId],
+      );
+    }
+
+    return { invoiceId: invoice.id, invoiceNumber: invoice.invoiceNumber, startsAt: base };
+  }
+
   /** Rejection: double refund + void every related invoice (numbers kept). */
   async reject(driverId: string, adminId: string): Promise<RejectionResult> {
     const client = await this.db.connect();

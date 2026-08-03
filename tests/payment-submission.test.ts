@@ -222,3 +222,60 @@ test('approve of an ADVANCE emits ONE invoice for the N weeks (2B fix)', async (
     if (methodId) await app.inject({ method: 'DELETE', url: `/api/v1/payment-methods/${methodId}`, headers: auth() });
   }
 });
+
+test('approve of an ENROLL emits ONE invoice (membership + N weeks)', async () => {
+  let driverId = '';
+  let methodId = 0;
+  const periods = 2;
+  try {
+    methodId = await createMethod();
+    // Plain driver (create, no payment) → no membership payment yet.
+    const d = await app.inject({
+      method: 'POST', url: '/api/v1/drivers', headers: auth(),
+      payload: { firstName: 'TEST', lastName: 'Enroll', nationalId: 'V-99991005' },
+    });
+    driverId = (d.json() as { userId: string }).userId;
+
+    const { rows: mem } = await pool.query<{ id: string; price: string }>(
+      `SELECT id, price_usd AS price FROM memberships WHERE active LIMIT 1`);
+    const { rows: pl } = await pool.query<{ id: string; price: string }>(
+      `SELECT id, price_usd AS price FROM subscription_plans
+       WHERE active AND billing_period = 'weekly' ORDER BY id LIMIT 1`);
+    assert.ok(mem[0] && pl[0], 'necesita membresía + tarifa semanal activas');
+    const memberPrice = Number(mem[0]!.price);
+    const planPrice = Number(pl[0]!.price);
+    const total = memberPrice + planPrice * periods;
+    const context = {
+      membershipId: Number(mem[0]!.id), membershipPriceUsd: memberPrice,
+      planId: Number(pl[0]!.id), planPriceUsd: planPrice, periods, periodInterval: '7 days',
+    };
+
+    const { rows } = await pool.query<{ id: string }>(
+      `INSERT INTO payment_submissions
+         (driver_id, amount_usd, payment_method_id, payment_reference, source, status, purpose, context)
+       VALUES ($1, $2, $3, 'REFV9ENR', 'admin', 'pending', 'enroll', $4::jsonb) RETURNING id`,
+      [driverId, total.toFixed(2), methodId, JSON.stringify(context)]);
+    const submissionId = rows[0]!.id;
+
+    const approve = await app.inject({
+      method: 'POST', url: `/api/v1/payment-submissions/${submissionId}/approve`, headers: auth() });
+    assert.equal(approve.statusCode, 200);
+    assert.equal((approve.json() as { settledCharges: number }).settledCharges, 1 + periods, 'membresía + N semanas');
+
+    const detail = (await (await app.inject({
+      method: 'GET', url: `/api/v1/drivers/${driverId}`, headers: auth() })).json()) as {
+      membershipPayment: { status: string } | null; subscription: unknown;
+    };
+    assert.equal(detail.membershipPayment?.status, 'paid', 'la membresía queda pagada');
+    assert.ok(detail.subscription, 'crea la suscripción');
+
+    const sub = (await (await app.inject({
+      method: 'GET', url: `/api/v1/payment-submissions/${submissionId}`, headers: auth() })).json()) as { invoiceId: string | null };
+    const inv = await pool.query<{ total: string }>(
+      `SELECT total_usd::text AS total FROM invoices WHERE id = $1`, [sub.invoiceId]);
+    assert.equal(Number(inv.rows[0]!.total).toFixed(2), total.toFixed(2), 'una factura por membresía + semanas');
+  } finally {
+    if (driverId) await removeDriver(driverId);
+    if (methodId) await app.inject({ method: 'DELETE', url: `/api/v1/payment-methods/${methodId}`, headers: auth() });
+  }
+});

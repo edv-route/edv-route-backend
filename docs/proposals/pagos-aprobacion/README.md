@@ -10,9 +10,10 @@
 > - ✅ **Fase 3/4 — Panel + perfil**: bandeja "Por aprobar", sección de revisión con
 >   Aprobar/Rechazar (modal de confirmación), detalle de factura con comprobantes inline,
 >   mensajes "en revisión" / "rechazado" en el perfil.
-> - 🚧 **Pendiente**: captura de **Efectivo Divisa** en el panel (`payment-capture`: monto + 5
->   fotos), cambio de plan por envío. **La app del chofer (`edv-route-mobile`) consume este
->   contrato** — es la referencia para su implementación.
+> - ✅ **Pendientes cerrados**: **Efectivo Divisa** en la captura (monto + hasta 5 fotos) y
+>   **cambio de plan** por envío (`purpose=change_plan`). **Todos los cobros del panel van por el
+>   flujo de envío.** La app del chofer (`edv-route-mobile`) consume este contrato — es la
+>   referencia para su implementación.
 >
 > **Este documento es el CONTRATO para el equipo de la app del chofer.** La app debe adaptarse
 > a este flujo: envía el pago, lo deja *pendiente* y muestra al chofer el estado hasta que un

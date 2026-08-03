@@ -14,7 +14,7 @@ export interface PaymentSubmissionMeta {
 }
 
 /** What the payment is for + the parameters approval needs. */
-export type SubmissionPurpose = 'debt' | 'advance' | 'enroll';
+export type SubmissionPurpose = 'debt' | 'advance' | 'enroll' | 'change_plan';
 
 /** Context for an `advance` submission (renew/prepay N weeks of the current tariff). */
 export interface AdvanceContext {
@@ -35,6 +35,18 @@ export interface EnrollContext {
   planPriceUsd: number;
   periods: number;
   periodInterval: string;
+}
+
+/** Context for a `change_plan` submission (switch tariff + prepay N weeks). */
+export interface ChangePlanContext {
+  currentSubscriptionId: string;
+  newPlanId: number;
+  planPriceUsd: number;
+  periods: number;
+  periodInterval: string;
+  timezone: string;
+  mode: 'scheduled' | 'immediate';
+  anchorWeekly: boolean;
 }
 
 export interface CreateSubmissionInput extends PaymentSubmissionMeta {
@@ -332,6 +344,17 @@ export class PaymentSubmissionsRepository {
         invoiceId = enr.invoiceId;
         invoiceNumber = enr.invoiceNumbers[0] ?? '';
         settledCharges = 1 + ctx.periods;
+      } else if (sub.purpose === 'change_plan') {
+        const ctx = sub.context as unknown as ChangePlanContext;
+        const cp = await this.enrollment.settleChangePlanOnClient(client, {
+          ...ctx,
+          driverId: sub.driverId,
+          registeredBy: adminId,
+          submissionId: id,
+        });
+        invoiceId = cp.invoiceId;
+        invoiceNumber = cp.invoiceNumber;
+        settledCharges = ctx.periods;
       } else {
         const settle = await this.enrollment.settleDebtOnClient(client, {
           driverId: sub.driverId,

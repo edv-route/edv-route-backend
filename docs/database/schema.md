@@ -336,7 +336,7 @@ pagado. Contrato: [proposals/pagos-aprobacion](../proposals/pagos-aprobacion/REA
 | `id` | uuid | no | `gen_random_uuid()` | PK |
 | `driver_id` | uuid | no | — | FK → `drivers.user_id` (RESTRICT) |
 | `status` | payment_submission_status | no | `'pending'` | `pending` \| `approved` \| `rejected` |
-| `purpose` | text | no | `'debt'` | **v9-2B** (mig. `1752350000000`): `debt` (saldar deuda) \| `advance` (adelantar N semanas) \| `enroll` (alta: membresía + N semanas). CHECK `payment_submissions_purpose_check` acota los valores |
+| `purpose` | text | no | `'debt'` | **v9-2B** (mig. `1752350000000`): `debt` (saldar deuda) \| `advance` (adelantar N semanas) \| `enroll` (alta: membresía + N semanas) \| `change_plan` (cambiar tarifa + prepagar N semanas). CHECK `payment_submissions_purpose_check` acota los valores |
 | `context` | jsonb | no | `'{}'` | Parámetros que la aprobación necesita (p. ej. `planId`/`periods`/`planPriceUsd` para advance/enroll) |
 | `amount_usd` | numeric(10,2) | no | — | Monto declarado (efectivo: capturado; resto: total de los cargos que cubre) |
 | `payment_method_id` | integer | sí | — | FK → `payment_methods.id` (SET NULL) |

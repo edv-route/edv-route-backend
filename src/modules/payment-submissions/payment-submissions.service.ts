@@ -34,10 +34,12 @@ export interface CreateSubmissionRequest extends PaymentSubmissionMeta {
   note: string | null;
   /** Captured amount, required for Efectivo Divisa (cash_usd) on a debt payment. */
   amountUsd: string | null;
-  /** `debt` (settle what is owed), `advance` (prepay N weeks) or `enroll` (alta: membership + N weeks). */
-  purpose: 'debt' | 'advance' | 'enroll';
-  /** Weeks; required for `advance` and `enroll`. */
+  /** `debt` \| `advance` \| `enroll` \| `change_plan`. */
+  purpose: 'debt' | 'advance' | 'enroll' | 'change_plan';
+  /** Weeks; required for `advance`, `enroll` and `change_plan`. */
   periods: number | null;
+  /** New tariff id; required for `change_plan`. */
+  planId: number | null;
   source: 'app' | 'admin';
   submittedBy: string | null;
 }
@@ -92,7 +94,15 @@ export class PaymentSubmissionsService {
     // price × weeks; `debt` is the captured cash or the derived outstanding debt.
     let amountUsd: string;
     let context: Record<string, unknown> = {};
-    if (input.purpose === 'enroll') {
+    if (input.purpose === 'change_plan') {
+      if (!input.periods || input.periods < 1) {
+        throw this.app.httpErrors.badRequest('Indica cuántas semanas incluye el cambio de tarifa');
+      }
+      if (!input.planId) throw this.app.httpErrors.badRequest('Indica la nueva tarifa');
+      const prep = await this.prepareChangePlanContext(driverId, input.planId, input.periods);
+      context = prep.context;
+      amountUsd = prep.amountUsd;
+    } else if (input.purpose === 'enroll') {
       if (!input.periods || input.periods < 1) {
         throw this.app.httpErrors.badRequest('Indica cuántas semanas incluye el alta');
       }
@@ -329,6 +339,73 @@ export class PaymentSubmissionsService {
       timezone,
       reactivate: sub.status === 'expired',
       anchorWeekly: sub.billingPeriod === 'weekly' && engineOn,
+    };
+    return { context, amountUsd: (planPriceUsd * periods).toFixed(2) };
+  }
+
+  /**
+   * Validates a plan change and builds its context (mirrors DriversService):
+   * approved driver with an active/expired tariff, a different active new plan
+   * and no scheduled change. `immediate` when the current tariff is expired.
+   */
+  private async prepareChangePlanContext(
+    driverId: string,
+    newPlanId: number,
+    periods: number,
+  ): Promise<{ context: Record<string, unknown>; amountUsd: string }> {
+    const { rows: dr } = await this.app.db.query<{ status: string }>(
+      `SELECT status::text AS status FROM drivers WHERE user_id = $1`,
+      [driverId],
+    );
+    if (dr[0]?.status !== 'approved') {
+      throw this.app.httpErrors.conflict('Solo se cambia la tarifa de afiliados aprobados');
+    }
+    const { rows: subs } = await this.app.db.query<{ id: string; status: string; planId: number }>(
+      `SELECT ds.id, ds.status::text AS status, ds.plan_id AS "planId"
+       FROM driver_subscriptions ds
+       WHERE ds.driver_id = $1 AND ds.status IN ('active', 'expired')
+       ORDER BY ds.created_at DESC LIMIT 1`,
+      [driverId],
+    );
+    const sub = subs[0];
+    if (!sub) throw this.app.httpErrors.conflict('El afiliado no tiene una tarifa activa ni vencida');
+    if (sub.planId === newPlanId) {
+      throw this.app.httpErrors.badRequest('La nueva tarifa es la misma que la actual');
+    }
+    const { rows: sched } = await this.app.db.query(
+      `SELECT 1 FROM driver_subscriptions WHERE driver_id = $1 AND status = 'scheduled'`,
+      [driverId],
+    );
+    if (sched.length > 0) {
+      throw this.app.httpErrors.conflict('Ya hay un cambio de tarifa programado. Cancélalo primero.');
+    }
+    const { rows: pl } = await this.app.db.query<{
+      id: number;
+      priceUsd: string;
+      billingPeriod: string;
+      active: boolean;
+    }>(
+      `SELECT id, price_usd AS "priceUsd", billing_period AS "billingPeriod", active
+       FROM subscription_plans WHERE id = $1`,
+      [newPlanId],
+    );
+    const plan = pl[0];
+    if (!plan || !plan.active) {
+      throw this.app.httpErrors.badRequest('La tarifa elegida no existe o está archivada');
+    }
+
+    const timezone = String(await this.getSetting('business_timezone', 'America/Caracas'));
+    const engineOn = (await this.getSetting('debt_engine_enabled', false)) === true;
+    const planPriceUsd = Number(plan.priceUsd);
+    const context = {
+      currentSubscriptionId: sub.id,
+      newPlanId: plan.id,
+      planPriceUsd,
+      periods,
+      periodInterval: PERIOD_INTERVALS[plan.billingPeriod] ?? '7 days',
+      timezone,
+      mode: sub.status === 'expired' ? 'immediate' : 'scheduled',
+      anchorWeekly: plan.billingPeriod === 'weekly' && engineOn,
     };
     return { context, amountUsd: (planPriceUsd * periods).toFixed(2) };
   }

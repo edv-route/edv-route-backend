@@ -693,6 +693,14 @@ semanal y validar el ciclo con reloj real.
 | **Integración con la app del chofer** (`edv-route-mobile`, otro agente) | La app POSTea a `/drivers/:id/payment-submissions` con su token `driver` (`/driver-auth/login`), filtra el catálogo de métodos por `adminOnly=false` (nunca ve `cash_usd`) y muestra pendiente/aprobado/rechazado en el perfil del chofer. Contrato: [proposals/pagos-aprobacion](../proposals/pagos-aprobacion/README.md) |
 | **Fix colateral** | `driver-vehicle-detail` cargaba en el constructor (leía un `input.required` antes de que el router lo enlazara → `NG0950`, pantalla en blanco); movido a `ngOnInit` |
 
+## 2026-08-03 — ✅ v9: pendientes cerrados (Efectivo Divisa + cambio de plan)
+
+| Decisión / hecho | Detalle |
+|---|---|
+| **Efectivo Divisa en la captura** (`payment-capture`) | El value pasó de `file` a `files[]` (1 comprobante estándar; hasta **5 fotos de billetes** en `cash_usd`, JPG/PNG) + `amountUsd`. Al elegir `cash_usd` se pide **monto + fotos** y se ocultan referencia/banco/pagador. El tipo `cash_usd` se añadió al catálogo de métodos del panel (admin-only, `PAYMENT_METHOD_FIELDS['cash_usd']=[]`). Los cobros de `driver-detail` y el wizard iteran `files[]` |
+| **Cambio de plan por envío** (`purpose='change_plan'`) | `settleChangePlanOnClient` (nueva suscripción + N semanas en **una** factura, modo `immediate`/`scheduled`); `approve` lo despacha; `create` valida con `prepareChangePlanContext`. El frontend reconduce el cambio de plan a envío; se eliminó `afterCobro` (ya sin uso). Ahora **todos** los cobros del panel van por el flujo de envío |
+| Pruebas | Test nuevo `approve of an ENROLL emits ONE invoice`; suite **30/30**, typecheck limpio |
+
 ## 2026-08-03 — 🔐 Login de chofer en la app (módulo `driver-auth`)
 
 > Autenticación de la app móvil de choferes (realiza la decisión 2026-07-16: **cédula + clave**).
