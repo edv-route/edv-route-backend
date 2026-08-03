@@ -145,3 +145,26 @@ Cuerpo de creación (borrador):
 3. **Perfil del chofer**: mostrar los 4 estados de la tabla de arriba (incluido el texto exacto
    de rechazo).
 4. **Un envío pendiente a la vez**: deshabilitar el botón de pagar mientras haya uno en revisión.
+
+## ⚠️ Pendientes conocidos (2026-08-03) — panel v9 COMPLETO, falta el lado app
+
+El flujo desde el **panel admin** está terminado y desplegado (crear → aprobar/rechazar,
+Efectivo Divisa, cambio de plan; todos los cobros van por envío). Para cerrar el ciclo con la
+**app del chofer** faltan, en el BACKEND, estos dos puntos concretos:
+
+1. **Guard del chofer en la creación.** Hoy `POST /drivers/:id/payment-submissions` está detrás
+   del guard admin (`app.authenticate`). Para que el chofer POStee desde la app con su token
+   `driver` (de `/driver-auth/login`) hay que **permitir `authenticateDriver`** en esa ruta (o
+   exponer una paralela) y validar que el `:id` sea el propio chofer del token. El servicio ya
+   acepta `source: 'app'` y `submittedBy: null`.
+2. **Actor-usuario en la auditoría.** `writeAudit` (`audit-writer.ts`) solo soporta
+   `actorAdminId`; con `source='app'` el actor queda `null`. Extenderlo con `actorUserId` +
+   columna `audit_logs.actor_user_id` (ya existe) para registrar al chofer que envía.
+
+**Menores / decisiones abiertas** (no bloquean la app):
+- No hay "des-aprobar" un pago ya aprobado (se revierte anulando la factura resultante, `voided`).
+- Un envío pendiente congela al chofer sin límite: no hay recordatorio ni caducidad.
+- Los endpoints directos `/enroll`, `/subscription/renew`, `/external-payment` siguen vivos (el
+  panel ya no los usa): conviene deprecarlos o protegerlos para que no salten la revisión.
+- Efectivo Divisa en el **alta (wizard)** no está verificado (genera un envío `debt`; debería andar).
+- Falta un **smoke test E2E** completo del ciclo en navegador (panel).

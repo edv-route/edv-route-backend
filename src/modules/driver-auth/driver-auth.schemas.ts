@@ -40,3 +40,38 @@ export const driverMeSchema = {
     200: driverPublicSchema,
   },
 } as const;
+
+export const appRequirementsSchema = {
+  response: {
+    200: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          id: { type: 'integer' },
+          name: { type: 'string' },
+          description: { type: ['string', 'null'] },
+          appliesTo: { type: 'string', enum: ['driver', 'vehicle'] },
+          isRequired: { type: 'boolean' },
+        },
+      },
+    },
+  },
+} as const;
+
+export const appPaymentMethodsSchema = {
+  response: {
+    200: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          id: { type: 'integer' },
+          name: { type: 'string' },
+          type: { type: 'string' },
+          details: { type: 'object', additionalProperties: true },
+        },
+      },
+    },
+  },
+} as const;

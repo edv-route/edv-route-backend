@@ -45,4 +45,39 @@ export class DriverAuthRepository {
     );
     return rows[0] ?? null;
   }
+
+  /** Active document requirements the app asks for during self-registration. */
+  async listActiveRequirements(): Promise<AppRequirement[]> {
+    const { rows } = await this.db.query<AppRequirement>(
+      `SELECT id, name, description, applies_to AS "appliesTo", is_required AS "isRequired"
+       FROM requirements WHERE active ORDER BY applies_to, name`,
+    );
+    return rows;
+  }
+
+  /** Payment methods offered to the app: active and NOT admin-only (no cash_usd). */
+  async listAppPaymentMethods(): Promise<AppPaymentMethod[]> {
+    const { rows } = await this.db.query<AppPaymentMethod>(
+      `SELECT id, name, type::text AS type, details
+       FROM payment_methods WHERE is_active AND NOT admin_only ORDER BY name`,
+    );
+    return rows;
+  }
+}
+
+/** A document requirement as the app consumes it. */
+export interface AppRequirement {
+  id: number;
+  name: string;
+  description: string | null;
+  appliesTo: 'driver' | 'vehicle';
+  isRequired: boolean;
+}
+
+/** A payment method the app may offer (admin-only methods are excluded upstream). */
+export interface AppPaymentMethod {
+  id: number;
+  name: string;
+  type: string;
+  details: Record<string, string>;
 }

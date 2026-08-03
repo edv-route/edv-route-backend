@@ -48,4 +48,14 @@ export class DriverAuthService {
     }
     return driver;
   }
+
+  /** Active requirements (driver + vehicle) the registration wizard asks for. */
+  listRequirements() {
+    return this.drivers.listActiveRequirements();
+  }
+
+  /** App payment catalog: active, non-admin-only methods (never cash_usd). */
+  listPaymentMethods() {
+    return this.drivers.listAppPaymentMethods();
+  }
 }
