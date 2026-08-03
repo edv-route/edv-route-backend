@@ -329,7 +329,22 @@ export class DriversRepository {
           WHERE ds.driver_id = d.user_id AND ds.status = 'scheduled'
             AND EXISTS (SELECT 1 FROM driver_subscriptions act
                         WHERE act.driver_id = d.user_id AND act.status = 'active')
-          LIMIT 1) AS "scheduledPlan"
+          LIMIT 1) AS "scheduledPlan",
+         -- v9: a payment under review (pending) drives the "en revisión" band and
+         -- hides the pay button; the most recent one, if REJECTED, drives the
+         -- "su pago fue rechazado" message (a newer pending/approved supersedes it).
+         (SELECT json_build_object('id', ps.id, 'amountUsd', ps.amount_usd::text,
+            'purpose', ps.purpose, 'createdAt', ps.created_at)
+          FROM payment_submissions ps
+          WHERE ps.driver_id = d.user_id AND ps.status = 'pending'
+          LIMIT 1) AS "pendingSubmission",
+         (SELECT CASE WHEN ps.status = 'rejected'
+                    THEN json_build_object('rejectionReason', ps.rejection_reason,
+                           'reviewedAt', ps.reviewed_at)
+                    ELSE NULL END
+          FROM payment_submissions ps
+          WHERE ps.driver_id = d.user_id
+          ORDER BY ps.created_at DESC LIMIT 1) AS "rejectedSubmission"
        FROM drivers d JOIN users u ON u.id = d.user_id
        WHERE d.user_id = $1`,
       [userId],

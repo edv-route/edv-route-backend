@@ -657,3 +657,51 @@ semanal y validar el ciclo con reloj real.
 | Se **quita del frontend** la "Actividad reciente" del dashboard, el ítem de menú "Auditoría" y su ruta `/audit`; se borran `features/audit/*` y `core/models/audit-log.model.ts` | El feed mostraba el log crudo (`payment_method.deleted · payment_methods`): lenguaje de desarrollador, no de admin. Si se necesita un panel de actividad, se hará aparte con info legible |
 | El **backend NO cambia**: `writeAudit` sigue registrando todo y `GET /audit-logs` sigue existiendo (queda sin consumidor en la UI) | El rastro es un activo; solo deja de exponerse. Los endpoints quedan para un futuro panel |
 | **Reset de datos de prueba**: borrados todos los choferes y su info relacionada (users, drivers, vehículos, documentos, suscripciones, pagos, facturas, 730 audit-logs de choferes) en una transacción; `invoice_number_seq` reiniciada en 1; catálogo/config intactos | Pre-producción: arrancar limpio para probar todo lo nuevo. Archivos del bucket quedaron huérfanos (inofensivos) |
+
+## 2026-08-03 — 🔒 Verificación de pagos (v9): flujo de aprobación pendiente → aprobado/rechazado
+
+> Pedido por Luis: hoy un cobro se **liquida al instante** sin validación alguna. Se introduce un
+> flujo donde **todo pago queda pendiente** hasta que un admin lo apruebe (medida anti-fraude /
+> anti-duplicados). **Fase 1 (BD) aplicada**: migración `1752340000000_payment-approval-flow`,
+> modelos regenerados, typecheck limpio. Backend/UI en construcción. Contrato para la app del
+> chofer: [proposals/pagos-aprobacion](../proposals/pagos-aprobacion/README.md).
+
+| Decisión | Motivo |
+|---|---|
+| **Nueva entidad `payment_submissions`** (+ `payment_submission_files` 1..5 imágenes, enum `payment_submission_status`): un "envío de pago" agrupa 1..N cargos con **un** comprobante y **un** estado `pending`/`approved`/`rejected` | No existía un concepto de "pago en revisión": el cobro nacía `paid`. Una entidad de primera clase permite aprobar/rechazar el pago completo y deja el rastro (revisor, fecha, motivo) |
+| **La factura se materializa AL APROBAR**, no al enviar; mientras el envío está pendiente no hay factura (cargos debidos + envío) | Coherente con "la factura es el recibo de dinero recibido". De paso corrige el bug por el que un adelanto de N semanas emitía N facturas y el comprobante/referencia caían solo en la primera: ahora un envío aprobado = **una** factura con sus datos |
+| **Todos los pagos quedan pendientes**, incluidos los que registra el admin (alta, enroll, renovación, pago externo/efectivo). **El alta pasa a 2 pasos** (registrar pago → aprobar → aprobar chofer) | Decisión de Luis: doble control, nada se da por pagado sin una aprobación explícita |
+| **El motor de deuda se congela** mientras haya un envío pendiente que cubre la deuda (no acumula mora ni penaliza; se reanuda si se rechaza) | No penalizar/suspender a quien ya pagó y espera la revisión |
+| **A lo sumo un envío pendiente por chofer** (índice único parcial `payment_submissions_one_pending_per_driver`) | Control anti-duplicados: un nuevo envío espera a que se resuelva el anterior |
+| **Rechazo con rastro**: el envío rechazado **nunca se borra** (se guarda `rejection_reason`); el chofer genera uno nuevo. Mensaje en su perfil: *"Su pago fue rechazado, genere uno nuevo o póngase en contacto con el administrador."* | Regla de dinero (documentos de dinero no se borran) + guía clara al chofer |
+| **Nuevo método `cash_usd` (Efectivo Divisa), `admin_only`**: exclusivo del panel (columna `payment_methods.admin_only`, **nunca se expone a la app**); al cobrar captura **fecha + monto + 1..5 fotos de billetes**, sin referencia/banco/pagador | Pedido de Luis: cobro en efectivo divisa con evidencia visual (los billetes), operado solo por el admin |
+| Detalle de factura en **ruta dedicada `/billing/:id`**; bandeja de revisión como **pestaña "Por aprobar"** dentro de Facturación; comprobante **obligatorio salvo efectivo/contacto** | Preguntas menores resueltas con Luis el 2026-08-03 |
+
+## 2026-08-03 — ✅ Verificación de pagos v9: implementación completa (backend + panel)
+
+> Backend **29/29 tests**, frontend build limpio. El flujo funciona de punta a punta desde el
+> panel: registrar pago → **pendiente** → aprobar/rechazar → mensajes en el perfil del chofer.
+
+| Decisión / hecho | Detalle |
+|---|---|
+| **Módulo nuevo `payment-submissions`** (routes → service → repository) | `POST /drivers/:id/payment-submissions` (multipart, 1..5 imágenes), `GET /payment-submissions` (bandeja), `GET /payment-submissions/:id` (detalle + desglose `items[]` + URLs firmadas), `.../approve`, `.../reject`. Migración `1752350000000` añadió `purpose`/`context` |
+| **Liquidación AL APROBAR, despachada por `purpose`** | `debt` → `settleDebtOnClient` (extraído por DRY de `registerExternalPayment`); `advance` → `settleAdvanceOnClient` (**una** factura por las N semanas, corrige el bug de N facturas); `enroll` → `enrollOnClient` (acepta `submissionId`, retorna `invoiceId`). Todos vinculan los cargos al envío y estampan la metadata en la factura |
+| **Motor de deuda congelado** | `debt-scheduler.ts` pasos 2/4/5: `NOT EXISTS` envío pendiente → no marca mora, no deriva estado ni penaliza mientras se revisa |
+| **Efectivo Divisa (`cash_usd`)** | Tipo admin-only: `payment_methods.admin_only` derivado del tipo; el catálogo expone `adminOnly` para que la app lo filtre. (La captura de monto + 5 fotos en `payment-capture` queda pendiente) |
+| **Todos los cobros del panel reconducidos a envío** | Deuda, adelanto/renovación, enroll y **alta (wizard)**. El alta = `register(payment:null)` [emite la deuda del alta] + envío `debt` con el comprobante. Solo el **cambio de plan** sigue liquidando directo (caso menor) |
+| **Panel de revisión** | Facturación: nombre del afiliado **no clickeable**, N° → detalle `/billing/:id` (comprobantes **inline** siempre visibles); pestaña **"Por aprobar"** (fila clickeable) → sección `/billing/submissions/:id` con desglose "qué está pagando", comprobantes inline y **Aprobar/Rechazar con modal de confirmación**. Perfil: bandas "Pago en revisión" y "Pago rechazado" |
+| **Integración con la app del chofer** (`edv-route-mobile`, otro agente) | La app POSTea a `/drivers/:id/payment-submissions` con su token `driver` (`/driver-auth/login`), filtra el catálogo de métodos por `adminOnly=false` (nunca ve `cash_usd`) y muestra pendiente/aprobado/rechazado en el perfil del chofer. Contrato: [proposals/pagos-aprobacion](../proposals/pagos-aprobacion/README.md) |
+| **Fix colateral** | `driver-vehicle-detail` cargaba en el constructor (leía un `input.required` antes de que el router lo enlazara → `NG0950`, pantalla en blanco); movido a `ngOnInit` |
+
+## 2026-08-03 — 🔐 Login de chofer en la app (módulo `driver-auth`)
+
+> Autenticación de la app móvil de choferes (realiza la decisión 2026-07-16: **cédula + clave**).
+> Aditivo, **sin migración** (`users.password_hash` ya existía). La app móvil es un proyecto
+> Flutter aparte (`edv-route-mobile`), apunta por defecto al backend de producción (Railway).
+
+| Decisión | Motivo |
+|---|---|
+| **Módulo `driver-auth` separado** del `auth` de admins (`POST /driver-auth/login`, `GET /driver-auth/me`); mismo argon2id + verificación timing-safe contra enumeración | Aislar el flujo de la app del panel; menos acoplamiento aunque duplique algo de forma (decisión de Luis) |
+| **Claim `type` en el JWT** (`admin`\|`driver`) + guards por audiencia (`authenticate` exige `admin`, `authenticateDriver` exige `driver`) | Cerrar un hueco de seguridad: ambos tokens se firman con el mismo secreto; sin el claim un token de chofer accedería a rutas de admin (p. ej. `GET /drivers`). Los admins re-loguean una vez |
+| **Login abierto**: cualquier chofer con credenciales válidas entra; se devuelve `status` y la app enruta (revisión / bloqueado / home) | Coincide con las pantallas del Figma; el backend autentica, no decide el destino |
+| **Lockout por intentos diferido** para choferes (los admins sí lo tienen) | Requiere columnas nuevas (migración); no bloqueante para esta fase |

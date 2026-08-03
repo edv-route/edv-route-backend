@@ -47,6 +47,7 @@ export class AuthService {
 
     const token = this.app.jwt.sign({
       sub: admin.id,
+      type: 'admin',
       username: admin.username,
       role: admin.role,
     });

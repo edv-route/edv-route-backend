@@ -10,6 +10,8 @@ export interface EnrollmentInput {
   periods: number; // 1 = basic, N = advance payment xN
   periodInterval: string; // e.g. '7 days' - derived from billing_period
   registeredBy: string;
+  /** v9: links the created charges to the approved submission (null for the legacy path). */
+  submissionId?: string | null;
 }
 
 export interface RejectionResult {
@@ -39,19 +41,20 @@ export class EnrollmentRepository {
   async enrollOnClient(
     client: pg.PoolClient,
     input: EnrollmentInput,
-  ): Promise<{ invoiceNumbers: string[] }> {
+  ): Promise<{ invoiceNumbers: string[]; invoiceId: string }> {
     // A SINGLE invoice groups the whole advance payment: membership + EVERY
     // tariff period (decision 2026-07-28). Paying N weeks up front = one invoice
     // of the total; the per-week subscription_payments rows below still track
     // coverage, so the tariff cycle keeps consuming the advances one week at a time.
+    const submissionId = input.submissionId ?? null;
     const total = input.membershipPriceUsd + input.planPriceUsd * input.periods;
     const invoice = await this.createInvoice(client, input.driverId, total, input.registeredBy);
 
     await client.query(
       `INSERT INTO membership_payments
-         (driver_id, membership_id, invoice_id, amount_usd, status, paid_at, registered_by)
-       VALUES ($1, $2, $3, $4, 'paid', now(), $5)`,
-      [input.driverId, input.membershipId, invoice.id, input.membershipPriceUsd, input.registeredBy],
+         (driver_id, membership_id, invoice_id, amount_usd, status, paid_at, registered_by, submission_id)
+       VALUES ($1, $2, $3, $4, 'paid', now(), $5, $6)`,
+      [input.driverId, input.membershipId, invoice.id, input.membershipPriceUsd, input.registeredBy, submissionId],
     );
 
     const { rows: subRows } = await client.query<{ id: string }>(
@@ -68,11 +71,11 @@ export class EnrollmentRepository {
       await client.query(
         `INSERT INTO subscription_payments
            (driver_subscription_id, invoice_id, period_start, period_end,
-            amount_usd, status, paid_at, registered_by)
+            amount_usd, status, paid_at, registered_by, submission_id)
          VALUES ($1, $2,
                  now() + ($3::interval * $4), now() + ($3::interval * ($4 + 1)),
-                 $5, 'paid', now(), $6)`,
-        [subscriptionId, invoice.id, input.periodInterval, i, input.planPriceUsd, input.registeredBy],
+                 $5, 'paid', now(), $6, $7)`,
+        [subscriptionId, invoice.id, input.periodInterval, i, input.planPriceUsd, input.registeredBy, submissionId],
       );
     }
 
@@ -81,7 +84,7 @@ export class EnrollmentRepository {
       [input.driverId],
     );
 
-    return { invoiceNumbers: [invoice.invoiceNumber] };
+    return { invoiceNumbers: [invoice.invoiceNumber], invoiceId: invoice.id };
   }
 
   /**
@@ -617,105 +620,207 @@ export class EnrollmentRepository {
   }
 
   /**
-   * External payment (design v8 + option A, 2026-07-30): the driver settled with
-   * the admin outside the system. Settles ALL the debt in one transaction — the
-   * MEMBERSHIP (alta), the overdue tariff weeks (arrears), the penalty fine and
-   * the alta's first week — marking each `paid` with `paid_at = now()`. Charges
-   * that already carry a debt invoice (the alta) keep it (that invoice now reads
-   * as paid); engine arrears without an invoice get ONE fresh invoice grouping
-   * them (trace, regla de oro #7). A pending week WITHOUT an invoice is the
-   * upcoming charge, NOT debt, and is left untouched. Returns null when nothing
-   * is outstanding. The debt engine then derives the state out of overdue/penalized.
+   * Settles ALL of a driver's debt on a caller-provided client (no transaction
+   * control): the MEMBERSHIP (alta), the overdue tariff weeks (arrears), the
+   * penalty fine and the alta's first week — each marked `paid` with
+   * `paid_at = now()`. Charges that already carry a debt invoice (the alta) keep
+   * it (that invoice now reads as paid); engine arrears without an invoice get
+   * ONE fresh invoice grouping them (trace, regla de oro #7). A pending week
+   * WITHOUT an invoice is the upcoming charge, NOT debt, and is left untouched.
+   * Returns null when nothing is outstanding. Shared by the admin external
+   * payment (its own transaction) and the v9 payment-approval flow (settling as
+   * part of the approval transaction). `submissionId` links the settled charges
+   * to the approved submission (null for the direct external payment).
+   */
+  async settleDebtOnClient(
+    client: pg.PoolClient,
+    input: { driverId: string; registeredBy: string; submissionId?: string | null },
+  ): Promise<{
+    invoiceId: string | null;
+    invoiceNumber: string;
+    settledCharges: number;
+    totalUsd: string;
+  } | null> {
+    const submissionId = input.submissionId ?? null;
+    type Row = { id: string; amountUsd: string; invoiceId: string | null };
+    const { rows: charges } = await client.query<Row>(
+      `SELECT sp.id, sp.amount_usd AS "amountUsd", sp.invoice_id AS "invoiceId"
+       FROM subscription_payments sp
+       JOIN driver_subscriptions ds ON ds.id = sp.driver_subscription_id
+       WHERE ds.driver_id = $1
+         AND (sp.status = 'overdue' OR (sp.status = 'pending' AND sp.invoice_id IS NOT NULL))
+       FOR UPDATE OF sp`,
+      [input.driverId],
+    );
+    const { rows: memberships } = await client.query<Row>(
+      `SELECT id, amount_usd AS "amountUsd", invoice_id AS "invoiceId"
+       FROM membership_payments
+       WHERE driver_id = $1 AND status = 'pending'
+       FOR UPDATE`,
+      [input.driverId],
+    );
+    if (charges.length === 0 && memberships.length === 0) {
+      return null;
+    }
+
+    // Engine arrears without an invoice get ONE fresh invoice grouping them.
+    const orphans = charges.filter((c) => !c.invoiceId);
+    let orphanInvoice: { id: string; invoiceNumber: string } | null = null;
+    if (orphans.length > 0) {
+      const orphanTotal = orphans.reduce((sum, c) => sum + Number(c.amountUsd), 0);
+      orphanInvoice = await this.createInvoice(client, input.driverId, orphanTotal, input.registeredBy);
+      await client.query(
+        `UPDATE subscription_payments
+            SET status = 'paid', paid_at = now(), invoice_id = $2,
+                registered_by = $3, submission_id = $4
+          WHERE id = ANY($1::uuid[])`,
+        [orphans.map((c) => c.id), orphanInvoice.id, input.registeredBy, submissionId],
+      );
+    }
+    // Charges that already carry a debt invoice (alta): just mark paid.
+    const invoiced = charges.filter((c) => c.invoiceId).map((c) => c.id);
+    if (invoiced.length > 0) {
+      await client.query(
+        `UPDATE subscription_payments
+            SET status = 'paid', paid_at = now(), registered_by = $2, submission_id = $3
+          WHERE id = ANY($1::uuid[])`,
+        [invoiced, input.registeredBy, submissionId],
+      );
+    }
+    if (memberships.length > 0) {
+      await client.query(
+        `UPDATE membership_payments
+            SET status = 'paid', paid_at = now(), registered_by = $2, submission_id = $3
+          WHERE id = ANY($1::uuid[])`,
+        [memberships.map((c) => c.id), input.registeredBy, submissionId],
+      );
+    }
+
+    // Primary invoice (for payment meta + receipt): the fresh arrears invoice
+    // if any, else the alta invoice the settled charges already carry.
+    const altaInvoiceId =
+      charges.find((c) => c.invoiceId)?.invoiceId ?? memberships.find((c) => c.invoiceId)?.invoiceId ?? null;
+    const invoiceId = orphanInvoice?.id ?? altaInvoiceId;
+    let invoiceNumber = orphanInvoice?.invoiceNumber ?? '';
+    if (!invoiceNumber && altaInvoiceId) {
+      const { rows } = await client.query<{ n: string }>(
+        `SELECT invoice_number::text AS n FROM invoices WHERE id = $1`,
+        [altaInvoiceId],
+      );
+      invoiceNumber = rows[0]?.n ?? '';
+    }
+
+    const total = [...charges, ...memberships].reduce((sum, c) => sum + Number(c.amountUsd), 0);
+    return {
+      invoiceId,
+      invoiceNumber,
+      settledCharges: charges.length + memberships.length,
+      totalUsd: total.toFixed(2),
+    };
+  }
+
+  /**
+   * External payment (design v8 + option A, 2026-07-30): the admin registers
+   * money the driver settled outside the system, in its own transaction. Thin
+   * wrapper over settleDebtOnClient (shared with the v9 approval flow).
    */
   async registerExternalPayment(input: {
     driverId: string;
     registeredBy: string;
   }): Promise<{ invoiceNumber: string; settledCharges: number; totalUsd: string } | null> {
-    const client = await this.db.connect();
-    try {
-      await client.query('BEGIN');
-
-      type Row = { id: string; amountUsd: string; invoiceId: string | null };
-      const { rows: charges } = await client.query<Row>(
-        `SELECT sp.id, sp.amount_usd AS "amountUsd", sp.invoice_id AS "invoiceId"
-         FROM subscription_payments sp
-         JOIN driver_subscriptions ds ON ds.id = sp.driver_subscription_id
-         WHERE ds.driver_id = $1
-           AND (sp.status = 'overdue' OR (sp.status = 'pending' AND sp.invoice_id IS NOT NULL))
-         FOR UPDATE OF sp`,
-        [input.driverId],
-      );
-      const { rows: memberships } = await client.query<Row>(
-        `SELECT id, amount_usd AS "amountUsd", invoice_id AS "invoiceId"
-         FROM membership_payments
-         WHERE driver_id = $1 AND status = 'pending'
-         FOR UPDATE`,
-        [input.driverId],
-      );
-      if (charges.length === 0 && memberships.length === 0) {
-        await client.query('ROLLBACK');
-        return null;
-      }
-
-      // Engine arrears without an invoice get ONE fresh invoice grouping them.
-      const orphans = charges.filter((c) => !c.invoiceId);
-      let orphanInvoice: { id: string; invoiceNumber: string } | null = null;
-      if (orphans.length > 0) {
-        const orphanTotal = orphans.reduce((sum, c) => sum + Number(c.amountUsd), 0);
-        orphanInvoice = await this.createInvoice(client, input.driverId, orphanTotal, input.registeredBy);
-        await client.query(
-          `UPDATE subscription_payments
-              SET status = 'paid', paid_at = now(), invoice_id = $2, registered_by = $3
-            WHERE id = ANY($1::uuid[])`,
-          [orphans.map((c) => c.id), orphanInvoice.id, input.registeredBy],
-        );
-      }
-      // Charges that already carry a debt invoice (alta): just mark paid.
-      const invoiced = charges.filter((c) => c.invoiceId).map((c) => c.id);
-      if (invoiced.length > 0) {
-        await client.query(
-          `UPDATE subscription_payments
-              SET status = 'paid', paid_at = now(), registered_by = $2
-            WHERE id = ANY($1::uuid[])`,
-          [invoiced, input.registeredBy],
-        );
-      }
-      if (memberships.length > 0) {
-        await client.query(
-          `UPDATE membership_payments
-              SET status = 'paid', paid_at = now(), registered_by = $2
-            WHERE id = ANY($1::uuid[])`,
-          [memberships.map((c) => c.id), input.registeredBy],
-        );
-      }
-
-      // Primary invoice (for payment meta + receipt): the fresh arrears invoice
-      // if any, else the alta invoice the settled charges already carry.
-      const altaInvoiceId =
-        charges.find((c) => c.invoiceId)?.invoiceId ?? memberships.find((c) => c.invoiceId)?.invoiceId ?? null;
-      let invoiceNumber = orphanInvoice?.invoiceNumber ?? '';
-      if (!invoiceNumber && altaInvoiceId) {
-        const { rows } = await client.query<{ n: string }>(
-          `SELECT invoice_number::text AS n FROM invoices WHERE id = $1`,
-          [altaInvoiceId],
-        );
-        invoiceNumber = rows[0]?.n ?? '';
-      }
-
-      const total = [...charges, ...memberships].reduce((sum, c) => sum + Number(c.amountUsd), 0);
-
-      await client.query('COMMIT');
+    return withTransaction(this.db, async (client) => {
+      const result = await this.settleDebtOnClient(client, input);
+      if (!result) return null;
       return {
-        invoiceNumber,
-        settledCharges: charges.length + memberships.length,
-        totalUsd: total.toFixed(2),
+        invoiceNumber: result.invoiceNumber,
+        settledCharges: result.settledCharges,
+        totalUsd: result.totalUsd,
       };
-    } catch (err) {
-      await client.query('ROLLBACK');
-      throw err;
-    } finally {
-      client.release();
+    });
+  }
+
+  /**
+   * Settles an ADVANCE (renewal/prepay of N tariff weeks) on a caller-provided
+   * client, as part of the v9 approval transaction. Same anchoring rule as
+   * `renew`, but emits ONE invoice grouping the N weeks (fixing the old
+   * "N invoices per advance" bug) and links them to the approved submission.
+   */
+  async settleAdvanceOnClient(
+    client: pg.PoolClient,
+    input: {
+      subscriptionId: string;
+      driverId: string;
+      planPriceUsd: number;
+      periods: number;
+      periodInterval: string;
+      timezone: string;
+      reactivate: boolean;
+      anchorWeekly: boolean;
+      registeredBy: string;
+      submissionId: string;
+    },
+  ): Promise<{ invoiceId: string; invoiceNumber: string }> {
+    // Anchor base: weekly-anchored uses the current week's Monday when
+    // reactivating or when there is no coverage, else chains after the last paid
+    // period; prepaid uses now / the next midnight boundary (identical to renew).
+    const { rows: anchorRows } = await client.query<{ base: Date }>(
+      input.reactivate
+        ? `SELECT CASE WHEN $4::boolean
+                      THEN date_trunc('week', (now() AT TIME ZONE $3)) AT TIME ZONE $3
+                      ELSE date_trunc('day', (now() + $2::interval) AT TIME ZONE $3) AT TIME ZONE $3 END AS base
+           FROM driver_subscriptions WHERE id = $1 FOR UPDATE`
+        : `SELECT COALESCE(
+             (SELECT max(period_end) FROM subscription_payments
+              WHERE driver_subscription_id = $1 AND status = 'paid'),
+             CASE WHEN $4::boolean
+                  THEN date_trunc('week', (now() AT TIME ZONE $3)) AT TIME ZONE $3
+                  ELSE date_trunc('day', (now() + $2::interval) AT TIME ZONE $3) AT TIME ZONE $3 END
+           ) AS base
+           FROM driver_subscriptions WHERE id = $1 FOR UPDATE`,
+      [input.subscriptionId, input.periodInterval, input.timezone, input.anchorWeekly],
+    );
+    const base = anchorRows[0]!.base;
+
+    const total = input.planPriceUsd * input.periods;
+    const invoice = await this.createInvoice(client, input.driverId, total, input.registeredBy);
+
+    for (let i = 0; i < input.periods; i++) {
+      await client.query(
+        `INSERT INTO subscription_payments
+           (driver_subscription_id, invoice_id, period_start, period_end,
+            amount_usd, status, paid_at, registered_by, submission_id)
+         VALUES ($1, $2,
+                 CASE WHEN $9::boolean THEN $3::timestamptz + ($5::interval * $4)
+                      WHEN $7::boolean
+                      THEN CASE WHEN $4 = 0 THEN now()
+                                ELSE $3::timestamptz + ($5::interval * ($4 - 1)) END
+                      ELSE $3::timestamptz + ($5::interval * $4) END,
+                 CASE WHEN $9::boolean THEN $3::timestamptz + ($5::interval * ($4 + 1))
+                      WHEN $7::boolean
+                      THEN $3::timestamptz + ($5::interval * $4)
+                      ELSE $3::timestamptz + ($5::interval * ($4 + 1)) END,
+                 $6, 'paid', now(), $8, $10)`,
+        [
+          input.subscriptionId, invoice.id, base, i, input.periodInterval,
+          input.planPriceUsd, input.reactivate, input.registeredBy, input.anchorWeekly,
+          input.submissionId,
+        ],
+      );
     }
+
+    if (input.reactivate) {
+      await client.query(
+        `UPDATE driver_subscriptions SET
+           status = 'active',
+           current_period_start = CASE WHEN $3::boolean THEN $2::timestamptz ELSE now() END,
+           current_period_end = CASE WHEN $3::boolean
+             THEN $2::timestamptz + interval '7 days' ELSE $2::timestamptz END
+         WHERE id = $1`,
+        [input.subscriptionId, base, input.anchorWeekly],
+      );
+    }
+
+    return { invoiceId: invoice.id, invoiceNumber: invoice.invoiceNumber };
   }
 
   /** Rejection: double refund + void every related invoice (numbers kept). */

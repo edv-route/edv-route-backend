@@ -3,6 +3,7 @@ import type { MembershipsId } from './Memberships.js';
 import type { InvoicesId } from './Invoices.js';
 import type { default as MembershipPaymentStatus } from './MembershipPaymentStatus.js';
 import type { AdminsId } from './Admins.js';
+import type { PaymentSubmissionsId } from './PaymentSubmissions.js';
 
 /** Identifier type for public.membership_payments */
 export type MembershipPaymentsId = string & { __brand: 'public.membership_payments' };
@@ -30,6 +31,8 @@ export default interface MembershipPayments {
   registered_by: AdminsId | null;
 
   created_at: Date;
+
+  submission_id: PaymentSubmissionsId | null;
 }
 
 /** Represents the initializer for the table public.membership_payments */
@@ -58,6 +61,8 @@ export interface MembershipPaymentsInitializer {
 
   /** Default value: now() */
   created_at?: Date;
+
+  submission_id?: PaymentSubmissionsId | null;
 }
 
 /** Represents the mutator for the table public.membership_payments */
@@ -83,4 +88,6 @@ export interface MembershipPaymentsMutator {
   registered_by?: AdminsId | null;
 
   created_at?: Date;
+
+  submission_id?: PaymentSubmissionsId | null;
 }

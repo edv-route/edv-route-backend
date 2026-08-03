@@ -207,6 +207,7 @@ el precio y los beneficios de la versión que pagó.
 | `invoice_id` | uuid | sí | — | FK → `invoices.id` (RESTRICT) |
 | `amount_usd` | numeric(10,2) | no | — | Snapshot del precio al pagar |
 | `status` | membership_payment_status | no | `'pending'` | `pending` \| `paid` \| `refunded` |
+| `submission_id` | uuid | sí | — | **v9**: FK → `payment_submissions.id` (SET NULL). Envío de pago que reclama este cargo |
 | `paid_at` / `refunded_at` | timestamptz | sí | — | — |
 | `refunded_by` / `registered_by` | uuid | sí | — | FK → `admins.id` (SET NULL) |
 | `created_at` | timestamptz | no | `now()` | — |
@@ -262,6 +263,7 @@ Mismo versionado condicional que `memberships` (sin tabla hija de beneficios).
 | `amount_usd` | numeric(10,2) | no | — | Snapshot |
 | `status` | subscription_payment_status | no | `'pending'` | `pending` \| `paid` \| `overdue` \| `refunded`. Con el **motor de deuda (v8)**: `pending` = cargo emitido sin pagar (sin factura aún), `overdue` = semana ya arrancada sin pagar = **deuda** |
 | `charge_kind` | subscription_charge_kind | no | `'period'` | **v8**: `period` (semana de tarifa) \| `penalty` (multa por incumplimiento). La vista muestra la multa como "Penalización" en vez del nombre del plan |
+| `submission_id` | uuid | sí | — | **v9**: FK → `payment_submissions.id` (SET NULL). Envío de pago que reclama este cargo; al aprobar se liquida, al rechazar se desvincula |
 | `paid_at` / `refunded_at` | timestamptz | sí | — | — |
 | `refunded_by` / `registered_by` | uuid | sí | — | FK → `admins.id` (SET NULL) |
 | `created_at` | timestamptz | no | `now()` | — |
@@ -296,7 +298,9 @@ aspirante rechazado sí (rechazo = reembolso registrado).
   En el alta/enroll, **una sola factura agrupa membresía + todos los períodos prepagados**
   (decisión 2026-07-28: pagar N semanas por adelantado = 1 factura por el total; cada semana
   sigue siendo su propia fila `subscription_payments` de cobertura). ⚠️ `renew`/`changePlan`
-  todavía emiten una factura por período (pendiente unificar).
+  todavía emiten una factura por período — **v9 lo unifica**: la factura se materializa **al
+  aprobar** un envío de pago y agrupa sus cargos en una sola
+  ([proposals/pagos-aprobacion](../proposals/pagos-aprobacion/README.md)).
 - **Anulación con rastro**: el reembolso marca `voided` (fecha + admin) y **conserva el
   número** — sin huecos en la numeración.
 - Es un comprobante **interno, no fiscal** (⚠️ la facturación SENIAT es un análisis aparte).
@@ -320,6 +324,51 @@ y `subscription_payments` con una forma común para los historiales por afiliado
 | `period_start` / `period_end` | timestamptz | Solo tarifas; NULL en membresía |
 | `invoice_id` | uuid | Factura que agrupa el pago |
 | `created_at` | timestamptz | — |
+
+### `payment_submissions` — envío de pago pendiente de verificación (v9)
+
+Migración `1752340000000_payment-approval-flow`. La **unidad revisable** de dinero-entrante:
+un pago que el chofer (o un admin) manda y que un admin aprueba/rechaza antes de contar como
+pagado. Contrato: [proposals/pagos-aprobacion](../proposals/pagos-aprobacion/README.md).
+
+| Columna | Tipo | Null | Default | Descripción |
+|---|---|---|---|---|
+| `id` | uuid | no | `gen_random_uuid()` | PK |
+| `driver_id` | uuid | no | — | FK → `drivers.user_id` (RESTRICT) |
+| `status` | payment_submission_status | no | `'pending'` | `pending` \| `approved` \| `rejected` |
+| `purpose` | text | no | `'debt'` | **v9-2B** (mig. `1752350000000`): `debt` (saldar deuda) \| `advance` (adelantar N semanas) \| `enroll` (alta: membresía + N semanas). CHECK `payment_submissions_purpose_check` acota los valores |
+| `context` | jsonb | no | `'{}'` | Parámetros que la aprobación necesita (p. ej. `planId`/`periods`/`planPriceUsd` para advance/enroll) |
+| `amount_usd` | numeric(10,2) | no | — | Monto declarado (efectivo: capturado; resto: total de los cargos que cubre) |
+| `payment_method_id` | integer | sí | — | FK → `payment_methods.id` (SET NULL) |
+| `payment_reference` | text | sí | — | Referencia/confirmación (no aplica a `cash_usd`) |
+| `payer_bank` | text | sí | — | Banco emisor (transfer / pago móvil) |
+| `paid_on` | date | sí | — | Fecha declarada del pago |
+| `payer_phone` / `payer_id` | text | sí | — | Teléfono / cédula del pagador (Pago Móvil) |
+| `payer_account` | text | sí | — | Email/nombre origen (Zelle / Binance) |
+| `note` | text | sí | — | Constancia opcional |
+| `source` | driver_source | no | `'admin'` | `app` \| `admin` (origen del envío) |
+| `submitted_by` | uuid | sí | — | FK → `admins.id` (SET NULL). NULL = enviado desde la app |
+| `reviewed_by` | uuid | sí | — | FK → `admins.id` (SET NULL). Quién aprobó/rechazó |
+| `reviewed_at` | timestamptz | sí | — | — |
+| `rejection_reason` | text | sí | — | Motivo del rechazo |
+| `invoice_id` | uuid | sí | — | FK → `invoices.id` (RESTRICT). Factura materializada **al aprobar**; NULL mientras pendiente/rechazado |
+| `created_at` / `updated_at` | timestamptz | no | `now()` | Trigger `set_updated_at` |
+
+- **Un envío pendiente por chofer** (índice único parcial `payment_submissions_one_pending_per_driver` `WHERE status = 'pending'`).
+- Al **aprobar**: cargos vinculados → `paid`, se emite **una** factura y se le copia la metadata del pago. Al **rechazar**: los cargos se desvinculan y el envío queda con su `rejection_reason` (**nunca se borra**).
+- El **motor de deuda se congela** mientras haya un envío pendiente que cubre la deuda.
+
+### `payment_submission_files` — imágenes del envío (1..5)
+
+| Columna | Tipo | Null | Default | Descripción |
+|---|---|---|---|---|
+| `id` | uuid | no | `gen_random_uuid()` | PK |
+| `submission_id` | uuid | no | — | FK → `payment_submissions.id` (CASCADE) |
+| `storage_path` | text | no | — | Ruta en el bucket privado (URL firmada al leer) |
+| `position` | smallint | no | `1` | Orden 1..5 |
+| `created_at` | timestamptz | no | `now()` | — |
+
+- **De 1 a 5 imágenes** por envío: un comprobante único, o hasta 5 fotos de billetes en `cash_usd`. El límite de 5 se valida en el service.
 
 ---
 
@@ -419,9 +468,10 @@ Claves actuales:
 | `subscription_payment_status` | `pending`, `paid`, `overdue`, `refunded` |
 | `subscription_charge_kind` | `period`, `penalty` (v8, 2026-07-23) |
 | `invoice_status` | `issued`, `voided` |
+| `payment_submission_status` | `pending`, `approved`, `rejected` (v9, 2026-08-03) |
 | `training_status` | `scheduled`, `cancelled`, `completed` |
 | `training_attendee_status` | `registered`, `attended`, `absent`, `cancelled` |
-| `payment_method_type` | `bank_transfer`, `pago_movil`, `zelle`, `paypal`, `binance`, `crypto`, `contact` (2026-07-23) |
+| `payment_method_type` | `bank_transfer`, `pago_movil`, `zelle`, `paypal`, `binance`, `crypto`, `contact` (2026-07-23), `cash_usd` (Efectivo Divisa, admin-only, 2026-08-03) |
 
 ## Garantías físicas destacadas (imposibles de violar desde el código)
 
@@ -432,6 +482,7 @@ Claves actuales:
 | Una tarifa activa + máx. una programada por chofer | Índices únicos parciales en `driver_subscriptions` |
 | Todo documento tiene exactamente un dueño | CHECK `documents_exactly_one_owner` |
 | Números de factura únicos y sin reinicio | Secuencia `invoice_number_seq` + UNIQUE |
+| Un envío de pago pendiente por chofer | Índice único parcial `payment_submissions_one_pending_per_driver` |
 | Auditoría con máximo un actor | CHECK `audit_logs_max_one_actor` |
 | Usernames de admin en minúsculas | CHECK `admins_username_lowercase` |
 
@@ -443,9 +494,10 @@ Claves actuales:
 |---|---|---|---|---|
 | `id` | integer IDENTITY | no | — | PK |
 | `name` | text | no | — | Etiqueta libre (ej. "Banesco — Ahorro Juan Pérez"); permite varias cuentas del mismo tipo |
-| `type` | payment_method_type | no | — | `bank_transfer` \| `pago_movil` \| `zelle` \| `paypal` \| `binance` \| `crypto` \| `contact` |
-| `details` | jsonb | no | `'{}'` | Datos según el tipo (banco/cuenta/titular/cédula; wallet; email; teléfono…). **La forma se valida por tipo en el service** (no hay columnas rígidas) |
+| `type` | payment_method_type | no | — | `bank_transfer` \| `pago_movil` \| `zelle` \| `paypal` \| `binance` \| `crypto` \| `contact` \| `cash_usd` |
+| `details` | jsonb | no | `'{}'` | Datos según el tipo (banco/cuenta/titular/cédula; wallet; email; teléfono…). **La forma se valida por tipo en el service** (no hay columnas rígidas). `cash_usd` (Efectivo Divisa) no lleva datos de cuenta |
 | `is_active` | boolean | no | `true` | Solo las activas se ofrecen al cobrar |
+| `admin_only` | boolean | no | `false` | **v9**: `true` = solo el panel admin lo ofrece; **nunca se expone a la app**. `cash_usd` nace `admin_only` |
 | `created_by` | uuid | sí | — | FK → `admins.id` (SET NULL) |
 | `created_at` / `updated_at` | timestamptz | no | `now()` | Trigger `set_updated_at` |
 

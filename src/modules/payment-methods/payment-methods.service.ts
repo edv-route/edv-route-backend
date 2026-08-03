@@ -18,7 +18,13 @@ const REQUIRED_DETAILS: Record<string, string[]> = {
   pago_movil: ['bank', 'phone', 'idDocument'],
   zelle: ['email', 'holder'],
   binance: ['identifier'],
+  // Efectivo Divisa (v9): admin-only, no account data. Captured at cobro time
+  // with amount + up to 5 bill photos; never offered to the driver app.
+  cash_usd: [],
 };
+
+/** Types the driver app must never see (panel-only). Sets `admin_only`. */
+const ADMIN_ONLY_TYPES = new Set(['cash_usd']);
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const ID_DOC_RE = /^[VEJ]-?\d{5,9}$/i;
@@ -71,6 +77,7 @@ export class PaymentMethodsService {
       name: input.name.trim(),
       type: input.type,
       details,
+      adminOnly: ADMIN_ONLY_TYPES.has(input.type),
       createdBy: actorId,
     });
     await writeAudit(this.app.db, {
@@ -102,6 +109,7 @@ export class PaymentMethodsService {
       }
       patch.type = data.type;
       patch.details = this.validateDetails(data.type, data.details);
+      patch.adminOnly = ADMIN_ONLY_TYPES.has(data.type);
     }
 
     const record = await this.methods.update(id, patch);

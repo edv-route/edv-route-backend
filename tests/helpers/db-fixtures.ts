@@ -18,6 +18,9 @@ export async function removeDriver(pool: pg.Pool, driverId: string): Promise<voi
   try {
     await client.query('BEGIN');
     await client.query(`SELECT id FROM driver_subscriptions WHERE driver_id = $1 FOR UPDATE`, [driverId]);
+    // Submissions first (RESTRICT on invoices; CASCADE clears their files; the
+    // charges' submission_id is SET NULL on delete). v9.
+    await client.query(`DELETE FROM payment_submissions WHERE driver_id = $1`, [driverId]);
     await client.query(
       `DELETE FROM subscription_payments WHERE driver_subscription_id IN
          (SELECT id FROM driver_subscriptions WHERE driver_id = $1)`, [driverId]);

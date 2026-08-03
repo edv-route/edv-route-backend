@@ -13,6 +13,7 @@ import documentScheduler from './plugins/document-scheduler.js';
 import debtScheduler from './plugins/debt-scheduler.js';
 import healthRoutes from './modules/health/health.routes.js';
 import authRoutes from './modules/auth/auth.routes.js';
+import driverAuthRoutes from './modules/driver-auth/driver-auth.routes.js';
 import adminsRoutes from './modules/admins/admins.routes.js';
 import vehicleTypesRoutes from './modules/vehicle-types/vehicle-types.routes.js';
 import requirementsRoutes from './modules/requirements/requirements.routes.js';
@@ -27,6 +28,7 @@ import auditLogsRoutes from './modules/audit-logs/audit-logs.routes.js';
 import dashboardRoutes from './modules/dashboard/dashboard.routes.js';
 import documentsRoutes from './modules/documents/documents.routes.js';
 import billingRoutes from './modules/billing/billing.routes.js';
+import paymentSubmissionsRoutes from './modules/payment-submissions/payment-submissions.routes.js';
 import trainingsRoutes from './modules/trainings/trainings.routes.js';
 
 declare module 'fastify' {
@@ -68,7 +70,9 @@ export async function buildApp(): Promise<FastifyInstance> {
   });
   await app.register(sensible);
   await app.register(multipart, {
-    limits: { fileSize: MAX_FILE_BYTES, files: 1 },
+    // Up to 5 so a cash payment can carry 5 bill photos; single-file endpoints
+    // keep using req.file() and just take the first.
+    limits: { fileSize: MAX_FILE_BYTES, files: 5 },
   });
   await app.register(dbPlugin);
   await app.register(authPlugin);
@@ -82,6 +86,7 @@ export async function buildApp(): Promise<FastifyInstance> {
     async (api) => {
       await api.register(healthRoutes);
       await api.register(authRoutes, { prefix: '/auth' });
+      await api.register(driverAuthRoutes, { prefix: '/driver-auth' });
       await api.register(adminsRoutes, { prefix: '/admins' });
       await api.register(vehicleTypesRoutes, { prefix: '/vehicle-types' });
       await api.register(requirementsRoutes, { prefix: '/requirements' });
@@ -96,6 +101,7 @@ export async function buildApp(): Promise<FastifyInstance> {
       await api.register(dashboardRoutes, { prefix: '/dashboard' });
       await api.register(documentsRoutes, { prefix: '/documents' });
       await api.register(billingRoutes); // exposes /invoices and /payments
+      await api.register(paymentSubmissionsRoutes); // /payment-submissions + /drivers/:id/payment-submissions
       await api.register(trainingsRoutes, { prefix: '/trainings' });
     },
     { prefix: '/api/v1' },

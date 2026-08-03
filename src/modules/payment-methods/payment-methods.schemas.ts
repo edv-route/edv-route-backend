@@ -1,15 +1,16 @@
 /**
- * Payment method types OFFERED by the business (decision 2026-07-31): only
- * these 4. The DB enum `payment_method_type` still carries the old values
- * (paypal/crypto/contact) — removing them would be a destructive enum migration
- * for no gain — but the API refuses to create/update to anything outside this
- * list, so they can no longer appear.
+ * Payment method types OFFERED by the business: the 4 driver-facing ones plus
+ * `cash_usd` (Efectivo Divisa, v9) which is admin-only. The DB enum
+ * `payment_method_type` still carries the old values (paypal/crypto/contact) —
+ * removing them would be a destructive enum migration for no gain — but the API
+ * refuses to create/update to anything outside this list.
  */
 export const PAYMENT_METHOD_TYPES = [
   'bank_transfer',
   'pago_movil',
   'zelle',
   'binance',
+  'cash_usd',
 ] as const;
 
 const paymentMethodSchema = {
@@ -20,6 +21,8 @@ const paymentMethodSchema = {
     type: { type: 'string' },
     details: { type: 'object', additionalProperties: true },
     isActive: { type: 'boolean' },
+    // v9: panel-only flag; the driver app filters these out of its catalog.
+    adminOnly: { type: 'boolean' },
     createdAt: { type: 'string' },
     updatedAt: { type: 'string' },
   },

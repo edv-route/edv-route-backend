@@ -222,6 +222,33 @@ export class BillingRepository {
     return { items: rows, total: Number(countResult.rows[0]!.count) };
   }
 
+  /** Full invoice by id (same shape as the list) + the submission that produced
+   *  it, if any (v9) — so the detail screen can show its receipt images. */
+  async getInvoice(
+    id: string,
+  ): Promise<(InvoiceListItem & { submissionId: string | null }) | null> {
+    const { rows } = await this.db.query<InvoiceListItem & { submissionId: string | null }>(
+      `SELECT i.id, i.invoice_number AS "invoiceNumber", i.total_usd AS "totalUsd",
+              ${INVOICE_STATE_SQL} AS status,
+              i.issued_at AS "issuedAt", i.voided_at AS "voidedAt",
+              CASE WHEN ${FULLY_PAID_SQL} THEN ch.paid_at END AS "paidAt",
+              i.driver_id AS "driverId", u.full_name AS "driverName",
+              va.full_name AS "voidedByName",
+              pm.name AS "paymentMethodName", i.payment_reference AS "paymentReference",
+              i.payer_bank AS "payerBank", i.paid_on AS "paidOn",
+              i.payer_phone AS "payerPhone", i.payer_id AS "payerId",
+              i.payer_account AS "payerAccount",
+              (i.proof_url IS NOT NULL) AS "hasProof",
+              (SELECT ps.id FROM payment_submissions ps WHERE ps.invoice_id = i.id LIMIT 1) AS "submissionId"
+       FROM invoices i JOIN users u ON u.id = i.driver_id ${CHARGES_LATERAL}
+       LEFT JOIN admins va ON va.id = i.voided_by
+       LEFT JOIN payment_methods pm ON pm.id = i.payment_method_id
+       WHERE i.id = $1`,
+      [id],
+    );
+    return rows[0] ?? null;
+  }
+
   /** Invoice owner + current proof path, for attaching/reading the receipt. */
   async findInvoiceForProof(
     id: string,

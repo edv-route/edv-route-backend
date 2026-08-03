@@ -117,6 +117,16 @@ const billingRoutes: FastifyPluginAsync = async (app) => {
       }),
   );
 
+  app.get<{ Params: { id: string } }>(
+    '/invoices/:id',
+    { schema: { params: invoiceIdParam } },
+    async (req) => {
+      const invoice = await billing.getInvoice(req.params.id);
+      if (!invoice) throw app.httpErrors.notFound('Factura no encontrada');
+      return invoice;
+    },
+  );
+
   // Payment receipt (comprobante): multipart upload + short-lived signed URL,
   // same custody as document files (private bucket, magic-number validation).
   app.post<{ Params: { id: string } }>(

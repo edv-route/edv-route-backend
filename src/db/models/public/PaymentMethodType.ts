@@ -6,6 +6,7 @@ type PaymentMethodType =
   | 'paypal'
   | 'binance'
   | 'crypto'
-  | 'contact';
+  | 'contact'
+  | 'cash_usd';
 
 export type { PaymentMethodType as default };

@@ -21,6 +21,8 @@ export default interface PaymentMethods {
   created_at: Date;
 
   updated_at: Date;
+
+  admin_only: boolean;
 }
 
 /** Represents the initializer for the table public.payment_methods */
@@ -44,6 +46,9 @@ export interface PaymentMethodsInitializer {
 
   /** Default value: now() */
   updated_at?: Date;
+
+  /** Default value: false */
+  admin_only?: boolean;
 }
 
 /** Represents the mutator for the table public.payment_methods */
@@ -63,4 +68,6 @@ export interface PaymentMethodsMutator {
   created_at?: Date;
 
   updated_at?: Date;
+
+  admin_only?: boolean;
 }

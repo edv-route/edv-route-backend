@@ -127,6 +127,8 @@ export async function runDebtEngineTick(db: pg.Pool): Promise<DebtTickResult> {
   // 2) Charges whose week already started and were not paid = debt. Only for
   // operating drivers (approved/overdue): a `pending` driver's alta-debt week
   // must NOT be flipped to overdue by the engine — it settles at approval.
+  // v9: a driver with a pending payment submission is FROZEN (he already paid
+  // and is awaiting review) — no new arrears while it is under review.
   const overdue = await db.query<{ id: string; driverId: string }>(
     `UPDATE subscription_payments sp SET status = 'overdue'
      FROM driver_subscriptions ds
@@ -135,6 +137,10 @@ export async function runDebtEngineTick(db: pg.Pool): Promise<DebtTickResult> {
        AND d.status::text IN ('approved', 'overdue', 'penalized')
        AND sp.status = 'pending'
        AND sp.period_start <= now()
+       AND NOT EXISTS (
+         SELECT 1 FROM payment_submissions ps
+         WHERE ps.driver_id = ds.driver_id AND ps.status = 'pending'
+       )
      RETURNING sp.id, ds.driver_id AS "driverId"`,
   );
 
@@ -184,6 +190,12 @@ export async function runDebtEngineTick(db: pg.Pool): Promise<DebtTickResult> {
        FROM drivers d
        LEFT JOIN debt x ON x.driver_id = d.user_id
        WHERE d.status::text IN ('approved', 'overdue', 'penalized')
+         -- v9: freeze drivers with a pending submission (awaiting review): their
+         -- state does not move until the payment is approved or rejected.
+         AND NOT EXISTS (
+           SELECT 1 FROM payment_submissions ps
+           WHERE ps.driver_id = d.user_id AND ps.status = 'pending'
+         )
      )
      UPDATE drivers dr
         SET status = t.new_status,
@@ -219,6 +231,10 @@ export async function runDebtEngineTick(db: pg.Pool): Promise<DebtTickResult> {
                WHERE x.driver_subscription_id = ds.id
                  AND x.charge_kind = 'penalty'
                  AND x.status IN ('pending', 'overdue')
+             )
+             AND NOT EXISTS (
+               SELECT 1 FROM payment_submissions ps
+               WHERE ps.driver_id = d.user_id AND ps.status = 'pending'
              )
            RETURNING id, driver_subscription_id
          )

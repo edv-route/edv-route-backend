@@ -1,11 +1,12 @@
 # API REST — Referencia de endpoints
 
-> Actualizado: 2026-07-16 · Base URL: `http://localhost:3000/api/v1`
+> Actualizado: 2026-08-03 · Base URL: `http://localhost:3000/api/v1`
 
 ## Convenciones
 
-- **Auth**: salvo `GET /health` y `POST /auth/login`, todos los endpoints exigen
-  `Authorization: Bearer <token>` (JWT de 8 h emitido en el login).
+- **Auth**: salvo `GET /health`, `POST /auth/login` y `POST /driver-auth/login`, todos los
+  endpoints exigen `Authorization: Bearer <token>` (JWT de 8 h emitido en el login). El token
+  lleva un claim `type` (`admin`\|`driver`): un token de chofer no accede a rutas de admin y viceversa.
 - **Formato**: JSON en camelCase. Los montos viajan como string decimal (`"150.00"`).
 - **Errores**: `{ statusCode, error, message }` — `message` viene en español, listo para UI.
   Códigos usados: 400 (validación/regla), 401 (sesión), 403 (cuenta suspendida),
@@ -18,6 +19,18 @@
 |---|---|---|
 | POST | `/auth/login` | `{ username, password }` → `{ token, admin }`. Bloqueo tras 5 intentos fallidos (15 min) |
 | GET | `/auth/me` | Perfil del admin autenticado |
+
+## Auth chofer (app móvil)
+
+Autenticación de la app de choferes por **cédula + clave** (decisión 2026-07-16). La clave la
+crea el panel al registrar al chofer (`users.password_hash`, argon2id). Emite un JWT con
+`type: 'driver'`. Login **abierto** a cualquier chofer con credenciales válidas; la app enruta
+por `status` (revisión / bloqueado / home). Lockout por intentos: diferido (no hay columnas aún).
+
+| Método | Ruta | Descripción |
+|---|---|---|
+| POST | `/driver-auth/login` | `{ nationalId, password }` → `{ token, driver }` (perfil incluye `status`, `registrationStep`, `fullName`, `phone`, `photoUrl`, `email`, `isAvailable`, `avgRating`). 401 si la cédula no existe o el chofer no tiene clave de app |
+| GET | `/driver-auth/me` | Perfil del chofer autenticado (guard `authenticateDriver`) |
 
 ## Administradores
 
@@ -37,7 +50,7 @@
 | PATCH / DELETE | `/requirements/:id` | Editar / eliminar (409 si tiene documentos) |
 | GET / POST | `/benefits` | Beneficios del gremio |
 | PATCH / DELETE | `/benefits/:id` | Editar / eliminar (409 si pertenece a una membresía) |
-| GET / POST | `/payment-methods` | Cuentas donde los afiliados pagan. **Solo 4 tipos ofrecidos** (2026-07-31): `bank_transfer`\|`pago_movil`\|`zelle`\|`binance` (el enum de la BD conserva `paypal`/`crypto`/`contact` inertes, pero la API los rechaza). `details` jsonb validado por tipo en el service. Campos por tipo (investigados 2026-07-31): **transferencia** = banco + cuenta 20 díg + tipo + titular + cédula/RIF · **pago_movil** = banco + teléfono + cédula/RIF · **zelle** = email/tel EE.UU. + titular · **binance** = email/tel/Binance ID + titular(opc). Formato validado — `email`/`identifier` de Zelle/Binance si contienen `@`, y la cédula `V/E/J` de Pago Móvil/transferencia (el panel la captura con selector V/E/J + dígitos); `name` etiqueta libre |
+| GET / POST | `/payment-methods` | Cuentas donde los afiliados pagan. **Tipos ofrecidos**: `bank_transfer`\|`pago_movil`\|`zelle`\|`binance` (2026-07-31) + **`cash_usd`** ("Efectivo Divisa", **admin-only** v9: nunca se ofrece a la app —el catálogo expone `adminOnly`, derivado del tipo—; al cobrar captura monto + 1..5 fotos de billetes). El enum de la BD conserva `paypal`/`crypto`/`contact` inertes, pero la API los rechaza. `details` jsonb validado por tipo en el service. Campos por tipo (investigados 2026-07-31): **transferencia** = banco + cuenta 20 díg + tipo + titular + cédula/RIF · **pago_movil** = banco + teléfono + cédula/RIF · **zelle** = email/tel EE.UU. + titular · **binance** = email/tel/Binance ID + titular(opc). Formato validado — `email`/`identifier` de Zelle/Binance si contienen `@`, y la cédula `V/E/J` de Pago Móvil/transferencia (el panel la captura con selector V/E/J + dígitos); `name` etiqueta libre |
 | PATCH / DELETE | `/payment-methods/:id` | Editar (tipo+`details` van juntos) / activar-desactivar (`isActive`) / eliminar (409 si está en uso → desactivar) |
 | GET | `/settings` | Configuración (las claves nacen por migración, nunca por API) |
 | PATCH | `/settings/:key` | Actualizar el valor de una clave existente |
@@ -72,7 +85,7 @@ réplica activa automáticamente (quien pagó conserva precio y beneficios de su
 | GET | `/drivers` | Listado paginado. Query: `status` (`pending`\|`approved`\|`rejected`\|`suspended`\|`paused`\|`overdue`\|`penalized`), `search` (nombre/email/cédula), `page`, `limit` |
 | POST | `/drivers/register` | **Registro transaccional**: datos personales + `payment`, `vehicles[]` y `documents[]` opcionales, **todo en una transacción** (si algo falla, no queda afiliado/vehículo/factura). `payment` = `{ planId, periods }` (`periods > 1` = adelanto ×N, emite facturas; `null` → `pending`). `vehicles[]` = `{ vehicleTypeId?, brand?, model?, year?, color?, plate?, documents?: [{ requirementId }] }` (nacen aprobados; los `documents[]` anidados son requerimientos de **vehículo**). `documents[]` = `{ requirementId, expiresAt? }` (requerimientos de **chofer**; el archivo se sube luego con `POST /documents/:id/file` usando `createdDocumentIds`, mismo orden). Campos de persona: obligatorios `firstName`, `lastName`; opcionales validados `middleName`, `secondLastName`, `birthDate` (≥18), `address`, `email`, `nationalId` (`V`\|`E`\|`J` + `-` + 5–9 dígitos), `phone` (`+58` + 10 dígitos), `password` (login de la app: usuario = documento; **≥6**, admite solo números; exige `nationalId`). ⚠️ El **panel exige documento + contraseña**. Devuelve el detalle del afiliado + `invoiceNumbers` + `createdDocumentIds` + **`createdVehicles: [{ id, documentIds }]`** (para subir fotos y archivos de documentos de cada vehículo). `hasAppPassword` booleano; el hash **nunca** viaja |
 | POST | `/drivers` | Alta **solo-persona** (mismos campos de persona que `/register`, sin `payment`). Se conserva para compatibilidad; el panel registra por `/register` |
-| GET | `/drivers/:id` | Perfil completo: vehículos, documentos, membresía, **`benefits`** (los de la versión de membresía que pagó), suscripción (con `priceUsd`/`startedAt` y **`paidUntil`** = fin del último período prepagado, para "pagado hasta"), **`debt`** (deuda **vencida** del motor v8: `totalUsd`, `weeksOwed`, `penaltyCount`, `capWeeks` [tope antes de penalizar], `charges[]`; ceros si no debe) y **`upcoming`** (próximo cobro ya emitido pero **no vencido**: `amountUsd`/`periodStart`/`periodEnd`; `null` si no hay — decisión 2026-07-29). Todo el dinero como string decimal |
+| GET | `/drivers/:id` | Perfil completo: vehículos, documentos, membresía, **`benefits`** (los de la versión de membresía que pagó), suscripción (con `priceUsd`/`startedAt` y **`paidUntil`** = fin del último período prepagado, para "pagado hasta"), **`debt`** (deuda **vencida** del motor v8: `totalUsd`, `weeksOwed`, `penaltyCount`, `capWeeks` [tope antes de penalizar], `charges[]`; ceros si no debe) y **`upcoming`** (próximo cobro ya emitido pero **no vencido**: `amountUsd`/`periodStart`/`periodEnd`; `null` si no hay — decisión 2026-07-29), y **v9** `pendingSubmission` (envío de pago en revisión → banda "Pago en revisión", oculta el botón de pago) / `rejectedSubmission` (último envío rechazado → mensaje "su pago fue rechazado"). Todo el dinero como string decimal |
 | PATCH | `/drivers/:id` | Editar datos personales (mismo contrato que el POST; `password` vacía = conservar la actual) / cambiar estado (`approved`/`suspended`). Al pasar a `approved` (p. ej. quitar una suspensión) exige membresía `paid` + tarifa **y deuda 0** — 409 si no (mismo candado que `approve`, decisión 2026-07-29) |
 | POST | `/drivers/:id/documents` | Registrar (desde el perfil) un documento contra un requerimiento → `{ id }` (para adjuntarle el archivo) |
 | POST | `/drivers/:id/vehicles` | Registrar (desde el perfil) un vehículo (por panel nace aprobado) |
@@ -101,10 +114,31 @@ réplica activa automáticamente (quien pagó conserva precio y beneficios de su
 | Método | Ruta | Descripción |
 |---|---|---|
 | GET | `/invoices` | Historial global de facturas, número descendente. Query: `status` (`issued`\|`paid`\|`voided`), `driverId` (historial por afiliado), `search` (afiliado o Nº), `page`, `limit`. Incluye afiliado, admin que anuló y **datos de pago (Pieza 2)**: `paymentMethodName`, `paymentReference`, `payerBank`, `hasProof`.<br>⚠️ **`status` es DERIVADO de los cargos de la factura** (2026-07-30), no la columna física (que solo conoce `issued`/`voided`): `voided` manda siempre; `paid` cuando **todos** sus cargos (`membership_payments` + `subscription_payments`) están pagados; `issued` mientras quede alguno por cobrar (la factura de deuda del alta sin pago). Campo `paidAt` = `max(paid_at)` de sus cargos, **null salvo que esté saldada por completo**. El filtro `status` usa la misma derivación. Incluye además los **datos del pagador (2026-07-31)**: `paidOn` (día del pago), `payerPhone`, `payerId` (Pago Móvil) |
-| POST | `/invoices/:id/proof` | **Comprobante (Pieza 2)**: adjunta el archivo (multipart, campo `file`; **PDF/JPG/PNG, 10 MB**, validado por magic-number). La ruta la decide el servidor (`proofs/driverId/invoiceId.ext`). 503 si el storage no está configurado |
+| GET | `/invoices/:id` | Detalle de una factura (mismos campos que la lista) + **`submissionId`**: el envío de pago v9 que la generó, si aplica, para mostrar sus comprobantes. 404 si no existe |
+| POST | `/invoices/:id/proof` | **Comprobante (Pieza 2, legado)**: adjunta el archivo (multipart, campo `file`; **PDF/JPG/PNG, 10 MB**, validado por magic-number). La ruta la decide el servidor (`proofs/driverId/invoiceId.ext`). 503 si el storage no está configurado. Con v9 los comprobantes viven en el envío (`payment_submission_files`); esto queda para facturas previas |
 | GET | `/invoices/:id/proof` | `{ url, expiresIn }` — URL **firmada de 60 s** del comprobante (bucket privado). 404 si la factura no tiene comprobante |
 | GET | `/invoices/monthly-series` | Serie mensual de facturación para el gráfico de barras del panel (2026-07-22). Query: `months` (3–24, default 12). Un punto por **mes calendario en `business_timezone`** (`{ month, totalUsd, count }`), anuladas excluidas; meses sin facturas en cero (eje continuo) |
 | GET | `/payments` | Historial unificado de pagos (membresía + tarifas). Query: `kind` (`membership`\|`subscription`), `status` (`pending`\|`paid`\|`refunded`), `driverId`, `search`, `page`, `limit`. Incluye concepto (nombre de la versión pagada), período (solo tarifas) y Nº de factura |
+
+## Verificación de pagos — envíos (v9, 2026-08-03)
+
+> **Flujo de aprobación anti-fraude.** Ningún cobro se liquida en el acto: un **envío de pago**
+> (`payment_submissions`) nace **`pending`** y un admin lo **aprueba** (salda la deuda / acredita
+> las semanas / crea la membresía, y **emite la factura** con la metadata del pago) o lo
+> **rechaza** (deja rastro con motivo; el chofer genera uno nuevo). El **motor de deuda se
+> congela** mientras hay un envío pendiente (no marca mora ni penaliza). Todos los cobros del
+> panel (alta, enroll, adelanto, pago de deuda) crean un envío; los endpoints directos
+> `/enroll`, `/subscription/renew` y `/external-payment` se conservan (compat / cambio de plan)
+> pero el panel usa este flujo. **Un envío pendiente por chofer** (garantía física). Contrato
+> completo para la **app del chofer**: [proposals/pagos-aprobacion](../proposals/pagos-aprobacion/README.md).
+
+| Método | Ruta | Descripción |
+|---|---|---|
+| POST | `/drivers/:id/payment-submissions` | Crea un envío **pendiente** (multipart). Campos: `purpose` (`debt`\|`advance`\|`enroll`), `periods?` (advance/enroll), datos del pago (`paymentMethodId?`, `reference?`, `payerBank?`, `paidOn?`, `payerPhone?`, `payerId?`, `payerAccount?`), `note?`, `amountUsd?` (solo **Efectivo Divisa** `cash_usd`), y **1..5 imágenes** en el campo `files` (PDF/JPG/PNG, 10 MB c/u, magic-number). `debt` = salda la deuda actual; `advance` = adelanta N semanas de la tarifa vigente (aprobar emite **una** factura por las N); `enroll` = alta (membresía + N semanas). 409 si el chofer ya tiene un envío pendiente. Origen `admin` hoy; la **app del chofer** POSTea aquí con su token `driver` |
+| GET | `/payment-submissions` | Bandeja de revisión. Query: `status` (`pending`\|`approved`\|`rejected`), `driverId?`, `page`, `limit`. Pendientes primero. Cada fila: afiliado, monto, método, origen, nº de imágenes |
+| GET | `/payment-submissions/:id` | Detalle: `purpose`, datos del pagador, **`items[]`** (desglose de lo que cubre: Membresía / Semana de tarifa / Penalización), estado + revisor + factura resultante, y **`files[]`** con URL **firmada de 60 s** por imagen |
+| POST | `/payment-submissions/:id/approve` | **Aprueba**: liquida según `purpose` y emite **una** factura con la metadata del pago; enlaza los cargos y marca `approved`. 409 si no está pendiente, o si es `debt` y no hay deuda que saldar |
+| POST | `/payment-submissions/:id/reject` | **Rechaza**: `{ reason }` (obligatorio, ≤500). Marca `rejected` con rastro (revisor + fecha + motivo); la deuda queda intacta. 204 |
 
 ## Dashboard
 

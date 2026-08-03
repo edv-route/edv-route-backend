@@ -6,12 +6,14 @@ import type { Camelize } from '../../db/case-types.js';
 export type PaymentMethodRecord = Omit<Camelize<PaymentMethods>, 'createdBy'>;
 
 const COLUMNS = `id, name, type, details, is_active AS "isActive",
-  created_at AS "createdAt", updated_at AS "updatedAt"`;
+  admin_only AS "adminOnly", created_at AS "createdAt", updated_at AS "updatedAt"`;
 
 export interface CreatePaymentMethodData {
   name: string;
   type: string;
   details: Record<string, unknown>;
+  /** v9: true = panel-only (never offered to the driver app). Derived from the type. */
+  adminOnly: boolean;
   createdBy: string;
 }
 
@@ -19,6 +21,7 @@ export interface UpdatePaymentMethodData {
   name?: string;
   type?: string;
   details?: Record<string, unknown>;
+  adminOnly?: boolean;
   isActive?: boolean;
 }
 
@@ -42,10 +45,10 @@ export class PaymentMethodsRepository {
 
   async create(data: CreatePaymentMethodData): Promise<PaymentMethodRecord> {
     const { rows } = await this.db.query<PaymentMethodRecord>(
-      `INSERT INTO payment_methods (name, type, details, created_by)
-       VALUES ($1, $2::payment_method_type, $3::jsonb, $4)
+      `INSERT INTO payment_methods (name, type, details, admin_only, created_by)
+       VALUES ($1, $2::payment_method_type, $3::jsonb, $4, $5)
        RETURNING ${COLUMNS}`,
-      [data.name, data.type, JSON.stringify(data.details), data.createdBy],
+      [data.name, data.type, JSON.stringify(data.details), data.adminOnly, data.createdBy],
     );
     return rows[0]!;
   }
@@ -64,6 +67,10 @@ export class PaymentMethodsRepository {
     if (data.details !== undefined) {
       values.push(JSON.stringify(data.details));
       sets.push(`details = $${values.length}::jsonb`);
+    }
+    if (data.adminOnly !== undefined) {
+      values.push(data.adminOnly);
+      sets.push(`admin_only = $${values.length}`);
     }
     if (data.isActive !== undefined) {
       values.push(data.isActive);

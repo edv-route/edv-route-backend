@@ -140,3 +140,10 @@ host); el error se muestra **junto al botón**, nunca arriba. Los desplegables u
   el mismo `client`, así todo persiste o nada, nunca a medias. Los **archivos** de documentos se
   suben después (best-effort, contra los ids devueltos). Flota y documentos son datos vivos:
   también se gestionan desde el perfil.
+- **Verificación de pagos (v9, 2026-08-03)**: ningún cobro se liquida en el acto. El módulo
+  `payment-submissions` recibe un "envío" (`payment_submissions`, estado `pending`) con su
+  comprobante (1..5 imágenes); un admin lo **aprueba** — la liquidación se despacha por `purpose`
+  (saldar deuda / adelantar N semanas / alta con membresía) y **emite la factura** — o lo
+  **rechaza** (con rastro). Así el **alta con pago** ahora registra la deuda + un envío pendiente
+  en vez de cobrar directo, y el **motor de deuda se congela** mientras hay un envío en revisión.
+  Contrato para la app del chofer: `docs/proposals/pagos-aprobacion`.
