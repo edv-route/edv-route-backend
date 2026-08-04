@@ -78,6 +78,21 @@ export const appPaymentMethodsSchema = {
   },
 } as const;
 
+export const appVehicleTypesSchema = {
+  response: {
+    200: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          id: { type: 'integer' },
+          name: { type: 'string' },
+        },
+      },
+    },
+  },
+} as const;
+
 /**
  * Self-service registration (app): same body contract as the panel register;
  * the channel-specific obligations (credentials, >=1 vehicle, every required

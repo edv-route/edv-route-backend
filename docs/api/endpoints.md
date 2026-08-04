@@ -33,6 +33,7 @@ por `status` (revisión / bloqueado / home). Lockout por intentos: diferido (no 
 | GET | `/driver-auth/me` | Perfil del chofer autenticado (guard `authenticateDriver`) |
 | GET | `/driver-auth/requirements` | Requisitos activos (driver + vehicle) con `isRequired`, para el wizard (público) |
 | GET | `/driver-auth/payment-methods` | Métodos de pago activos, sin `admin_only` (público) |
+| GET | `/driver-auth/vehicle-types` | Tipos de vehículo activos `{ id, name }`, para el selector del wizard (público) |
 | POST | `/driver-auth/register` | **Auto-registro (público).** 4 pasos obligatorios (credenciales, ≥1 vehículo, todos los requisitos `isRequired`). Alta como **deuda** (`source='app'`, `pending`) → `{ token, driver, createdDocumentIds, createdVehicles }`. El pago va aparte |
 | POST | `/driver-auth/payment-submissions` | Envío de pago del chofer (guard `authenticateDriver`, multipart). `driverId` del token; `purpose='debt'`; queda `pending` |
 | POST | `/driver-auth/documents/:id/file` | Adjunta archivo a un documento **propio** (guard `authenticateDriver`; 404 si es de otro chofer) |

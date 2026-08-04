@@ -69,6 +69,11 @@ export class DriverAuthService {
     return this.drivers.listAppPaymentMethods();
   }
 
+  /** Active vehicle types the registration wizard offers. */
+  listVehicleTypes() {
+    return this.drivers.listActiveVehicleTypes();
+  }
+
   /**
    * Self-service registration from the app. Reuses the single money path
    * (`DriversService.register` with source='app'): the alta is emitted as DEBT

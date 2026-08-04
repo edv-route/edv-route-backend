@@ -63,6 +63,15 @@ export class DriverAuthRepository {
     );
     return rows;
   }
+
+  /** Active vehicle types the app's registration wizard offers (id must be a
+   *  real row so the register FK holds). */
+  async listActiveVehicleTypes(): Promise<AppVehicleType[]> {
+    const { rows } = await this.db.query<AppVehicleType>(
+      `SELECT id, name FROM vehicle_types WHERE active ORDER BY name`,
+    );
+    return rows;
+  }
 }
 
 /** A document requirement as the app consumes it. */
@@ -80,4 +89,10 @@ export interface AppPaymentMethod {
   name: string;
   type: string;
   details: Record<string, string>;
+}
+
+/** A vehicle type the app's registration wizard offers. */
+export interface AppVehicleType {
+  id: number;
+  name: string;
 }

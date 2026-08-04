@@ -23,6 +23,7 @@ import { DriverAuthService } from './driver-auth.service.js';
 import {
   appPaymentMethodsSchema,
   appRequirementsSchema,
+  appVehicleTypesSchema,
   driverLoginSchema,
   driverMeSchema,
   driverRegisterSchema,
@@ -184,6 +185,10 @@ const driverAuthRoutes: FastifyPluginAsync = async (app) => {
 
   app.get('/payment-methods', { schema: appPaymentMethodsSchema }, async () =>
     service.listPaymentMethods(),
+  );
+
+  app.get('/vehicle-types', { schema: appVehicleTypesSchema }, async () =>
+    service.listVehicleTypes(),
   );
 };
 
