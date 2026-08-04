@@ -38,7 +38,10 @@ export interface CreateDriverData {
   phone: string | null;
   nationalId: string | null;
   passwordHash: string | null;
-  registeredBy: string;
+  /** Admin who registered (panel); null for self-service app registrations. */
+  registeredBy: string | null;
+  /** Registration channel. Defaults to 'admin' when omitted. */
+  source?: 'admin' | 'app';
 }
 
 const LIST_COLUMNS = `
@@ -162,8 +165,8 @@ export class DriversRepository {
     const userId = rows[0]!.id;
     await client.query(
       `INSERT INTO drivers (user_id, national_id, source, registered_by, registration_step)
-       VALUES ($1, $2, 'admin', $3, $4)`,
-      [userId, data.nationalId, data.registeredBy, registrationStep],
+       VALUES ($1, $2, $3, $4, $5)`,
+      [userId, data.nationalId, data.source ?? 'admin', data.registeredBy, registrationStep],
     );
     return userId;
   }
@@ -180,7 +183,7 @@ export class DriversRepository {
       color?: string | null;
       plate?: string | null;
     },
-    registeredBy: string,
+    registeredBy: string | null,
   ): Promise<string> {
     const { rows } = await client.query<{ id: string }>(
       `INSERT INTO vehicles
@@ -205,7 +208,7 @@ export class DriversRepository {
     client: pg.PoolClient,
     owner: { driverId: string } | { vehicleId: string },
     input: { requirementId: number; expiresAt?: string | null },
-    uploadedBy: string,
+    uploadedBy: string | null,
   ): Promise<string> {
     const driverId = 'driverId' in owner ? owner.driverId : null;
     const vehicleId = 'vehicleId' in owner ? owner.vehicleId : null;

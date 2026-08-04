@@ -43,10 +43,18 @@ export class DocumentsService {
   async attachFile(
     documentId: string,
     file: { buffer: Buffer; mimeType: string },
-    adminId: string,
+    adminId: string | null,
+    actorUserId: string | null = null,
+    ownerUserId: string | null = null,
   ): Promise<{ path: string }> {
     const storage = this.requireStorage();
     const document = await this.requireDocument(documentId);
+    // App channel: a driver may only attach to his OWN document. 404 (not 403)
+    // so it never reveals the existence of another driver's document. Admin
+    // passes no owner and skips this check.
+    if (ownerUserId && document.driverId !== ownerUserId) {
+      throw this.app.httpErrors.notFound('Documento no encontrado');
+    }
 
     if (file.buffer.length === 0) throw this.app.httpErrors.badRequest('El archivo está vacío');
     if (file.buffer.length > MAX_FILE_BYTES) {
@@ -71,6 +79,7 @@ export class DocumentsService {
 
     await writeAudit(this.app.db, {
       actorAdminId: adminId,
+      actorUserId,
       eventType: 'document.file_uploaded',
       entity: 'documents',
       entityId: documentId,

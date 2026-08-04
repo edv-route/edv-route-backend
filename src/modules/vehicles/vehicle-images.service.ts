@@ -30,7 +30,8 @@ export class VehicleImagesService {
     driverId: string,
     vehicleId: string,
     file: { buffer: Buffer; mimeType: string },
-    adminId: string,
+    uploadedBy: string | null,
+    actorUserId: string | null = null,
   ): Promise<{ id: string; position: number }> {
     const storage = this.requireStorage();
     await this.assertVehicle(driverId, vehicleId);
@@ -53,9 +54,10 @@ export class VehicleImagesService {
     const path = `${driverId}/vehicles/${vehicleId}/${randomUUID()}.${extensionFor(sniffed)}`;
     await storage.upload(path, file.buffer, sniffed);
     try {
-      const id = await this.images.insert(vehicleId, path, position, adminId);
+      const id = await this.images.insert(vehicleId, path, position, uploadedBy);
       await writeAudit(this.app.db, {
-        actorAdminId: adminId,
+        actorAdminId: uploadedBy,
+        actorUserId,
         eventType: 'vehicle.image_added',
         entity: 'vehicles',
         entityId: vehicleId,

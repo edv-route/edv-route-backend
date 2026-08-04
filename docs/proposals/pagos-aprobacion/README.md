@@ -146,20 +146,22 @@ Cuerpo de creación (borrador):
    de rechazo).
 4. **Un envío pendiente a la vez**: deshabilitar el botón de pagar mientras haya uno en revisión.
 
-## ⚠️ Pendientes conocidos (2026-08-03) — panel v9 COMPLETO, falta el lado app
+## ✅ Pendientes del lado app — RESUELTOS (2026-08-04)
 
-El flujo desde el **panel admin** está terminado y desplegado (crear → aprobar/rechazar,
-Efectivo Divisa, cambio de plan; todos los cobros van por envío). Para cerrar el ciclo con la
-**app del chofer** faltan, en el BACKEND, estos dos puntos concretos:
+El flujo desde el **panel admin** está terminado y desplegado. El **backend para la app del chofer**
+quedó completo en esta sesión (registro + subidas + pago, todo bajo `/driver-auth`, con verificación
+de propiedad; detalle en `decisions-log` 2026-08-04). Los dos puntos que faltaban:
 
-1. **Guard del chofer en la creación.** Hoy `POST /drivers/:id/payment-submissions` está detrás
-   del guard admin (`app.authenticate`). Para que el chofer POStee desde la app con su token
-   `driver` (de `/driver-auth/login`) hay que **permitir `authenticateDriver`** en esa ruta (o
-   exponer una paralela) y validar que el `:id` sea el propio chofer del token. El servicio ya
-   acepta `source: 'app'` y `submittedBy: null`.
-2. **Actor-usuario en la auditoría.** `writeAudit` (`audit-writer.ts`) solo soporta
-   `actorAdminId`; con `source='app'` el actor queda `null`. Extenderlo con `actorUserId` +
-   columna `audit_logs.actor_user_id` (ya existe) para registrar al chofer que envía.
+1. ✅ **RESUELTO.** El chofer envía su pago por **`POST /driver-auth/payment-submissions`** (guard
+   `authenticateDriver`, ruta paralela): el `driverId` sale del **token**, no de la URL, así que solo
+   puede pagar lo suyo. `source='app'`, `purpose='debt'`. (También subidas propias:
+   `POST /driver-auth/documents/:id/file` y `POST /driver-auth/vehicles/:vehicleId/images`.)
+2. ✅ **RESUELTO.** `writeAudit` acepta `actorUserId`; con `source='app'` el actor del
+   envío/registro/subidas queda en `audit_logs.actor_user_id`.
+
+**Registro + limpieza (nuevo, 2026-08-04).** `POST /driver-auth/register` (público) crea el alta como
+deuda (`source='app'`, `pending`) y devuelve un token; el job `applicant-cleanup-scheduler` purga a los
+7 días los solicitantes sin pago vivo y los rechazados (**dry-run** hasta `applicant_cleanup_enabled`).
 
 **Menores / decisiones abiertas** (no bloquean la app):
 - No hay "des-aprobar" un pago ya aprobado (se revierte anulando la factura resultante, `voided`).

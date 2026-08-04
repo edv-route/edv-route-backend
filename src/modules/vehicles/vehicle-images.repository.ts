@@ -38,7 +38,7 @@ export class VehicleImagesRepository {
     vehicleId: string,
     fileUrl: string,
     position: number,
-    uploadedBy: string,
+    uploadedBy: string | null,
   ): Promise<string> {
     const { rows } = await this.db.query<{ id: string }>(
       `INSERT INTO vehicle_images (vehicle_id, file_url, position, uploaded_by)

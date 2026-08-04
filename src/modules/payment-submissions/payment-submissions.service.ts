@@ -168,6 +168,7 @@ export class PaymentSubmissionsService {
       });
       await writeAudit(this.app.db, {
         actorAdminId: input.source === 'admin' ? actorId : null,
+        actorUserId: input.source === 'app' ? actorId : null,
         eventType: 'payment_submission.created',
         entity: 'payment_submissions',
         entityId: id,

@@ -9,7 +9,8 @@ export interface EnrollmentInput {
   planPriceUsd: number;
   periods: number; // 1 = basic, N = advance payment xN
   periodInterval: string; // e.g. '7 days' - derived from billing_period
-  registeredBy: string;
+  /** Admin who registered (panel); null for self-service app registrations. */
+  registeredBy: string | null;
   /** v9: links the created charges to the approved submission (null for the legacy path). */
   submissionId?: string | null;
 }
@@ -104,7 +105,8 @@ export class EnrollmentRepository {
       membershipPriceUsd: number;
       planId: number;
       planPriceUsd: number;
-      registeredBy: string;
+      /** Admin who registered (panel); null for self-service app registrations. */
+      registeredBy: string | null;
       /** Debt engine on + weekly: anchor the first week to the buying Monday. */
       anchorWeekly: boolean;
       timezone: string;
@@ -998,7 +1000,7 @@ export class EnrollmentRepository {
     client: pg.PoolClient,
     driverId: string,
     totalUsd: number,
-    registeredBy: string,
+    registeredBy: string | null,
   ): Promise<{ id: string; invoiceNumber: string }> {
     const { rows } = await client.query<{ id: string; invoiceNumber: string }>(
       `INSERT INTO invoices (driver_id, total_usd, registered_by)

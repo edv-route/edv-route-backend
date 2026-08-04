@@ -713,3 +713,20 @@ semanal y validar el ciclo con reloj real.
 | **Claim `type` en el JWT** (`admin`\|`driver`) + guards por audiencia (`authenticate` exige `admin`, `authenticateDriver` exige `driver`) | Cerrar un hueco de seguridad: ambos tokens se firman con el mismo secreto; sin el claim un token de chofer accedería a rutas de admin (p. ej. `GET /drivers`). Los admins re-loguean una vez |
 | **Login abierto**: cualquier chofer con credenciales válidas entra; se devuelve `status` y la app enruta (revisión / bloqueado / home) | Coincide con las pantallas del Figma; el backend autentica, no decide el destino |
 | **Lockout por intentos diferido** para choferes (los admins sí lo tienen) | Requiere columnas nuevas (migración); no bloqueante para esta fase |
+
+## 2026-08-04 — 📱 Registro de chofer desde la app (`driver-auth`) + limpieza de solicitantes
+
+> Backend del auto-registro del chofer y de las operaciones para completar el alta desde la app.
+> **Sin migración** (columnas ya existían: `drivers.source`, `registered_by`/`uploaded_by`
+> nullables, `audit_logs.actor_user_id`). El backend es el **dueño** de estas rutas y la app solo
+> las consume (evita que dos sesiones toquen lo mismo). Verificado por `typecheck` en cada fase.
+
+| Decisión | Motivo |
+|---|---|
+| **Reutilizar `DriversService.register` con `source`** (no un segundo camino de alta); `source='app'` → `registered_by`/`uploaded_by` = `null`, actor del alta en `audit_logs.actor_user_id` (se extendió `writeAudit` con `actorUserId`) | Un solo camino de dinero (DRY); el schema ya preveía `registered_by` null = app. El actor real (el chofer) queda con rastro sin inventar columnas |
+| **`POST /driver-auth/register` público**; los 4 pasos son **obligatorios en la app** (credenciales, ≥1 vehículo, todos los requisitos `isRequired`), validado **en el endpoint**, no en `register` | La obligatoriedad es una regla del **canal** app; `register` queda agnóstico (SoC). El panel sigue con solo el paso 1 obligatorio |
+| **Registro abierto sin límite**; la barrera de calidad es la **aprobación del admin**, no la entrada | Reclutamiento: no poner fricción al que se postula; el `pending` no opera hasta que un admin lo apruebe (decisión de Luis) |
+| **Rutas del chofer bajo el prefijo `/driver-auth`** (pago, documento, foto), no un prefijo `/driver` aparte | Todas las rutas de la app ya viven en `/driver-auth`; mantenerlas juntas es más coherente que un segundo plugin para tres rutas |
+| **Propiedad del recurso**: el pago toma el `driverId` del **token** (no de la URL); el documento valida `document.driverId === token` (404 si es de otro); la foto reutiliza `vehicleBelongsToDriver` | Un chofer solo puede tocar lo suyo; el 404 no revela la existencia de recursos ajenos |
+| **Compartir los JSON Schema** de registro en `drivers/drivers.schemas.ts` (admin + app) | Una sola fuente de verdad del contrato del formulario; de paso aligera `drivers.routes.ts` |
+| **Limpieza de solicitantes** (`applicant-cleanup-scheduler`, diario + boot): purga a los **7 días** los `pending` **sin pago vivo** (sin envío `pending`/`approved`) y los `rejected`; conserva `pending` con envío pendiente y `approved`. Borra filas en cascada + archivos del bucket. **Dry-run por defecto** (`applicant_cleanup_enabled`, apagado) | Limpia la basura sin frenar el registro. `registration_step` NO sirve (el register transaccional lo deja null aunque falten archivos/pago), por eso el criterio es "tiene un pago vivo". El flag apagado evita borrados en producción hasta verificar |

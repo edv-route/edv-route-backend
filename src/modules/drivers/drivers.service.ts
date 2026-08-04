@@ -135,10 +135,16 @@ export class DriversService {
   async register(
     input: CreateDriverInput,
     extras: RegisterInput,
-    adminId: string,
+    adminId: string | null,
+    opts?: { source?: 'admin' | 'app' },
   ): Promise<Record<string, unknown>> {
     const person = await this.validatePersonalData(input);
     const { payment, vehicles, documents } = extras;
+    // Registration channel: admin panel vs self-service app. Drives the
+    // traceability FKs (registered_by null for app) and the audit actor
+    // (a driver/user for app, an admin for the panel).
+    const source = opts?.source ?? 'admin';
+    const registeredBy = source === 'app' ? null : adminId;
 
     // Resolve catalog prices before opening the transaction (read-only lookups;
     // amounts are snapshotted at insert time). Mirrors the checks in `enroll`.
@@ -172,7 +178,7 @@ export class DriversService {
         planPriceUsd: Number(plan.priceUsd),
         periods: payment.periods,
         periodInterval: PERIOD_INTERVALS[plan.billingPeriod]!,
-        registeredBy: adminId,
+        registeredBy,
       };
     } else {
       const { rows: mRows } = await this.app.db.query<{ id: number; priceUsd: string }>(
@@ -193,7 +199,7 @@ export class DriversService {
           membershipPriceUsd: Number(membership.priceUsd),
           planId: plan.id,
           planPriceUsd: Number(plan.priceUsd),
-          registeredBy: adminId,
+          registeredBy,
           anchorWeekly,
           timezone,
         };
@@ -236,22 +242,22 @@ export class DriversService {
         // The whole alta is transactional: no incremental step to resume (null).
         const userId = await this.drivers.insertUserAndDriver(
           client,
-          { ...person, registeredBy: adminId },
+          { ...person, registeredBy, source },
           null,
         );
         const createdVehicles: { id: string; documentIds: string[] }[] = [];
         for (const vehicle of vehicles) {
-          const vehicleId = await this.drivers.insertVehicle(client, userId, vehicle, adminId);
+          const vehicleId = await this.drivers.insertVehicle(client, userId, vehicle, registeredBy);
           const vDocIds: string[] = [];
           for (const doc of vehicle.documents ?? []) {
-            vDocIds.push(await this.drivers.insertDocument(client, { vehicleId }, doc, adminId));
+            vDocIds.push(await this.drivers.insertDocument(client, { vehicleId }, doc, registeredBy));
           }
           createdVehicles.push({ id: vehicleId, documentIds: vDocIds });
         }
         const documentIds: string[] = [];
         for (const doc of documents) {
           documentIds.push(
-            await this.drivers.insertDocument(client, { driverId: userId }, doc, adminId),
+            await this.drivers.insertDocument(client, { driverId: userId }, doc, registeredBy),
           );
         }
         let invoiceNumbers: string[] = [];
@@ -278,21 +284,24 @@ export class DriversService {
       throw err;
     }
 
-    await this.audit(adminId, 'driver.created', 'drivers', result.userId, {
-      source: 'admin',
+    // App registrations have no admin actor: the driver himself is the actor,
+    // recorded on audit_logs.actor_user_id (FK users); registered_by stays null.
+    const auditUserId = source === 'app' ? result.userId : null;
+    await this.audit(registeredBy, 'driver.created', 'drivers', result.userId, {
+      source,
       withPayment: payment !== null,
       vehicles: vehicles.length,
       documents: documents.length,
-    });
+    }, auditUserId);
     for (const vehicle of vehicles) {
-      await this.audit(adminId, 'vehicle.registered', 'drivers', result.userId, {
+      await this.audit(registeredBy, 'vehicle.registered', 'drivers', result.userId, {
         plate: vehicle.plate ?? null,
-      });
+      }, auditUserId);
     }
     for (const doc of documents) {
-      await this.audit(adminId, 'document.registered', 'drivers', result.userId, {
+      await this.audit(registeredBy, 'document.registered', 'drivers', result.userId, {
         requirementId: doc.requirementId,
-      });
+      }, auditUserId);
     }
     let primaryInvoiceId: string | null = null;
     if (payment) {
@@ -302,16 +311,17 @@ export class DriversService {
           this.normalizeMeta(payment),
         );
       }
-      await this.audit(adminId, 'driver.enrolled', 'drivers', result.userId, {
+      await this.audit(registeredBy, 'driver.enrolled', 'drivers', result.userId, {
         planId: payment.planId,
         periods: payment.periods,
         invoices: result.invoiceNumbers,
-      });
+      }, auditUserId);
     }
 
     const detail = await this.getDetail(result.userId);
     return {
       ...detail,
+      userId: result.userId,
       invoiceNumbers: result.invoiceNumbers,
       createdDocumentIds: result.documentIds,
       createdVehicles: result.createdVehicles,
@@ -943,12 +953,13 @@ export class DriversService {
   }
 
   private async audit(
-    adminId: string,
+    adminId: string | null,
     eventType: string,
     entity: string,
     entityId: string,
     data: unknown,
+    actorUserId: string | null = null,
   ): Promise<void> {
-    await writeAudit(this.app.db, { actorAdminId: adminId, eventType, entity, entityId, data });
+    await writeAudit(this.app.db, { actorAdminId: adminId, actorUserId, eventType, entity, entityId, data });
   }
 }

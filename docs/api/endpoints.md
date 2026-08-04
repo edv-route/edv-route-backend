@@ -31,6 +31,20 @@ por `status` (revisión / bloqueado / home). Lockout por intentos: diferido (no 
 |---|---|---|
 | POST | `/driver-auth/login` | `{ nationalId, password }` → `{ token, driver }` (perfil incluye `status`, `registrationStep`, `fullName`, `phone`, `photoUrl`, `email`, `isAvailable`, `avgRating`). 401 si la cédula no existe o el chofer no tiene clave de app |
 | GET | `/driver-auth/me` | Perfil del chofer autenticado (guard `authenticateDriver`) |
+| GET | `/driver-auth/requirements` | Requisitos activos (driver + vehicle) con `isRequired`, para el wizard (público) |
+| GET | `/driver-auth/payment-methods` | Métodos de pago activos, sin `admin_only` (público) |
+| POST | `/driver-auth/register` | **Auto-registro (público).** 4 pasos obligatorios (credenciales, ≥1 vehículo, todos los requisitos `isRequired`). Alta como **deuda** (`source='app'`, `pending`) → `{ token, driver, createdDocumentIds, createdVehicles }`. El pago va aparte |
+| POST | `/driver-auth/payment-submissions` | Envío de pago del chofer (guard `authenticateDriver`, multipart). `driverId` del token; `purpose='debt'`; queda `pending` |
+| POST | `/driver-auth/documents/:id/file` | Adjunta archivo a un documento **propio** (guard `authenticateDriver`; 404 si es de otro chofer) |
+| POST | `/driver-auth/vehicles/:vehicleId/images` | Sube foto a un vehículo **propio** (guard `authenticateDriver`; valida propiedad) |
+
+**Auto-registro y limpieza.** El registro es abierto (la barrera de calidad es la aprobación del
+admin, no la entrada). El alta reutiliza el único camino de dinero (`DriversService.register` con
+`source='app'`: `registered_by`/`uploaded_by` = `null`, actor en `audit_logs.actor_user_id`). Las
+subidas y el pago del chofer usan su token y validan propiedad (el recurso es suyo). Un job diario
+(`applicant-cleanup-scheduler`) purga a los **7 días** los `pending` **sin pago vivo** (sin envío
+`pending`/`approved`) y los `rejected`, borrando filas en cascada + archivos del bucket; **apagado
+por defecto** (dry-run) hasta encender `applicant_cleanup_enabled`.
 
 ## Administradores
 

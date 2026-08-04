@@ -1,3 +1,5 @@
+import { registerBody } from '../drivers/drivers.schemas.js';
+
 export const driverPublicSchema = {
   type: 'object',
   properties: {
@@ -70,6 +72,36 @@ export const appPaymentMethodsSchema = {
           name: { type: 'string' },
           type: { type: 'string' },
           details: { type: 'object', additionalProperties: true },
+        },
+      },
+    },
+  },
+} as const;
+
+/**
+ * Self-service registration (app): same body contract as the panel register;
+ * the channel-specific obligations (credentials, >=1 vehicle, every required
+ * document) are enforced in the service. Responds with a driver token so the
+ * app can immediately upload files and submit the payment.
+ */
+export const driverRegisterSchema = {
+  body: registerBody,
+  response: {
+    201: {
+      type: 'object',
+      properties: {
+        token: { type: 'string' },
+        driver: driverPublicSchema,
+        createdDocumentIds: { type: 'array', items: { type: 'string', format: 'uuid' } },
+        createdVehicles: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              id: { type: 'string', format: 'uuid' },
+              documentIds: { type: 'array', items: { type: 'string', format: 'uuid' } },
+            },
+          },
         },
       },
     },
