@@ -4,6 +4,7 @@ import type { PaymentMethodsId } from './PaymentMethods.js';
 import type { default as DriverSource } from './DriverSource.js';
 import type { AdminsId } from './Admins.js';
 import type { InvoicesId } from './Invoices.js';
+import type { default as PaymentReversalType } from './PaymentReversalType.js';
 
 /** Identifier type for public.payment_submissions */
 export type PaymentSubmissionsId = string & { __brand: 'public.payment_submissions' };
@@ -53,6 +54,16 @@ export default interface PaymentSubmissions {
   purpose: string;
 
   context: unknown;
+
+  submission_number: string;
+
+  reverted_at: Date | null;
+
+  reverted_by: AdminsId | null;
+
+  reversal_type: PaymentReversalType | null;
+
+  reversal_reason: string | null;
 }
 
 /** Represents the initializer for the table public.payment_submissions */
@@ -107,6 +118,17 @@ export interface PaymentSubmissionsInitializer {
 
   /** Default value: '{}'::jsonb */
   context?: unknown;
+
+  /** Default value: nextval('payment_submission_number_seq'::regclass) */
+  submission_number?: string;
+
+  reverted_at?: Date | null;
+
+  reverted_by?: AdminsId | null;
+
+  reversal_type?: PaymentReversalType | null;
+
+  reversal_reason?: string | null;
 }
 
 /** Represents the mutator for the table public.payment_submissions */
@@ -154,4 +176,14 @@ export interface PaymentSubmissionsMutator {
   purpose?: string;
 
   context?: unknown;
+
+  submission_number?: string;
+
+  reverted_at?: Date | null;
+
+  reverted_by?: AdminsId | null;
+
+  reversal_type?: PaymentReversalType | null;
+
+  reversal_reason?: string | null;
 }

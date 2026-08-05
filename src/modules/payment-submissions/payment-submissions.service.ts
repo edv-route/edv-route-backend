@@ -40,6 +40,8 @@ export interface CreateSubmissionRequest extends PaymentSubmissionMeta {
   periods: number | null;
   /** New tariff id; required for `change_plan`. */
   planId: number | null;
+  /** Debt payment: the specific invoices to settle (partial payment). Null = all. */
+  invoiceIds: string[] | null;
   source: 'app' | 'admin';
   submittedBy: string | null;
 }
@@ -78,10 +80,11 @@ export class PaymentSubmissionsService {
 
     const isCash = await this.methodIsCash(input.paymentMethodId);
 
-    // A submission always carries evidence: cash carries 1..5 bill photos, the
-    // rest a single receipt.
-    if (files.length === 0) {
-      throw this.app.httpErrors.badRequest('Se requiere al menos una imagen del comprobante');
+    // Evidence rules (decision 2026-08-04): Efectivo Divisa carries 0..5 bill
+    // photos — the photo is OPTIONAL (cash received in hand); every other method
+    // requires exactly one receipt to verify the transfer.
+    if (!isCash && files.length === 0) {
+      throw this.app.httpErrors.badRequest('Se requiere la imagen del comprobante');
     }
     if (files.length > MAX_FILES) {
       throw this.app.httpErrors.badRequest(`Máximo ${MAX_FILES} imágenes por pago`);
@@ -116,13 +119,17 @@ export class PaymentSubmissionsService {
       const prep = await this.prepareAdvanceContext(driverId, input.periods);
       context = prep.context;
       amountUsd = prep.amountUsd;
-    } else if (isCash) {
-      const amount = Number(input.amountUsd);
-      if (!input.amountUsd || !Number.isFinite(amount) || amount <= 0) {
-        throw this.app.httpErrors.badRequest('Indica el monto recibido en efectivo');
+    } else if (input.invoiceIds && input.invoiceIds.length > 0) {
+      // Partial payment: settle only the SELECTED debt invoices (each in full).
+      const total = await this.submissions.selectedInvoicesTotal(driverId, input.invoiceIds);
+      if (Number(total) <= 0) {
+        throw this.app.httpErrors.badRequest('Las facturas seleccionadas no tienen deuda por pagar');
       }
-      amountUsd = amount.toFixed(2);
+      amountUsd = total;
+      context = { invoiceIds: input.invoiceIds };
     } else {
+      // Whole outstanding debt. Each concept has its own invoice now, so the amount
+      // is the debt itself — a captured cash amount no longer defines it.
       const debt = await this.submissions.driverDebtTotal(driverId);
       if (Number(debt) <= 0) {
         throw this.app.httpErrors.badRequest('El afiliado no tiene deuda por pagar');
@@ -233,6 +240,28 @@ export class PaymentSubmissionsService {
       entity: 'payment_submissions',
       entityId: id,
       data: { reason: reason.trim() },
+    });
+  }
+
+  /**
+   * Reverses an approved receipt: `refund` voids its invoices (money returned);
+   * `correction` sends the settled debt back to owed so a corrected receipt can
+   * be registered. Keeps the trace; only an approved receipt can be reverted.
+   */
+  async reverse(
+    id: string,
+    reversalType: 'refund' | 'correction',
+    reason: string,
+    adminId: string,
+  ): Promise<void> {
+    const ok = await this.submissions.reverse(id, adminId, reversalType, reason.trim());
+    if (!ok) throw this.app.httpErrors.conflict('Solo se puede revertir un pago aprobado');
+    await writeAudit(this.app.db, {
+      actorAdminId: adminId,
+      eventType: 'payment_submission.reverted',
+      entity: 'payment_submissions',
+      entityId: id,
+      data: { reversalType, reason: reason.trim() },
     });
   }
 

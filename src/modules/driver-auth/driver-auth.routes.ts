@@ -117,6 +117,7 @@ const driverAuthRoutes: FastifyPluginAsync = async (app) => {
         purpose: 'debt',
         periods: null,
         planId: null,
+        invoiceIds: null,
         source: 'app',
         // submitted_by is an FK to admins; for the app channel it stays null and
         // the driver actor is recorded on audit_logs.actor_user_id (actorId below).

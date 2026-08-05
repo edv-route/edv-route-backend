@@ -730,3 +730,32 @@ semanal y validar el ciclo con reloj real.
 | **Propiedad del recurso**: el pago toma el `driverId` del **token** (no de la URL); el documento valida `document.driverId === token` (404 si es de otro); la foto reutiliza `vehicleBelongsToDriver` | Un chofer solo puede tocar lo suyo; el 404 no revela la existencia de recursos ajenos |
 | **Compartir los JSON Schema** de registro en `drivers/drivers.schemas.ts` (admin + app) | Una sola fuente de verdad del contrato del formulario; de paso aligera `drivers.routes.ts` |
 | **Limpieza de solicitantes** (`applicant-cleanup-scheduler`, diario + boot): purga a los **7 días** los `pending` **sin pago vivo** (sin envío `pending`/`approved`) y los `rejected`; conserva `pending` con envío pendiente y `approved`. Borra filas en cascada + archivos del bucket. **Dry-run por defecto** (`applicant_cleanup_enabled`, apagado) | Limpia la basura sin frenar el registro. `registration_step` NO sirve (el register transaccional lo deja null aunque falten archivos/pago), por eso el criterio es "tiene un pago vivo". El flag apagado evita borrados en producción hasta verificar |
+
+## 2026-08-04 — 🧾 Rediseño de facturación: 1 recibo de pago cubre N facturas (revierte "1 factura por cobro")
+
+> Cambio de modelo pedido por Luis: separar **factura** (deuda de UN concepto) de **recibo de
+> pago** (documento que cancela deudas). Un pago genera/cubre **N facturas** (membresía + una por
+> semana), no una agrupada. **Revierte** la decisión del 2026-07-28 ("1 factura por el total").
+> Migración `1752360000000_billing-receipts` + reset de datos de prueba (`npm run db:reset`).
+> Verificado por `typecheck` (backend) y `build` (admin) en cada fase.
+
+| Decisión | Motivo |
+|---|---|
+| **Factura = una deuda de un concepto** (membresía · semana · penalización), número propio, se paga **completa**; estados pendiente → mora → pagada/anulada | Facturación granular; cada línea es un documento trazable |
+| **Recibo de pago = documento con número propio** (`payment_submissions.submission_number`) que cubre 1..N facturas; estados pendiente → aprobado/rechazado/**revertido** | El "N° de pago" del negocio; un pago agrupa varias facturas |
+| **El recibo GENERA sus facturas al crearse**, `pending` (deuda), ligadas por `invoices.submission_id`; aprobar → pagadas, rechazar → quedan en deuda. Única excepción: registro **sin** pago → 2 facturas de deuda sin recibo | Que un recibo pendiente ya muestre los N° y que un rechazo deje al afiliado debiendo |
+| **Vínculos**: `invoices.submission_id` = recibo que la **generó** (null = deuda sin recibo); `charge.submission_id` = recibo que la **pagó** | Distinguir en la reversión lo generado (→ anular) de la deuda solo saldada (→ vuelve a deber) |
+| **El pago (método/referencia/comprobante) vive en el RECIBO**, no en cada factura | Una sola fuente del dato del pago; N facturas comparten un recibo |
+| **Pago parcial**: el cobro selecciona **qué facturas** cancela (cada una completa); el recibo lleva `invoiceIds` y `settleDebt` salda solo esas | Pagar una factura y quedar debiendo otra |
+| **Reversión** de un recibo aprobado con **motivo**: *reembolso* (anula sus facturas) o *corrección* (la deuda saldada vuelve a deber); estado `reverted` con rastro; si pierde la membresía, el chofer vuelve a `pending` | Corregir un pago aprobado por error o devolver dinero, sin borrar documentos (regla #7) |
+| **Motor de cobro semanal**: cada semana y penalización nace con **su propia factura de deuda** (antes se emitía sin factura) | Toda deuda es una factura desde que se debe |
+| **UI de Facturación** intercambia dos vistas: **Pagos** (recibos) y **Facturas** (por concepto, con el recibo que la pagó); historial del afiliado: una línea por recibo; flechas "Volver" con `location.back()` | Reflejar el modelo factura/recibo en el panel |
+
+## 2026-08-05 — 🧭 Wizard de alta: gate del paso 1 y menú de acciones del vehículo
+
+> Ajustes de UX del panel (`edv-route-admin`); sin backend ni BD. Verificado por `build` (admin).
+
+| Decisión | Motivo |
+|---|---|
+| **El paso 1 (Datos) es el único requerido y actúa de gate**: no se avanza a los pasos 2-4 sin completarlo; una vez válido, la navegación entre pasos es libre (y volver al 1, siempre) | La lógica ya vivía en `goToStep`/`validateStep1`; lo que la anulaba en local era el flag de desarrollo `environment.unlockSteps`, ahora **apagado** para que dev refleje producción (prod ya lo tenía en `false`) |
+| **Componente compartido `shared/components/action-menu`** (kebab ⋮): las acciones de contenedor del vehículo (Editar/Quitar) pasan a un menú; los documentos conservan sus acciones inline | Antes los cuatro pares "Editar/Quitar" (vehículo + documentos) se veían idénticos y en la misma columna: no se distinguía qué acción afectaba a qué. Dos affordances distintos (menú vs inline) separan los niveles. Cierra al clic-afuera/Escape como `app-select`; reutilizable (DRY/SoC) |

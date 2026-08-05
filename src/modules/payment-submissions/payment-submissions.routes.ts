@@ -68,6 +68,8 @@ const paymentSubmissionsRoutes: FastifyPluginAsync = async (app) => {
                   : 'debt',
           periods: fields['periods'] ? Number(fields['periods']) : null,
           planId: fields['planId'] ? Number(fields['planId']) : null,
+          // Partial payment: comma-separated invoice ids to settle (debt only).
+          invoiceIds: fields['invoiceIds'] ? fields['invoiceIds'].split(',').filter(Boolean) : null,
           source: 'admin',
           submittedBy: req.user.sub,
         },
@@ -131,6 +133,33 @@ const paymentSubmissionsRoutes: FastifyPluginAsync = async (app) => {
     },
     async (req, reply) => {
       await service.reject(req.params.id, req.body.reason, req.user.sub);
+      return reply.code(204).send();
+    },
+  );
+
+  // Reverse an APPROVED receipt: refund (voids its invoices) or correction (settled
+  // debt goes back to owed for a corrected receipt). Keeps the trace.
+  app.post<{
+    Params: { id: string };
+    Body: { reversalType: 'refund' | 'correction'; reason: string };
+  }>(
+    '/payment-submissions/:id/reverse',
+    {
+      schema: {
+        params: idParam,
+        body: {
+          type: 'object',
+          required: ['reversalType', 'reason'],
+          additionalProperties: false,
+          properties: {
+            reversalType: { type: 'string', enum: ['refund', 'correction'] },
+            reason: { type: 'string', minLength: 1, maxLength: 500 },
+          },
+        },
+      },
+    },
+    async (req, reply) => {
+      await service.reverse(req.params.id, req.body.reversalType, req.body.reason, req.user.sub);
       return reply.code(204).send();
     },
   );

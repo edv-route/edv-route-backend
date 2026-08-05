@@ -2,6 +2,7 @@
 type PaymentSubmissionStatus = 
   | 'pending'
   | 'approved'
-  | 'rejected';
+  | 'rejected'
+  | 'reverted';
 
 export type { PaymentSubmissionStatus as default };

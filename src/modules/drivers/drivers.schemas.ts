@@ -102,6 +102,10 @@ export const registerBody = {
         ...paymentMetaProps,
       },
     },
+    // v9 (2026-08-04): the alta is being paid up front via a pending `enroll`
+    // submission (membership + N weeks, one invoice on approval). When true the
+    // registration must NOT emit the base alta debt — the submission covers it.
+    deferredEnrollment: { type: 'boolean' },
     vehicles: {
       type: 'array',
       maxItems: 10,

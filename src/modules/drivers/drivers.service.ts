@@ -84,6 +84,12 @@ export interface RegisterInput {
   payment: EnrollInput | null;
   vehicles: RegisterVehicleInput[];
   documents: RegisterDocumentInput[];
+  /**
+   * v9 (2026-08-04): the alta is paid up front via a pending `enroll` submission
+   * (membership + N weeks, one invoice on approval). When true the registration
+   * leaves the driver pending WITHOUT the base alta debt — the submission covers it.
+   */
+  deferredEnrollment?: boolean;
 }
 
 export class DriversService {
@@ -139,7 +145,7 @@ export class DriversService {
     opts?: { source?: 'admin' | 'app' },
   ): Promise<Record<string, unknown>> {
     const person = await this.validatePersonalData(input);
-    const { payment, vehicles, documents } = extras;
+    const { payment, vehicles, documents, deferredEnrollment } = extras;
     // Registration channel: admin panel vs self-service app. Drives the
     // traceability FKs (registered_by null for app) and the audit actor
     // (a driver/user for app, an admin for the panel).
@@ -180,7 +186,10 @@ export class DriversService {
         periodInterval: PERIOD_INTERVALS[plan.billingPeriod]!,
         registeredBy,
       };
-    } else {
+    } else if (!deferredEnrollment) {
+      // No payment AND not deferred: emit the base alta debt (membership + 1 week).
+      // Deferred means a pending `enroll` submission will materialize the alta
+      // (membership + N weeks) on approval, so nothing is owed here yet.
       const { rows: mRows } = await this.app.db.query<{ id: number; priceUsd: string }>(
         'SELECT id, price_usd AS "priceUsd" FROM memberships WHERE active',
       );
@@ -266,7 +275,7 @@ export class DriversService {
           invoiceNumbers = enrolled.invoiceNumbers;
         } else if (debtAlta) {
           const debt = await this.enrollment.enrollDebtOnClient(client, { ...debtAlta, driverId: userId });
-          invoiceNumbers = [debt.invoiceNumber];
+          invoiceNumbers = debt.invoiceNumbers;
         }
         return { userId, invoiceNumbers, documentIds, createdVehicles };
       });
@@ -636,13 +645,11 @@ export class DriversService {
     driverId: string,
     input: PaymentMeta & { note?: string | null },
     adminId: string,
-  ): Promise<{
-    invoiceNumber: string;
-    primaryInvoiceId: string | null;
-    settledCharges: number;
-    totalUsd: string;
-  }> {
+  ): Promise<{ settledCharges: number; totalUsd: string }> {
     await this.assertDriver(driverId);
+    // Legacy direct external payment (v8): superseded by the v9 receipt flow. With
+    // the billing redesign the payment details live on the receipt, so this path
+    // no longer stamps them onto an invoice; it just settles the owed charges.
     const result = await this.enrollment.registerExternalPayment({
       driverId,
       registeredBy: adminId,
@@ -650,15 +657,11 @@ export class DriversService {
     if (!result) {
       throw this.app.httpErrors.conflict('El afiliado no tiene cargos pendientes por saldar');
     }
-    const primaryInvoiceId = await this.enrollment.setInvoicePaymentMeta(
-      result.invoiceNumber,
-      this.normalizeMeta(input),
-    );
     await this.audit(adminId, 'driver.external_payment', 'drivers', driverId, {
       ...result,
       note: input.note ?? null,
     });
-    return { ...result, primaryInvoiceId };
+    return result;
   }
 
   /**

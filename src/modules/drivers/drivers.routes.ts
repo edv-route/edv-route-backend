@@ -80,15 +80,21 @@ const driversRoutes: FastifyPluginAsync = async (app) => {
       payment?: EnrollInput | null;
       vehicles?: RegisterVehicleInput[];
       documents?: RegisterDocumentInput[];
+      deferredEnrollment?: boolean;
     };
   }>(
     '/register',
     { schema: { body: registerBody } },
     async (req, reply) => {
-      const { payment, vehicles, documents, ...person } = req.body;
+      const { payment, vehicles, documents, deferredEnrollment, ...person } = req.body;
       const detail = await service.register(
         person,
-        { payment: payment ?? null, vehicles: vehicles ?? [], documents: documents ?? [] },
+        {
+          payment: payment ?? null,
+          vehicles: vehicles ?? [],
+          documents: documents ?? [],
+          deferredEnrollment: deferredEnrollment ?? false,
+        },
         req.user.sub,
       );
       return reply.code(201).send(detail);

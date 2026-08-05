@@ -64,6 +64,9 @@ export interface CreateSubmissionInput extends PaymentSubmissionMeta {
 
 export interface SubmissionListItem {
   id: string;
+  /** Continuous receipt number (the "N° de pago"). */
+  submissionNumber: string;
+  purpose: string;
   driverId: string;
   driverName: string;
   status: string;
@@ -92,10 +95,25 @@ export interface SubmissionDetail extends SubmissionListItem {
   note: string | null;
   rejectionReason: string | null;
   reviewedByName: string | null;
+  /** Reversal trace: type (refund/correction) + reason + who/when, when reverted. */
+  reversalType: string | null;
+  reversalReason: string | null;
+  revertedByName: string | null;
+  revertedAt: Date | null;
   invoiceId: string | null;
   invoiceNumber: string | null;
-  /** What the payment covers (breakdown), derived from the purpose + current debt. */
-  items: { label: string; amountUsd: string }[];
+  /**
+   * What the receipt covers, ONE line per invoice (billing redesign): the real
+   * invoices linked to the receipt (with their N° once they exist), or — while
+   * still pending with no invoices yet — the breakdown derived from the purpose.
+   */
+  items: {
+    label: string;
+    amountUsd: string;
+    invoiceNumber: string | null;
+    periodStart: Date | null;
+    periodEnd: Date | null;
+  }[];
   files: SubmissionFile[];
 }
 
@@ -133,6 +151,26 @@ export class PaymentSubmissionsRepository {
     return Number(rows[0]?.total ?? 0).toFixed(2);
   }
 
+  /** Sum of the SELECTED still-owed invoices of a driver (partial payment), USD. */
+  async selectedInvoicesTotal(driverId: string, invoiceIds: string[]): Promise<string> {
+    const { rows } = await this.db.query<{ total: string }>(
+      `SELECT COALESCE(sum(c.amount_usd), 0)::text AS total
+       FROM (
+         SELECT mp.invoice_id, mp.amount_usd, mp.status::text AS status
+           FROM membership_payments mp WHERE mp.driver_id = $1
+         UNION ALL
+         SELECT sp.invoice_id, sp.amount_usd, sp.status::text
+           FROM subscription_payments sp
+           JOIN driver_subscriptions ds ON ds.id = sp.driver_subscription_id
+           WHERE ds.driver_id = $1
+       ) c
+       WHERE c.invoice_id = ANY($2::uuid[])
+         AND (c.status = 'overdue' OR (c.status = 'pending' AND c.invoice_id IS NOT NULL))`,
+      [driverId, invoiceIds],
+    );
+    return Number(rows[0]?.total ?? 0).toFixed(2);
+  }
+
   /** True when the driver already has a pending submission (the DB also enforces it). */
   async hasPending(driverId: string): Promise<boolean> {
     const { rows } = await this.db.query(
@@ -160,6 +198,24 @@ export class PaymentSubmissionsRepository {
         ],
       );
       const id = rows[0]!.id;
+      // Billing redesign (2026-08-04): an ALTA receipt GENERATES its invoices/
+      // charges (pending) right here, linked to it — so they carry their N° while
+      // pending and a rejection leaves them owed. Approval settles them. Other
+      // purposes create/settle their charges at approval time.
+      if (input.purpose === 'enroll') {
+        const ctx = input.context as unknown as EnrollContext;
+        await this.enrollment.enrollOnClient(client, {
+          driverId: input.driverId,
+          membershipId: ctx.membershipId,
+          membershipPriceUsd: ctx.membershipPriceUsd,
+          planId: ctx.planId,
+          planPriceUsd: ctx.planPriceUsd,
+          periods: ctx.periods,
+          periodInterval: ctx.periodInterval,
+          registeredBy: input.submittedBy,
+          submissionId: id,
+        });
+      }
       for (let i = 0; i < input.filePaths.length; i++) {
         await client.query(
           `INSERT INTO payment_submission_files (submission_id, storage_path, position)
@@ -197,7 +253,8 @@ export class PaymentSubmissionsRepository {
 
     values.push(opts.limit, (opts.page - 1) * opts.limit);
     const { rows } = await this.db.query<SubmissionListItem>(
-      `SELECT ps.id, ps.driver_id AS "driverId", u.full_name AS "driverName",
+      `SELECT ps.id, ps.submission_number::text AS "submissionNumber", ps.purpose,
+              ps.driver_id AS "driverId", u.full_name AS "driverName",
               ps.status, ps.amount_usd AS "amountUsd", pm.name AS "paymentMethodName",
               ps.paid_on AS "paidOn", ps.source, ps.created_at AS "createdAt",
               ps.reviewed_at AS "reviewedAt",
@@ -216,7 +273,8 @@ export class PaymentSubmissionsRepository {
     const { rows } = await this.db.query<
       Omit<SubmissionDetail, 'files' | 'items'> & { context: Record<string, unknown> }
     >(
-      `SELECT ps.id, ps.driver_id AS "driverId", u.full_name AS "driverName",
+      `SELECT ps.id, ps.submission_number::text AS "submissionNumber",
+              ps.driver_id AS "driverId", u.full_name AS "driverName",
               ps.status, ps.purpose, ps.context, ps.amount_usd AS "amountUsd",
               pm.name AS "paymentMethodName",
               ps.paid_on AS "paidOn", ps.source, ps.created_at AS "createdAt",
@@ -224,12 +282,16 @@ export class PaymentSubmissionsRepository {
               ps.payment_reference AS "paymentReference", ps.payer_bank AS "payerBank",
               ps.payer_phone AS "payerPhone", ps.payer_id AS "payerId",
               ps.payer_account AS "payerAccount", ps.note, ps.rejection_reason AS "rejectionReason",
-              ra.full_name AS "reviewedByName", ps.invoice_id AS "invoiceId",
+              ra.full_name AS "reviewedByName",
+              ps.reversal_type::text AS "reversalType", ps.reversal_reason AS "reversalReason",
+              ps.reverted_at AS "revertedAt", rv.full_name AS "revertedByName",
+              ps.invoice_id AS "invoiceId",
               i.invoice_number::text AS "invoiceNumber", 0 AS "fileCount"
        FROM payment_submissions ps
        JOIN users u ON u.id = ps.driver_id
        LEFT JOIN payment_methods pm ON pm.id = ps.payment_method_id
        LEFT JOIN admins ra ON ra.id = ps.reviewed_by
+       LEFT JOIN admins rv ON rv.id = ps.reverted_by
        LEFT JOIN invoices i ON i.id = ps.invoice_id
        WHERE ps.id = $1`,
       [id],
@@ -237,7 +299,7 @@ export class PaymentSubmissionsRepository {
     const head = rows[0];
     if (!head) return null;
 
-    const items = await this.buildItems(head.driverId, head.purpose, head.context);
+    const items = await this.buildItems(id, head.driverId, head.purpose, head.context);
     const { rows: files } = await this.db.query<SubmissionFile>(
       `SELECT id, storage_path AS "storagePath", position
        FROM payment_submission_files WHERE submission_id = $1 ORDER BY position`,
@@ -249,34 +311,75 @@ export class PaymentSubmissionsRepository {
 
   /** Breakdown of what the payment covers (for the review screen). */
   private async buildItems(
+    submissionId: string,
     driverId: string,
     purpose: string,
     context: Record<string, unknown>,
-  ): Promise<{ label: string; amountUsd: string }[]> {
-    if (purpose === 'debt') {
-      const { rows } = await this.db.query<{ label: string; amountUsd: string }>(
-        `SELECT 'Membresía' AS label, amount_usd::text AS "amountUsd"
-           FROM membership_payments WHERE driver_id = $1 AND status = 'pending'
+  ): Promise<SubmissionDetail['items']> {
+    // Real invoices linked to this receipt (via their charges): one line each,
+    // with its N° and period. Present once the charges carry the submission_id.
+    const { rows: real } = await this.db.query<SubmissionDetail['items'][number]>(
+      `SELECT i.invoice_number::text AS "invoiceNumber", c.amount_usd::text AS "amountUsd",
+              c.label, c.period_start AS "periodStart", c.period_end AS "periodEnd"
+       FROM (
+         SELECT invoice_id, amount_usd, 'Membresía' AS label,
+                NULL::timestamptz AS period_start, NULL::timestamptz AS period_end
+           FROM membership_payments WHERE submission_id = $1 AND invoice_id IS NOT NULL
          UNION ALL
-         SELECT CASE WHEN sp.charge_kind::text = 'penalty' THEN 'Penalización'
-                     ELSE 'Semana de tarifa' END AS label,
-                sp.amount_usd::text AS "amountUsd"
-           FROM subscription_payments sp
-           JOIN driver_subscriptions ds ON ds.id = sp.driver_subscription_id
-           WHERE ds.driver_id = $1
-             AND (sp.status = 'overdue' OR (sp.status = 'pending' AND sp.invoice_id IS NOT NULL))`,
+         SELECT invoice_id, amount_usd,
+                CASE WHEN charge_kind::text = 'penalty' THEN 'Penalización'
+                     ELSE 'Semana de tarifa' END,
+                period_start, period_end
+           FROM subscription_payments WHERE submission_id = $1 AND invoice_id IS NOT NULL
+       ) c
+       JOIN invoices i ON i.id = c.invoice_id
+       ORDER BY i.invoice_number`,
+      [submissionId],
+    );
+    if (real.length > 0) return real;
+
+    // Still pending with no linked charges. `debt` covers EXISTING debt invoices
+    // (they already carry their N°); the others derive the breakdown from context.
+    if (purpose === 'debt') {
+      const { rows } = await this.db.query<SubmissionDetail['items'][number]>(
+        `SELECT i.invoice_number::text AS "invoiceNumber", c.amount_usd::text AS "amountUsd",
+                c.label, c.period_start AS "periodStart", c.period_end AS "periodEnd"
+         FROM (
+           SELECT invoice_id, amount_usd, 'Membresía' AS label,
+                  NULL::timestamptz AS period_start, NULL::timestamptz AS period_end
+             FROM membership_payments WHERE driver_id = $1 AND status = 'pending'
+           UNION ALL
+           SELECT sp.invoice_id, sp.amount_usd,
+                  CASE WHEN sp.charge_kind::text = 'penalty' THEN 'Penalización'
+                       ELSE 'Semana de tarifa' END,
+                  sp.period_start, sp.period_end
+             FROM subscription_payments sp
+             JOIN driver_subscriptions ds ON ds.id = sp.driver_subscription_id
+             WHERE ds.driver_id = $1
+               AND (sp.status = 'overdue' OR (sp.status = 'pending' AND sp.invoice_id IS NOT NULL))
+         ) c
+         LEFT JOIN invoices i ON i.id = c.invoice_id
+         ORDER BY i.invoice_number`,
         [driverId],
       );
       return rows;
     }
-    const items: { label: string; amountUsd: string }[] = [];
+    const items: SubmissionDetail['items'] = [];
     const periods = Number(context['periods'] ?? 0);
     const planPrice = Number(context['planPriceUsd'] ?? 0);
     if (purpose === 'enroll') {
-      items.push({ label: 'Membresía', amountUsd: Number(context['membershipPriceUsd'] ?? 0).toFixed(2) });
+      items.push({
+        label: 'Membresía',
+        amountUsd: Number(context['membershipPriceUsd'] ?? 0).toFixed(2),
+        invoiceNumber: null, periodStart: null, periodEnd: null,
+      });
     }
     for (let i = 0; i < periods; i++) {
-      items.push({ label: 'Semana de tarifa', amountUsd: planPrice.toFixed(2) });
+      items.push({
+        label: 'Semana de tarifa',
+        amountUsd: planPrice.toFixed(2),
+        invoiceNumber: null, periodStart: null, periodEnd: null,
+      });
     }
     return items;
   }
@@ -325,24 +428,17 @@ export class PaymentSubmissionsRepository {
           registeredBy: adminId,
           submissionId: id,
         });
-        invoiceId = adv.invoiceId;
-        invoiceNumber = adv.invoiceNumber;
+        // Advance now emits N invoices (one per week); details live on the receipt.
+        invoiceId = null;
+        invoiceNumber = adv.invoiceNumbers[0] ?? '';
         settledCharges = ctx.periods;
       } else if (sub.purpose === 'enroll') {
+        // The invoices/charges were generated (pending) when the receipt was
+        // created; approval just settles them (membership + N weeks → paid).
         const ctx = sub.context as unknown as EnrollContext;
-        const enr = await this.enrollment.enrollOnClient(client, {
-          driverId: sub.driverId,
-          membershipId: ctx.membershipId,
-          membershipPriceUsd: ctx.membershipPriceUsd,
-          planId: ctx.planId,
-          planPriceUsd: ctx.planPriceUsd,
-          periods: ctx.periods,
-          periodInterval: ctx.periodInterval,
-          registeredBy: adminId,
-          submissionId: id,
-        });
-        invoiceId = enr.invoiceId;
-        invoiceNumber = enr.invoiceNumbers[0] ?? '';
+        await this.enrollment.markReceiptChargesPaid(client, id);
+        invoiceId = null;
+        invoiceNumber = '';
         settledCharges = 1 + ctx.periods;
       } else if (sub.purpose === 'change_plan') {
         const ctx = sub.context as unknown as ChangePlanContext;
@@ -352,18 +448,24 @@ export class PaymentSubmissionsRepository {
           registeredBy: adminId,
           submissionId: id,
         });
-        invoiceId = cp.invoiceId;
-        invoiceNumber = cp.invoiceNumber;
+        // Plan change now emits N invoices (one per week); details on the receipt.
+        invoiceId = null;
+        invoiceNumber = cp.invoiceNumbers[0] ?? '';
         settledCharges = ctx.periods;
       } else {
+        // Partial payment: the receipt settles only the selected invoices (each in
+        // full). `invoiceIds` in the context restricts them; absent = all debt.
+        const invoiceIds = (sub.context as { invoiceIds?: string[] }).invoiceIds ?? null;
         const settle = await this.enrollment.settleDebtOnClient(client, {
           driverId: sub.driverId,
           registeredBy: adminId,
           submissionId: id,
+          invoiceIds,
         });
         if (!settle) return { ok: false, reason: 'no_debt' };
-        invoiceId = settle.invoiceId;
-        invoiceNumber = settle.invoiceNumber;
+        // Debt now settles per-concept invoices; payment details live on the receipt.
+        invoiceId = null;
+        invoiceNumber = '';
         settledCharges = settle.settledCharges;
       }
 
@@ -377,6 +479,18 @@ export class PaymentSubmissionsRepository {
             invoiceId, sub.paymentMethodId, sub.reference, sub.payerBank,
             sub.paidOn, sub.payerPhone, sub.payerId, sub.payerAccount,
           ],
+        );
+        // The invoice's receipt IS the submission's first image: reference the same
+        // path in the private bucket (the binary is never duplicated, regla #3). A
+        // cash payment with no photo simply leaves the invoice without proof.
+        await client.query(
+          `UPDATE invoices SET proof_url = (
+             SELECT storage_path FROM payment_submission_files
+             WHERE submission_id = $1 ORDER BY position LIMIT 1
+           )
+           WHERE id = $2 AND proof_url IS NULL
+             AND EXISTS (SELECT 1 FROM payment_submission_files WHERE submission_id = $1)`,
+          [id, invoiceId],
         );
       }
       await client.query(
@@ -398,5 +512,34 @@ export class PaymentSubmissionsRepository {
       [id, adminId, reason],
     );
     return (rowCount ?? 0) > 0;
+  }
+
+  /**
+   * Reverses an APPROVED receipt (refund or correction): undoes its money effects
+   * (enrollment.reverseReceipt) and flips it to `reverted` with the trace, in one
+   * transaction. Returns false if it was not approved.
+   */
+  async reverse(
+    id: string,
+    adminId: string,
+    reversalType: 'refund' | 'correction',
+    reason: string,
+  ): Promise<boolean> {
+    return withTransaction(this.db, async (client) => {
+      const { rows } = await client.query<{ status: string }>(
+        `SELECT status FROM payment_submissions WHERE id = $1 FOR UPDATE`,
+        [id],
+      );
+      if (rows[0]?.status !== 'approved') return false;
+      await this.enrollment.reverseReceipt(client, { submissionId: id, adminId });
+      await client.query(
+        `UPDATE payment_submissions
+            SET status = 'reverted', reverted_at = now(), reverted_by = $2,
+                reversal_type = $3, reversal_reason = $4
+          WHERE id = $1`,
+        [id, adminId, reversalType, reason],
+      );
+      return true;
+    });
   }
 }

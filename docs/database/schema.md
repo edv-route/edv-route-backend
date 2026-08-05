@@ -291,16 +291,15 @@ aspirante rechazado sí (rechazo = reembolso registrado).
 | `payment_method_id` | integer | sí | — | **Pieza 2**: FK → `payment_methods.id` (SET NULL). Con qué método se pagó |
 | `payment_reference` | text | sí | — | **Pieza 2**: nº de referencia/confirmación del pago |
 | `payer_bank` | text | sí | — | **Pieza 2**: banco emisor del pago |
-| `proof_url` | text | sí | — | **Pieza 2**: ruta del **comprobante** en Storage (bucket privado, URL firmada). El monto y la fecha ya están en la factura |
+| `proof_url` | text | sí | — | **Obsoleto** (rediseño 2026-08-04): el comprobante vive en el recibo (`payment_submission_files`); se conserva para facturas legacy |
+| `submission_id` | uuid | sí | — | **Rediseño 2026-08-04** (mig. `1752360000000`): FK → `payment_submissions.id` (SET NULL). Recibo que **generó** esta factura (null = deuda emitida sin recibo: registro sin pago, motor semanal) |
 | `created_at` | timestamptz | no | `now()` | — |
 
-- La factura **agrupa pagos**: sus "líneas" son los pagos que la referencian vía `invoice_id`.
-  En el alta/enroll, **una sola factura agrupa membresía + todos los períodos prepagados**
-  (decisión 2026-07-28: pagar N semanas por adelantado = 1 factura por el total; cada semana
-  sigue siendo su propia fila `subscription_payments` de cobertura). ⚠️ `renew`/`changePlan`
-  todavía emiten una factura por período — **v9 lo unifica**: la factura se materializa **al
-  aprobar** un envío de pago y agrupa sus cargos en una sola
-  ([proposals/pagos-aprobacion](../proposals/pagos-aprobacion/README.md)).
+- **Rediseño 2026-08-04 (revierte 2026-07-28)**: **una factura por concepto** (membresía, o una
+  por semana, o penalización) — su "línea" es el único cargo que la referencia vía `invoice_id`.
+  Un **recibo de pago** (`payment_submissions`) cubre **N facturas**. El estado mostrado se deriva
+  del único cargo: `issued`/`overdue`/`paid` (físico solo `issued`/`voided`). El pago (método/
+  referencia/comprobante) vive en el **recibo**, no en la factura.
 - **Anulación con rastro**: el reembolso marca `voided` (fecha + admin) y **conserva el
   número** — sin huecos en la numeración.
 - Es un comprobante **interno, no fiscal** (⚠️ la facturación SENIAT es un análisis aparte).
@@ -335,7 +334,8 @@ pagado. Contrato: [proposals/pagos-aprobacion](../proposals/pagos-aprobacion/REA
 |---|---|---|---|---|
 | `id` | uuid | no | `gen_random_uuid()` | PK |
 | `driver_id` | uuid | no | — | FK → `drivers.user_id` (RESTRICT) |
-| `status` | payment_submission_status | no | `'pending'` | `pending` \| `approved` \| `rejected` |
+| `status` | payment_submission_status | no | `'pending'` | `pending` \| `approved` \| `rejected` \| **`reverted`** (mig. `1752360000000`) |
+| `submission_number` | bigint | no | `nextval('payment_submission_number_seq')` | **Rediseño 2026-08-04**: UNIQUE, el "N° de pago" (numeración continua propia, como las facturas) |
 | `purpose` | text | no | `'debt'` | **v9-2B** (mig. `1752350000000`): `debt` (saldar deuda) \| `advance` (adelantar N semanas) \| `enroll` (alta: membresía + N semanas) \| `change_plan` (cambiar tarifa + prepagar N semanas). CHECK `payment_submissions_purpose_check` acota los valores |
 | `context` | jsonb | no | `'{}'` | Parámetros que la aprobación necesita (p. ej. `planId`/`periods`/`planPriceUsd` para advance/enroll) |
 | `amount_usd` | numeric(10,2) | no | — | Monto declarado (efectivo: capturado; resto: total de los cargos que cubre) |
@@ -351,6 +351,10 @@ pagado. Contrato: [proposals/pagos-aprobacion](../proposals/pagos-aprobacion/REA
 | `reviewed_by` | uuid | sí | — | FK → `admins.id` (SET NULL). Quién aprobó/rechazó |
 | `reviewed_at` | timestamptz | sí | — | — |
 | `rejection_reason` | text | sí | — | Motivo del rechazo |
+| `reverted_by` | uuid | sí | — | **2026-08-04**: FK → `admins.id` (SET NULL). Quién revirtió el recibo aprobado |
+| `reverted_at` | timestamptz | sí | — | **2026-08-04**: cuándo se revirtió |
+| `reversal_type` | payment_reversal_type | sí | — | **2026-08-04**: `refund` (reembolso: anula sus facturas) \| `correction` (la deuda saldada vuelve a deber) |
+| `reversal_reason` | text | sí | — | **2026-08-04**: motivo de la reversión |
 | `invoice_id` | uuid | sí | — | FK → `invoices.id` (RESTRICT). Factura materializada **al aprobar**; NULL mientras pendiente/rechazado |
 | `created_at` / `updated_at` | timestamptz | no | `now()` | Trigger `set_updated_at` |
 

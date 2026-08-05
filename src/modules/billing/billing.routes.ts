@@ -11,7 +11,7 @@ const invoiceIdParam = {
 
 interface InvoicesQuery {
   /** Derived state (see BillingRepository), not the physical column. */
-  status?: 'issued' | 'paid' | 'voided';
+  status?: 'issued' | 'overdue' | 'paid' | 'voided';
   driverId?: string;
   search?: string;
   page?: number;
@@ -71,7 +71,7 @@ const billingRoutes: FastifyPluginAsync = async (app) => {
           type: 'object',
           additionalProperties: false,
           properties: {
-            status: { type: 'string', enum: ['issued', 'paid', 'voided'] },
+            status: { type: 'string', enum: ['issued', 'overdue', 'paid', 'voided'] },
             driverId: { type: 'string', format: 'uuid' },
             search: { type: 'string', maxLength: 100 },
             ...pagination,

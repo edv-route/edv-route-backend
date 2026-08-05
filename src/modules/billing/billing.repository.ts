@@ -13,18 +13,27 @@ type PaymentRow = Camelize<VDriverPayments>;
  * registration without payment emits). The physical column only knows
  * issued/voided — being "paid" is a fact of the charges, not of the document.
  */
-export type InvoiceState = 'issued' | 'paid' | 'voided';
+export type InvoiceState = 'issued' | 'overdue' | 'paid' | 'voided';
 
 export type InvoiceListItem = Pick<
   InvoiceRow,
   'id' | 'invoiceNumber' | 'totalUsd' | 'issuedAt' | 'voidedAt'
 > & {
   status: InvoiceState;
-  /** When it was settled: max(paid_at) of its charges; null unless fully paid. */
+  /** When it was settled: the paid_at of its single charge; null unless paid. */
   paidAt: Date | null;
   driverId: string;
   driverName: string;
   voidedByName: string | null;
+  /** Billing redesign (2026-08-04): each invoice bills ONE concept. */
+  concept: string;
+  kind: 'membership' | 'subscription';
+  periodStart: Date | null;
+  periodEnd: Date | null;
+  /** Receipt that settled or generated this invoice (null for unpaid debt). */
+  submissionId: string | null;
+  submissionNumber: string | null;
+  /** Payment method — read from the RECEIPT now, not the invoice. */
   paymentMethodName: string | null;
   paymentReference: string | null;
   payerBank: string | null;
@@ -41,24 +50,38 @@ export type InvoiceListItem = Pick<
  * (single-invoice cobro, 2026-07-28), so the aggregate spans both tables.
  * Enum columns are compared as TEXT (pooler catalog-cache rule, 2026-07-23).
  */
-const CHARGES_LATERAL = `LEFT JOIN LATERAL (
-         SELECT count(*) AS total,
-                count(*) FILTER (WHERE c.status = 'paid') AS paid,
-                max(c.paid_at) AS paid_at
+/**
+ * The SINGLE charge backing an invoice (billing redesign 2026-08-04: one invoice
+ * per concept). Brings its status, paid date, period, kind and the receipt that
+ * settled it, so the invoice row shows concept + period + payment at a glance.
+ */
+const CHARGE_LATERAL = `LEFT JOIN LATERAL (
+         SELECT status, paid_at, period_start, period_end, kind, charge_kind, submission_id
          FROM (
-           SELECT status::text AS status, paid_at FROM membership_payments WHERE invoice_id = i.id
+           SELECT status::text AS status, paid_at,
+                  NULL::timestamptz AS period_start, NULL::timestamptz AS period_end,
+                  'membership' AS kind, NULL::text AS charge_kind, submission_id
+             FROM membership_payments WHERE invoice_id = i.id
            UNION ALL
-           SELECT status::text AS status, paid_at FROM subscription_payments WHERE invoice_id = i.id
-         ) c
+           SELECT status::text, paid_at, period_start, period_end,
+                  'subscription', charge_kind::text, submission_id
+             FROM subscription_payments WHERE invoice_id = i.id
+         ) x LIMIT 1
        ) ch ON true`;
 
-/** Fully settled = it has charges and every one of them is paid. */
-const FULLY_PAID_SQL = `ch.total > 0 AND ch.paid = ch.total`;
-
+/** Derived state of an invoice from its single charge (physical col only knows issued/voided). */
 const INVOICE_STATE_SQL = `CASE
          WHEN i.status::text = 'voided' THEN 'voided'
-         WHEN ${FULLY_PAID_SQL} THEN 'paid'
+         WHEN ch.status = 'paid' THEN 'paid'
+         WHEN ch.status = 'overdue' THEN 'overdue'
          ELSE 'issued'
+       END`;
+
+/** Human concept the invoice bills (from its single charge). */
+const INVOICE_CONCEPT_SQL = `CASE
+         WHEN ch.kind = 'membership' THEN 'Membresía'
+         WHEN ch.charge_kind = 'penalty' THEN 'Penalización'
+         ELSE 'Semana de tarifa'
        END`;
 
 /** Kanel cannot infer nullability in views: periods are NULL for memberships. */
@@ -143,7 +166,7 @@ export class BillingRepository {
       where.push(`(u.full_name ILIKE $${values.length} OR i.invoice_number::text ILIKE $${values.length})`);
     }
     const whereSql = where.length > 0 ? `WHERE ${where.join(' AND ')}` : '';
-    const fromSql = `FROM invoices i JOIN users u ON u.id = i.driver_id ${CHARGES_LATERAL}`;
+    const fromSql = `FROM invoices i JOIN users u ON u.id = i.driver_id ${CHARGE_LATERAL}`;
 
     const countResult = await this.db.query<{ count: string }>(
       `SELECT count(*) AS count ${fromSql} ${whereSql}`,
@@ -155,17 +178,21 @@ export class BillingRepository {
       `SELECT i.id, i.invoice_number AS "invoiceNumber", i.total_usd AS "totalUsd",
               ${INVOICE_STATE_SQL} AS status,
               i.issued_at AS "issuedAt", i.voided_at AS "voidedAt",
-              CASE WHEN ${FULLY_PAID_SQL} THEN ch.paid_at END AS "paidAt",
+              CASE WHEN ch.status = 'paid' THEN ch.paid_at END AS "paidAt",
               i.driver_id AS "driverId", u.full_name AS "driverName",
               va.full_name AS "voidedByName",
-              pm.name AS "paymentMethodName", i.payment_reference AS "paymentReference",
-              i.payer_bank AS "payerBank", i.paid_on AS "paidOn",
-              i.payer_phone AS "payerPhone", i.payer_id AS "payerId",
-              i.payer_account AS "payerAccount",
-              (i.proof_url IS NOT NULL) AS "hasProof"
+              ${INVOICE_CONCEPT_SQL} AS concept, ch.kind AS kind,
+              ch.period_start AS "periodStart", ch.period_end AS "periodEnd",
+              ps.id AS "submissionId", ps.submission_number::text AS "submissionNumber",
+              pm.name AS "paymentMethodName", ps.payment_reference AS "paymentReference",
+              ps.payer_bank AS "payerBank", ps.paid_on AS "paidOn",
+              ps.payer_phone AS "payerPhone", ps.payer_id AS "payerId",
+              ps.payer_account AS "payerAccount",
+              EXISTS (SELECT 1 FROM payment_submission_files f WHERE f.submission_id = ps.id) AS "hasProof"
        ${fromSql}
        LEFT JOIN admins va ON va.id = i.voided_by
-       LEFT JOIN payment_methods pm ON pm.id = i.payment_method_id
+       LEFT JOIN payment_submissions ps ON ps.id = COALESCE(i.submission_id, ch.submission_id)
+       LEFT JOIN payment_methods pm ON pm.id = ps.payment_method_id
        ${whereSql}
        ORDER BY i.invoice_number DESC
        LIMIT $${values.length - 1} OFFSET $${values.length}`,
@@ -224,25 +251,26 @@ export class BillingRepository {
 
   /** Full invoice by id (same shape as the list) + the submission that produced
    *  it, if any (v9) — so the detail screen can show its receipt images. */
-  async getInvoice(
-    id: string,
-  ): Promise<(InvoiceListItem & { submissionId: string | null }) | null> {
-    const { rows } = await this.db.query<InvoiceListItem & { submissionId: string | null }>(
+  async getInvoice(id: string): Promise<InvoiceListItem | null> {
+    const { rows } = await this.db.query<InvoiceListItem>(
       `SELECT i.id, i.invoice_number AS "invoiceNumber", i.total_usd AS "totalUsd",
               ${INVOICE_STATE_SQL} AS status,
               i.issued_at AS "issuedAt", i.voided_at AS "voidedAt",
-              CASE WHEN ${FULLY_PAID_SQL} THEN ch.paid_at END AS "paidAt",
+              CASE WHEN ch.status = 'paid' THEN ch.paid_at END AS "paidAt",
               i.driver_id AS "driverId", u.full_name AS "driverName",
               va.full_name AS "voidedByName",
-              pm.name AS "paymentMethodName", i.payment_reference AS "paymentReference",
-              i.payer_bank AS "payerBank", i.paid_on AS "paidOn",
-              i.payer_phone AS "payerPhone", i.payer_id AS "payerId",
-              i.payer_account AS "payerAccount",
-              (i.proof_url IS NOT NULL) AS "hasProof",
-              (SELECT ps.id FROM payment_submissions ps WHERE ps.invoice_id = i.id LIMIT 1) AS "submissionId"
-       FROM invoices i JOIN users u ON u.id = i.driver_id ${CHARGES_LATERAL}
+              ${INVOICE_CONCEPT_SQL} AS concept, ch.kind AS kind,
+              ch.period_start AS "periodStart", ch.period_end AS "periodEnd",
+              ps.id AS "submissionId", ps.submission_number::text AS "submissionNumber",
+              pm.name AS "paymentMethodName", ps.payment_reference AS "paymentReference",
+              ps.payer_bank AS "payerBank", ps.paid_on AS "paidOn",
+              ps.payer_phone AS "payerPhone", ps.payer_id AS "payerId",
+              ps.payer_account AS "payerAccount",
+              EXISTS (SELECT 1 FROM payment_submission_files f WHERE f.submission_id = ps.id) AS "hasProof"
+       FROM invoices i JOIN users u ON u.id = i.driver_id ${CHARGE_LATERAL}
        LEFT JOIN admins va ON va.id = i.voided_by
-       LEFT JOIN payment_methods pm ON pm.id = i.payment_method_id
+       LEFT JOIN payment_submissions ps ON ps.id = COALESCE(i.submission_id, ch.submission_id)
+       LEFT JOIN payment_methods pm ON pm.id = ps.payment_method_id
        WHERE i.id = $1`,
       [id],
     );

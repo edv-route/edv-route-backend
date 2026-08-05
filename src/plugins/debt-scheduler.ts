@@ -52,9 +52,9 @@ async function loadConfig(db: pg.Pool): Promise<EngineConfig> {
  * Master switch: `debt_engine_enabled`. While false this returns immediately
  * and the prepaid model keeps running untouched. Scope: **weekly plans only**.
  *
- *  1. Issues next week's charge (`pending`, week starting next Monday) once the
- *     billing moment has passed. NO invoice here: an invoice is a receipt of
- *     money received, so it is emitted when the charge is actually paid.
+ *  1. Issues next week's charge (`pending`, week starting next Monday) WITH its
+ *     own debt invoice (one per concept, 2026-08-04), once the billing moment has
+ *     passed; a receipt cancels the invoice when the week is actually paid.
  *  2. Marks arrears: `pending` charges whose week already started -> `overdue`.
  *  3. Deferred reactivation (auto mode): a penalized driver who cleared the debt
  *     rejoins next Monday, not instantly (the admin can override immediately).
@@ -77,22 +77,20 @@ export async function runDebtEngineTick(db: pg.Pool): Promise<DebtTickResult> {
     };
   }
 
-  // 1) Issue next week's charge. date_trunc('week') anchors on Monday, which
-  // matches week_anchor_day = 1.
+  // 1) Issue next week's charge WITH its own debt invoice (billing redesign
+  // 2026-08-04: every charge carries an invoice from the moment it is owed, one
+  // per concept). date_trunc('week') anchors on Monday (week_anchor_day = 1). The
+  // invoice has no receipt yet — a receipt cancels it when the week is paid.
   const issued = await db.query<{ id: string; driverId: string }>(
     `WITH moment AS (
        SELECT date_trunc('week', (now() AT TIME ZONE $1)) AS week_start,
               date_trunc('week', (now() AT TIME ZONE $1))
                 + make_interval(days => $2 - 1, hours => $3) AS emit_at,
               date_trunc('week', (now() AT TIME ZONE $1)) + interval '7 days' AS next_start
-     ), ins AS (
-       INSERT INTO subscription_payments
-         (driver_subscription_id, period_start, period_end, amount_usd, status)
-       SELECT ds.id,
-              (m.next_start AT TIME ZONE $1),
-              ((m.next_start + interval '7 days') AT TIME ZONE $1),
-              p.price_usd,
-              'pending'
+     ), eligible AS (
+       SELECT ds.id AS sub_id, ds.driver_id, p.price_usd,
+              (m.next_start AT TIME ZONE $1) AS ps,
+              ((m.next_start + interval '7 days') AT TIME ZONE $1) AS pe
        FROM driver_subscriptions ds
        JOIN subscription_plans p ON p.id = ds.plan_id
        JOIN drivers d ON d.user_id = ds.driver_id
@@ -117,6 +115,15 @@ export async function runDebtEngineTick(db: pg.Pool): Promise<DebtTickResult> {
             WHERE cov.driver_subscription_id = ds.id
               AND cov.status = 'paid' AND cov.charge_kind = 'period'),
            (m.next_start AT TIME ZONE $1))
+     ), new_invoices AS (
+       INSERT INTO invoices (driver_id, total_usd)
+       SELECT driver_id, price_usd FROM eligible
+       RETURNING id AS invoice_id, driver_id
+     ), ins AS (
+       INSERT INTO subscription_payments
+         (driver_subscription_id, invoice_id, period_start, period_end, amount_usd, status)
+       SELECT e.sub_id, ni.invoice_id, e.ps, e.pe, e.price_usd, 'pending'
+       FROM eligible e JOIN new_invoices ni ON ni.driver_id = e.driver_id
        RETURNING id, driver_subscription_id
      )
      SELECT i.id, ds.driver_id AS "driverId"
@@ -214,11 +221,8 @@ export async function runDebtEngineTick(db: pg.Pool): Promise<DebtTickResult> {
   const justPenalized = moved.rows.filter((r) => r.status === 'penalized').map((r) => r.driverId);
   const penalties = justPenalized.length
     ? await db.query<{ id: string; driverId: string }>(
-        `WITH ins AS (
-           INSERT INTO subscription_payments
-             (driver_subscription_id, period_start, period_end, amount_usd, status, charge_kind)
-           SELECT ds.id, now(), now() + make_interval(weeks => $1),
-                  p.price_usd * $1, 'pending', 'penalty'
+        `WITH eligible AS (
+           SELECT ds.id AS sub_id, ds.driver_id, p.price_usd * $1 AS amount
            FROM driver_subscriptions ds
            JOIN subscription_plans p ON p.id = ds.plan_id
            JOIN drivers d ON d.user_id = ds.driver_id
@@ -236,6 +240,17 @@ export async function runDebtEngineTick(db: pg.Pool): Promise<DebtTickResult> {
                SELECT 1 FROM payment_submissions ps
                WHERE ps.driver_id = d.user_id AND ps.status = 'pending'
              )
+         ), new_invoices AS (
+           INSERT INTO invoices (driver_id, total_usd)
+           SELECT driver_id, amount FROM eligible
+           RETURNING id AS invoice_id, driver_id
+         ), ins AS (
+           INSERT INTO subscription_payments
+             (driver_subscription_id, invoice_id, period_start, period_end,
+              amount_usd, status, charge_kind)
+           SELECT e.sub_id, ni.invoice_id, now(), now() + make_interval(weeks => $1),
+                  e.amount, 'pending', 'penalty'
+           FROM eligible e JOIN new_invoices ni ON ni.driver_id = e.driver_id
            RETURNING id, driver_subscription_id
          )
          SELECT i.id, ds.driver_id AS "driverId"
