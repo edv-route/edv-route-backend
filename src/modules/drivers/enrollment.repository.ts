@@ -259,13 +259,14 @@ export class EnrollmentRepository {
    *  - Prepaid (default / debt engine off): first period = now -> next midnight
    *    boundary of the interval; the rest are exact consecutive intervals
    *    (decision 2026-07-10).
-   *  - Weekly anchored (`anchorWeekly`, debt engine on + weekly plan, v8): every
-   *    period is a calendar week [Monday 00:00, next Monday). The alta buys the
-   *    week that starts on the NEXT Monday; paying ON a Monday buys the week
-   *    already running (decision 2026-07-30). The driver does NOT operate
-   *    between the payment and that Monday, so the subscription stays
-   *    `scheduled` and the subscription-scheduler activates it when its paid
-   *    period begins (the step that already exists since 2026-07-15).
+   *  - Weekly anchored (`anchorWeekly`, debt engine on + weekly plan): every
+   *    period is a calendar week [Monday 00:00, next Monday) anchored to the
+   *    CURRENT week's Monday and the tariff goes `active` at once (v2, 2026-08-06
+   *    — reverts the "next Monday / scheduled" rule of 2026-07-30). A manual
+   *    mid-week approval starts the driver THAT day keeping the days already
+   *    elapsed (his next charge falls on the normal Friday); the automatic Monday
+   *    job (auto-approval-scheduler) runs on a Monday, so it lands on a full week.
+   *    Same anchoring as a reactivated (penalized -> back) driver.
    */
   async approve(
     driverId: string,
@@ -288,11 +289,9 @@ export class EnrollmentRepository {
         await client.query(
           `WITH anchor AS (
              SELECT date_trunc('day', (now() + $2::interval) AT TIME ZONE $3) AT TIME ZONE $3 AS first_end,
-                    -- Next Monday, except when today IS Monday (then, this week).
-                    (CASE WHEN extract(isodow FROM (now() AT TIME ZONE $3)) = 1
-                          THEN date_trunc('week', (now() AT TIME ZONE $3))
-                          ELSE date_trunc('week', (now() AT TIME ZONE $3)) + interval '7 days'
-                     END) AT TIME ZONE $3 AS monday
+                    -- Monday of the CURRENT week (v2, 2026-08-06): approval anchors
+                    -- to the running week, never the next one.
+                    date_trunc('week', (now() AT TIME ZONE $3)) AT TIME ZONE $3 AS monday
            ), ordered AS (
              SELECT id, row_number() OVER (ORDER BY period_start) - 1 AS idx
              FROM subscription_payments
@@ -309,24 +308,17 @@ export class EnrollmentRepository {
            FROM ordered o, anchor a WHERE o.id = sp.id`,
           [sub.id, periodInterval, timezone, anchorWeekly],
         );
-        // The first paid week may start in the FUTURE (paid any day but Monday):
-        // the tariff is not in force until then, so it stays `scheduled` and the
-        // subscription-scheduler flips it to `active` at Monday 00:00.
+        // The current-week Monday is always <= now, so the tariff is in force
+        // immediately (`active`). The driver operates from this moment; if approved
+        // mid-week he simply keeps the days already elapsed of the running week.
         await client.query(
           `WITH anchor AS (
-             SELECT (CASE WHEN extract(isodow FROM (now() AT TIME ZONE $3)) = 1
-                          THEN date_trunc('week', (now() AT TIME ZONE $3))
-                          ELSE date_trunc('week', (now() AT TIME ZONE $3)) + interval '7 days'
-                     END) AT TIME ZONE $3 AS monday
+             SELECT date_trunc('week', (now() AT TIME ZONE $3)) AT TIME ZONE $3 AS monday
            )
            UPDATE driver_subscriptions ds SET
-             status = (CASE WHEN $4::boolean AND a.monday > now()
-                            THEN 'scheduled' ELSE 'active' END)::subscription_status,
-             started_at = CASE WHEN $4::boolean AND a.monday > now()
-               THEN ds.started_at ELSE now() END,
-             current_period_start = CASE WHEN $4::boolean
-               THEN a.monday
-               ELSE now() END,
+             status = 'active'::subscription_status,
+             started_at = now(),
+             current_period_start = CASE WHEN $4::boolean THEN a.monday ELSE now() END,
              current_period_end = CASE WHEN $4::boolean
                THEN a.monday + $2::interval
                ELSE date_trunc('day', (now() + $2::interval) AT TIME ZONE $3) AT TIME ZONE $3 END

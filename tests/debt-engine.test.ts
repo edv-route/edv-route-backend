@@ -240,7 +240,7 @@ test('anchoring: weekly renew lands on Mondays when ON, now-based when OFF', asy
   }
 });
 
-test('alta anclada: la semana comprada arranca el PRÓXIMO lunes y la tarifa no rige hasta entonces', async () => {
+test('alta anclada: la semana comprada arranca el lunes de la semana EN CURSO y la tarifa rige de inmediato', async () => {
   const repo = new EnrollmentRepository(pool);
   const tz = 'America/Caracas';
   // A pending driver as `enroll` leaves him: scheduled subscription + paid
@@ -270,33 +270,28 @@ test('alta anclada: la semana comprada arranca el PRÓXIMO lunes y la tarifa no 
 
     await repo.approve(driverId, '7 days', tz, true);
 
+    // v2 (2026-08-06): approval anchors to the CURRENT week's Monday and the
+    // tariff goes active at once — a mid-week approval keeps the days already
+    // elapsed (the automatic Monday job lands the same anchor on a full week).
     const { rows } = await pool.query<{
-      dow: number; midnight: boolean; future: boolean; withinAWeek: boolean; today_is_monday: boolean;
+      dow: number; midnight: boolean; started: boolean; currentWeek: boolean;
     }>(
       `SELECT extract(isodow from (period_start AT TIME ZONE $2))::int AS dow,
               (period_start AT TIME ZONE $2)::time = time '00:00' AS midnight,
-              period_start > now() AS future,
-              period_start <= now() + interval '7 days' AS "withinAWeek",
-              extract(isodow from (now() AT TIME ZONE $2))::int = 1 AS today_is_monday
+              period_start <= now() AS started,
+              period_start > now() - interval '7 days' AS "currentWeek"
        FROM subscription_payments WHERE driver_subscription_id = $1`,
       [subId, tz],
     );
     const week = rows[0]!;
     assert.equal(week.dow, 1, 'la semana comprada arranca un lunes');
     assert.ok(week.midnight, 'a las 00:00 hora del negocio');
-    assert.ok(week.withinAWeek, 'es el lunes inmediato, no uno lejano');
-    // Paying on a Monday buys the week already running; any other day, the next one.
-    assert.equal(week.future, !week.today_is_monday,
-      week.today_is_monday
-        ? 'pagando un lunes, la semana en curso arranca ya'
-        : 'pagando cualquier otro día, la semana arranca el lunes siguiente');
+    assert.ok(week.started, 'el lunes de la semana en curso ya pasó (o es hoy): rige ya');
+    assert.ok(week.currentWeek, 'es el lunes de la semana en curso, no uno anterior');
 
     const { rows: sub } = await pool.query<{ status: string }>(
       `SELECT status::text AS status FROM driver_subscriptions WHERE id = $1`, [subId]);
-    assert.equal(
-      sub[0]!.status, week.today_is_monday ? 'active' : 'scheduled',
-      'la tarifa no rige hasta que empieza su semana: queda programada',
-    );
+    assert.equal(sub[0]!.status, 'active', 'la tarifa rige de inmediato al aprobar');
   } finally {
     await removeDriver(driverId);
   }

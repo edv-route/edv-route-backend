@@ -759,3 +759,37 @@ semanal y validar el ciclo con reloj real.
 |---|---|
 | **El paso 1 (Datos) es el único requerido y actúa de gate**: no se avanza a los pasos 2-4 sin completarlo; una vez válido, la navegación entre pasos es libre (y volver al 1, siempre) | La lógica ya vivía en `goToStep`/`validateStep1`; lo que la anulaba en local era el flag de desarrollo `environment.unlockSteps`, ahora **apagado** para que dev refleje producción (prod ya lo tenía en `false`) |
 | **Componente compartido `shared/components/action-menu`** (kebab ⋮): las acciones de contenedor del vehículo (Editar/Quitar) pasan a un menú; los documentos conservan sus acciones inline | Antes los cuatro pares "Editar/Quitar" (vehículo + documentos) se veían idénticos y en la misma columna: no se distinguía qué acción afectaba a qué. Dos affordances distintos (menú vs inline) separan los niveles. Cierra al clic-afuera/Escape como `app-select`; reutilizable (DRY/SoC) |
+
+## 2026-08-06 — 👥 Aprobación dual del chofer (automática los lunes + manual cualquier día)
+
+> Backend (`enrollment.repository.ts` + nuevo `plugins/auto-approval-scheduler.ts`) y panel
+> (`driver-detail`). **Revierte el anclaje "próximo lunes / `scheduled`" del 2026-07-30**
+> (que a su vez había rectificado el 2026-07-24). Verificado por `typecheck` (backend) + `build` (admin).
+
+| Decisión | Motivo |
+|---|---|
+| **Doble vía de aprobación del chofer**, ambas solo si tiene **deuda cero** (membresía pagada + tarifa + sin cargos por pagar; si pagó solo la membresía y debe la tarifa, **no** califica) | El negocio quiere que un chofer en regla arranque los lunes sin gestión, pero pueda empezar antes hablando con el admin |
+| **Vía automática**: un nuevo scheduler aprueba **los lunes 00:00** a los `pending` en regla y su tarifa arranca ese lunes (semana completa) | Es el camino por defecto, sin intervención; espeja la reactivación automática del penalizado ("vuelve el lunes siguiente") |
+| **Vía manual**: el admin lo aprueba cualquier día; la tarifa se ancla al **lunes de la semana en curso** y queda `active` de inmediato, así que **opera ese día perdiendo los días ya transcurridos** de la semana (su próximo cobro cae el viernes normal) | Permite el "quiero empezar ya"; el costo (perder lun–mar si lo aprueban un miércoles) es del chofer, no del negocio (no se regalan días) |
+| **Anclaje unificado**: en ambas vías `enrollment.approve` ancla a `date_trunc('week', now())` + `active`. La única diferencia es *cuándo* corre (auto = un lunes → semana completa; manual = cualquier día → pierde lo transcurrido) | Un solo punto de anclaje; la asimetría la da el día de ejecución, no el código |
+| **Solo el chofer se auto-aprueba; el pago sigue exigiendo aprobación manual** del admin (anti-fraude v9). Si el pago se aprueba tarde (tras un lunes), el chofer espera al **siguiente** lunes y su tarifa arranca ahí, **sin re-pagar** | Mientras está `pending` la tarifa está `scheduled` y el motor de deuda la ignora (no consume cobertura); las fechas se re-anclan al aprobar, así que el descuido del admin nunca le cuesta una semana al chofer |
+| El chofer en espera **sigue `pending`** con el aviso *"En regla · se aprueba automáticamente el lunes DD/MM"* (sin estado nuevo en el enum) | Menos superficie de cambio (BD/modelos/UI); el estado ya existe |
+| El scheduler solo opera con el **motor de deuda encendido** (grilla semanal). El paso 3 del `subscription-scheduler` deja de activar altas (nacen `active`), pero sigue sirviendo a los cambios de plan programados | Coherencia con el anclaje semanal; sin conflicto entre schedulers |
+
+## 2026-08-06 — 💳 Ajustes de UX del flujo de pagos + cards/columnas descriptivas + reversión unificada
+
+> Panel (`edv-route-admin`) y backend (`payment-submissions`, `drivers.repository`). **Sin migraciones**.
+> Verificado por `typecheck` (backend) + `build` (admin).
+
+| Decisión | Motivo |
+|---|---|
+| **Modal "Registrar pago"**: total abajo ("Total a pagar"), **membresía siempre primera y bloqueada**, se elimina el campo "Monto recibido", botón habilitado solo con datos válidos **y** ≥1 factura seleccionada | El monto manual era decorativo (el backend ya lo derivaba de las facturas); la membresía es requisito; el botón permitía enviar $0 |
+| **Comprobante opcional en todos los métodos** (antes solo Efectivo Divisa) + **toggle "Aprobar de inmediato"** en los cobros del panel (crea + aprueba en una request; solo `admin`, la app nunca) | Pedido del negocio; la verificación se mueve al momento de aprobar |
+| **`buildItems` filtra por `context.invoiceIds`**: la pantalla de aprobación muestra **solo las facturas que cubre el pago** (antes listaba toda la deuda) y el monto cuadra | Bug: el detalle no coincidía con lo cobrado |
+| Perfil: banda azul "Pago en revisión" + banda roja "Deuda pendiente" **coexisten** en un pago parcial (antes la roja desaparecía); el list item gana **`debtUsd`** + **`hasPendingSubmission`** | El pago parcial dejaba la deuda restante invisible |
+| **Columnas descriptivas** en Afiliados (Tarifa y Estado): etiqueta + subtexto por escenario (Por activar / Al día / Vencida / Falta pago / Pago en revisión / …) en vez de un badge cripto | El estado no se entendía; se busca que sea autoexplicativo |
+| **Cards del perfil extraídas a componentes** (`driver-status-card`, `driver-tariff-card`), enriquecidas (acciones de estado en la card; cobertura/precio/próximo cobro dinámicos) y con **mismo alto** (`display:contents`) | Cap de 1000 líneas de `driver-detail.html` + SoC |
+| **Skeleton de carga** (`shared/components/skeleton-rows`) en las tablas de lista, en vez de texto "Cargando…"; **resumen de cobro** en el modal "Generar pago" | UX básica y consistente; no se veía el total antes de pagar |
+| **Reversión unificada**: se eliminan las opciones "Corrección"/"Reembolso" (hacían lo mismo); **una sola acción** con un texto que dice el efecto real (facturas generadas → anuladas; deuda saldada → vuelve a por pagar). `/reverse` ya no recibe `reversalType`; la columna `reversal_type` queda **sin uso** (limpiar con migración futura) | La distinción prometía comportamientos inexistentes y confundía |
+
+**Documentado aparte para una tarea futura:** `docs/HANDOFF-beneficios-membresia-2026-08-06.md` — los beneficios nuevos del catálogo no llegan a los choferes porque hay que **incluirlos en la versión de la membresía** (editar), no basta crearlos en el catálogo. No es bug; es UX. Sin corregir aún.

@@ -18,6 +18,10 @@ export interface DriverSubscriptionSummary {
 export type DriverListItem = Pick<UserRow, 'fullName' | 'email' | 'phone'> &
   Pick<DriverRow, 'userId' | 'nationalId' | 'status' | 'source' | 'registrationStep' | 'createdAt'> & {
     subscription: DriverSubscriptionSummary | null;
+    /** Outstanding debt (membership + owed tariff weeks), USD string ("0.00" if none). */
+    debtUsd: string;
+    /** A payment (v9 submission) is awaiting admin review. */
+    hasPendingSubmission: boolean;
   };
 
 export interface DriverListResult {
@@ -116,7 +120,19 @@ export class DriversRepository {
           FROM driver_subscriptions ds
           WHERE ds.driver_id = d.user_id
             AND ds.status IN ('active', 'scheduled', 'pending_payment', 'expired')
-          ORDER BY ${SUBSCRIPTION_PRIORITY}, ds.created_at DESC LIMIT 1) AS subscription
+          ORDER BY ${SUBSCRIPTION_PRIORITY}, ds.created_at DESC LIMIT 1) AS subscription,
+         -- Outstanding debt (membership pending + overdue / pending-with-invoice
+         -- tariff weeks): distinguishes a pending driver who already PAID his alta
+         -- (activatable) from one who still OWES — the list showed both the same.
+         (COALESCE((SELECT sum(sp.amount_usd) FROM subscription_payments sp
+                    JOIN driver_subscriptions ds2 ON ds2.id = sp.driver_subscription_id
+                    WHERE ds2.driver_id = d.user_id
+                      AND (sp.status = 'overdue' OR (sp.status = 'pending' AND sp.invoice_id IS NOT NULL))), 0)
+          + COALESCE((SELECT sum(mp.amount_usd) FROM membership_payments mp
+                      WHERE mp.driver_id = d.user_id AND mp.status = 'pending'), 0))::text AS "debtUsd",
+         -- A payment awaiting admin review (v9): the alta is paid but not yet approved.
+         EXISTS (SELECT 1 FROM payment_submissions ps
+                 WHERE ps.driver_id = d.user_id AND ps.status = 'pending') AS "hasPendingSubmission"
        FROM drivers d JOIN users u ON u.id = d.user_id
        ${whereSql}
        ORDER BY d.created_at DESC
@@ -271,12 +287,16 @@ export class DriversRepository {
                           WHERE mp.driver_id = d.user_id AND mp.status = 'pending'), 0))::text,
             'membershipDue', COALESCE((SELECT sum(mp.amount_usd) FROM membership_payments mp
                                        WHERE mp.driver_id = d.user_id AND mp.status = 'pending'), 0)::text,
+            -- Invoice of the pending membership charge (alta debt): lets the profile
+            -- tell whether the membership line is covered by a pending submission.
+            'membershipInvoiceId', (SELECT mp.invoice_id FROM membership_payments mp
+                                    WHERE mp.driver_id = d.user_id AND mp.status = 'pending' LIMIT 1),
             'weeksOwed', count(*) FILTER (WHERE sp.charge_kind::text = 'period'),
             'penaltyCount', count(*) FILTER (WHERE sp.charge_kind::text = 'penalty'),
             'capWeeks', COALESCE((SELECT (value#>>'{}')::int FROM app_settings WHERE key = 'debt_cap_weeks'), 2),
             'charges', COALESCE(json_agg(json_build_object(
                'id', sp.id, 'kind', sp.charge_kind, 'amountUsd', sp.amount_usd::text,
-               'status', sp.status, 'periodStart', sp.period_start,
+               'status', sp.status, 'invoiceId', sp.invoice_id, 'periodStart', sp.period_start,
                'periodEnd', sp.period_end) ORDER BY sp.period_start), '[]'::json))
           FROM subscription_payments sp
           JOIN driver_subscriptions ds2 ON ds2.id = sp.driver_subscription_id
@@ -337,7 +357,11 @@ export class DriversRepository {
          -- hides the pay button; the most recent one, if REJECTED, drives the
          -- "su pago fue rechazado" message (a newer pending/approved supersedes it).
          (SELECT json_build_object('id', ps.id, 'amountUsd', ps.amount_usd::text,
-            'purpose', ps.purpose, 'createdAt', ps.created_at)
+            'purpose', ps.purpose, 'createdAt', ps.created_at,
+            -- Invoices this pending payment covers (partial debt payment). Null when
+            -- it covers the whole debt / is not a debt payment — profile treats null
+            -- as "covers everything" (single band); a list splits covered vs. owed.
+            'invoiceIds', ps.context->'invoiceIds')
           FROM payment_submissions ps
           WHERE ps.driver_id = d.user_id AND ps.status = 'pending'
           LIMIT 1) AS "pendingSubmission",

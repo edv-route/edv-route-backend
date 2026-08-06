@@ -339,8 +339,12 @@ export class PaymentSubmissionsRepository {
     if (real.length > 0) return real;
 
     // Still pending with no linked charges. `debt` covers EXISTING debt invoices
-    // (they already carry their N°); the others derive the breakdown from context.
+    // (they already carry their N°). A PARTIAL payment (`context.invoiceIds`) covers
+    // only the selected invoices — show exactly those, not the driver's whole debt,
+    // so the review screen matches the amount charged. Null = the whole debt.
     if (purpose === 'debt') {
+      const rawIds = (context as { invoiceIds?: unknown }).invoiceIds;
+      const invoiceIds = Array.isArray(rawIds) ? (rawIds as string[]) : null;
       const { rows } = await this.db.query<SubmissionDetail['items'][number]>(
         `SELECT i.invoice_number::text AS "invoiceNumber", c.amount_usd::text AS "amountUsd",
                 c.label, c.period_start AS "periodStart", c.period_end AS "periodEnd"
@@ -359,8 +363,9 @@ export class PaymentSubmissionsRepository {
                AND (sp.status = 'overdue' OR (sp.status = 'pending' AND sp.invoice_id IS NOT NULL))
          ) c
          LEFT JOIN invoices i ON i.id = c.invoice_id
+         WHERE ($2::uuid[] IS NULL OR c.invoice_id = ANY($2::uuid[]))
          ORDER BY i.invoice_number`,
-        [driverId],
+        [driverId, invoiceIds],
       );
       return rows;
     }
@@ -515,16 +520,12 @@ export class PaymentSubmissionsRepository {
   }
 
   /**
-   * Reverses an APPROVED receipt (refund or correction): undoes its money effects
-   * (enrollment.reverseReceipt) and flips it to `reverted` with the trace, in one
-   * transaction. Returns false if it was not approved.
+   * Reverses an APPROVED receipt: undoes its money effects (enrollment.reverseReceipt)
+   * and flips it to `reverted` with the trace, in one transaction. Returns false if
+   * it was not approved. (Refund/correction merged 2026-08-06 — single action; the
+   * legacy `reversal_type` column is left null.)
    */
-  async reverse(
-    id: string,
-    adminId: string,
-    reversalType: 'refund' | 'correction',
-    reason: string,
-  ): Promise<boolean> {
+  async reverse(id: string, adminId: string, reason: string): Promise<boolean> {
     return withTransaction(this.db, async (client) => {
       const { rows } = await client.query<{ status: string }>(
         `SELECT status FROM payment_submissions WHERE id = $1 FOR UPDATE`,
@@ -534,10 +535,9 @@ export class PaymentSubmissionsRepository {
       await this.enrollment.reverseReceipt(client, { submissionId: id, adminId });
       await client.query(
         `UPDATE payment_submissions
-            SET status = 'reverted', reverted_at = now(), reverted_by = $2,
-                reversal_type = $3, reversal_reason = $4
+            SET status = 'reverted', reverted_at = now(), reverted_by = $2, reversal_reason = $3
           WHERE id = $1`,
-        [id, adminId, reversalType, reason],
+        [id, adminId, reason],
       );
       return true;
     });

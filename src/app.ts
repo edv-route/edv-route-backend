@@ -12,6 +12,7 @@ import subscriptionScheduler from './plugins/subscription-scheduler.js';
 import documentScheduler from './plugins/document-scheduler.js';
 import debtScheduler from './plugins/debt-scheduler.js';
 import applicantCleanupScheduler from './plugins/applicant-cleanup-scheduler.js';
+import autoApprovalScheduler from './plugins/auto-approval-scheduler.js';
 import healthRoutes from './modules/health/health.routes.js';
 import authRoutes from './modules/auth/auth.routes.js';
 import driverAuthRoutes from './modules/driver-auth/driver-auth.routes.js';
@@ -82,6 +83,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(documentScheduler);
   await app.register(debtScheduler);
   await app.register(applicantCleanupScheduler);
+  await app.register(autoApprovalScheduler);
 
   // Domain modules (versioned API)
   await app.register(

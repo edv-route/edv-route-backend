@@ -113,11 +113,12 @@ const driverAuthRoutes: FastifyPluginAsync = async (app) => {
         payerId: fields['payerId'] ?? null,
         payerAccount: fields['payerAccount'] ?? null,
         note: fields['note'] ?? null,
-        amountUsd: null,
         purpose: 'debt',
         periods: null,
         planId: null,
         invoiceIds: null,
+        // The app never auto-approves: a driver cannot approve his own payment.
+        autoApprove: false,
         source: 'app',
         // submitted_by is an FK to admins; for the app channel it stays null and
         // the driver actor is recorded on audit_logs.actor_user_id (actorId below).

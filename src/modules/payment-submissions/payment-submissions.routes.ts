@@ -57,7 +57,6 @@ const paymentSubmissionsRoutes: FastifyPluginAsync = async (app) => {
           payerId: fields['payerId'] ?? null,
           payerAccount: fields['payerAccount'] ?? null,
           note: fields['note'] ?? null,
-          amountUsd: fields['amountUsd'] ?? null,
           purpose:
             fields['purpose'] === 'advance'
               ? 'advance'
@@ -70,6 +69,8 @@ const paymentSubmissionsRoutes: FastifyPluginAsync = async (app) => {
           planId: fields['planId'] ? Number(fields['planId']) : null,
           // Partial payment: comma-separated invoice ids to settle (debt only).
           invoiceIds: fields['invoiceIds'] ? fields['invoiceIds'].split(',').filter(Boolean) : null,
+          // Admin toggle: approve on the spot instead of leaving it pending.
+          autoApprove: fields['autoApprove'] === 'true',
           source: 'admin',
           submittedBy: req.user.sub,
         },
@@ -137,29 +138,25 @@ const paymentSubmissionsRoutes: FastifyPluginAsync = async (app) => {
     },
   );
 
-  // Reverse an APPROVED receipt: refund (voids its invoices) or correction (settled
-  // debt goes back to owed for a corrected receipt). Keeps the trace.
-  app.post<{
-    Params: { id: string };
-    Body: { reversalType: 'refund' | 'correction'; reason: string };
-  }>(
+  // Reverse an APPROVED receipt (single action, refund/correction merged 2026-08-06):
+  // invoices it generated are voided; debt it settled goes back to owed. Keeps the trace.
+  app.post<{ Params: { id: string }; Body: { reason: string } }>(
     '/payment-submissions/:id/reverse',
     {
       schema: {
         params: idParam,
         body: {
           type: 'object',
-          required: ['reversalType', 'reason'],
+          required: ['reason'],
           additionalProperties: false,
           properties: {
-            reversalType: { type: 'string', enum: ['refund', 'correction'] },
             reason: { type: 'string', minLength: 1, maxLength: 500 },
           },
         },
       },
     },
     async (req, reply) => {
-      await service.reverse(req.params.id, req.body.reversalType, req.body.reason, req.user.sub);
+      await service.reverse(req.params.id, req.body.reason, req.user.sub);
       return reply.code(204).send();
     },
   );

@@ -32,8 +32,6 @@ export interface UploadedFile {
 
 export interface CreateSubmissionRequest extends PaymentSubmissionMeta {
   note: string | null;
-  /** Captured amount, required for Efectivo Divisa (cash_usd) on a debt payment. */
-  amountUsd: string | null;
   /** `debt` \| `advance` \| `enroll` \| `change_plan`. */
   purpose: 'debt' | 'advance' | 'enroll' | 'change_plan';
   /** Weeks; required for `advance`, `enroll` and `change_plan`. */
@@ -44,6 +42,9 @@ export interface CreateSubmissionRequest extends PaymentSubmissionMeta {
   invoiceIds: string[] | null;
   source: 'app' | 'admin';
   submittedBy: string | null;
+  /** Admin-only toggle: approve the payment on the spot instead of leaving it
+   *  pending for a second pass in Facturación. Ignored for the app channel. */
+  autoApprove: boolean;
 }
 
 /** A submission file with a short-lived signed URL instead of the raw path. */
@@ -70,7 +71,7 @@ export class PaymentSubmissionsService {
     input: CreateSubmissionRequest,
     files: UploadedFile[],
     actorId: string,
-  ): Promise<{ id: string }> {
+  ): Promise<{ id: string; approved: boolean }> {
     await this.assertDriver(driverId);
     if (await this.submissions.hasPending(driverId)) {
       throw this.app.httpErrors.conflict(
@@ -80,12 +81,9 @@ export class PaymentSubmissionsService {
 
     const isCash = await this.methodIsCash(input.paymentMethodId);
 
-    // Evidence rules (decision 2026-08-04): Efectivo Divisa carries 0..5 bill
-    // photos — the photo is OPTIONAL (cash received in hand); every other method
-    // requires exactly one receipt to verify the transfer.
-    if (!isCash && files.length === 0) {
-      throw this.app.httpErrors.badRequest('Se requiere la imagen del comprobante');
-    }
+    // Evidence rules (2026-08-06): the receipt is now OPTIONAL for every method
+    // (admin decision — verification moves to the approval step). Efectivo Divisa
+    // still allows up to 5 bill photos; the other methods at most one when present.
     if (files.length > MAX_FILES) {
       throw this.app.httpErrors.badRequest(`Máximo ${MAX_FILES} imágenes por pago`);
     }
@@ -181,7 +179,14 @@ export class PaymentSubmissionsService {
         entityId: id,
         data: { driverId, amountUsd, files: filePaths.length, source: input.source },
       });
-      return { id };
+      // Admin-only "approve immediately" toggle: create + approve in the same
+      // request so the payment skips the second pass in Facturación. The app
+      // channel never auto-approves (a driver cannot approve his own payment).
+      if (input.autoApprove && input.source === 'admin') {
+        await this.approve(id, actorId);
+        return { id, approved: true };
+      }
+      return { id, approved: false };
     } catch (err) {
       // The partial unique index closes the race the hasPending check leaves open.
       if ((err as { code?: string }).code === UNIQUE_VIOLATION) {
@@ -244,24 +249,21 @@ export class PaymentSubmissionsService {
   }
 
   /**
-   * Reverses an approved receipt: `refund` voids its invoices (money returned);
-   * `correction` sends the settled debt back to owed so a corrected receipt can
-   * be registered. Keeps the trace; only an approved receipt can be reverted.
+   * Reverses an approved receipt (single action, refund/correction merged
+   * 2026-08-06 — they did the same thing). The effect depends on how the money
+   * moved: invoices the receipt GENERATED are voided; pre-existing debt it SETTLED
+   * goes back to owed (so it can be re-charged). Keeps the trace; only an approved
+   * receipt can be reverted.
    */
-  async reverse(
-    id: string,
-    reversalType: 'refund' | 'correction',
-    reason: string,
-    adminId: string,
-  ): Promise<void> {
-    const ok = await this.submissions.reverse(id, adminId, reversalType, reason.trim());
+  async reverse(id: string, reason: string, adminId: string): Promise<void> {
+    const ok = await this.submissions.reverse(id, adminId, reason.trim());
     if (!ok) throw this.app.httpErrors.conflict('Solo se puede revertir un pago aprobado');
     await writeAudit(this.app.db, {
       actorAdminId: adminId,
       eventType: 'payment_submission.reverted',
       entity: 'payment_submissions',
       entityId: id,
-      data: { reversalType, reason: reason.trim() },
+      data: { reason: reason.trim() },
     });
   }
 
