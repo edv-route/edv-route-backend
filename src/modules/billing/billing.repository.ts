@@ -81,7 +81,7 @@ const INVOICE_STATE_SQL = `CASE
 const INVOICE_CONCEPT_SQL = `CASE
          WHEN ch.kind = 'membership' THEN 'Membresía'
          WHEN ch.charge_kind = 'penalty' THEN 'Penalización'
-         ELSE 'Semana de tarifa'
+         ELSE 'Tarifa de la semana'
        END`;
 
 /** Kanel cannot infer nullability in views: periods are NULL for memberships. */

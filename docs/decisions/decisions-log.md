@@ -793,3 +793,16 @@ semanal y validar el ciclo con reloj real.
 | **Reversión unificada**: se eliminan las opciones "Corrección"/"Reembolso" (hacían lo mismo); **una sola acción** con un texto que dice el efecto real (facturas generadas → anuladas; deuda saldada → vuelve a por pagar). `/reverse` ya no recibe `reversalType`; la columna `reversal_type` queda **sin uso** (limpiar con migración futura) | La distinción prometía comportamientos inexistentes y confundía |
 
 **Documentado aparte para una tarea futura:** `docs/HANDOFF-beneficios-membresia-2026-08-06.md` — los beneficios nuevos del catálogo no llegan a los choferes porque hay que **incluirlos en la versión de la membresía** (editar), no basta crearlos en el catálogo. No es bug; es UX. Sin corregir aún.
+
+## 2026-08-07 — 📄 Paginación numerada global + N° de factura en el historial + separación Facturación / Recibos de pagos
+
+> Panel (`edv-route-admin`) + backend (`payment-submissions`, `billing`). **Sin migraciones.**
+> Verificado por `build` (admin) + `typecheck` (backend).
+
+| Decisión | Motivo |
+|---|---|
+| **Paginación numerada reutilizable** (`shared/components/pagination`, estilo Flowbite Pro, centrada, **10/página**) que reemplaza el pager casero de 2 botones. Solo en listas grandes (Afiliados, Facturación, Documentos, Capacitaciones, Historial de pagos); los catálogos pequeños se dejan sin paginar | Listas con cientos de filas necesitan control; los catálogos acotados no justifican server-side. Un solo componente, sin duplicar markup |
+| **Historial de pagos del chofer** pagina server-side de verdad (antes `limit:100` fijo) y muestra **"Cubre factura(s) #N"** por recibo | El endpoint ya devolvía `{items,total}`; un recibo acumula muchas facturas con el cobro semanal |
+| **Listado de recibos (`payment-submissions`) agrega `invoiceNumbers`** (N° de las facturas que cubre, vía sus cargos; `null` si aún no hay ninguna), en un subquery — **sin N+1** | Mostrar en el historial a qué facturas corresponde cada pago sin pedir el detalle fila por fila |
+| Detalle de pago: el chip de factura pasa a **texto en negrita rojo** al tamaño de la fila; el concepto **"Semana de tarifa" → "Tarifa de la semana"** (renombrado en todos los desgloses: `payment-submissions`, `billing`, perfil) | Ajuste estético + wording del negocio |
+| **Separación Facturación / Recibos de pagos**: nueva pantalla `/receipts` (pestañas **Pagos** + **Por aprobar**) y `/billing` queda **solo facturas**. El detalle de recibo sigue en `/billing/submissions/:id` (compartido; vuelve con `location.back()`) | Facturas y recibos son entidades distintas; mezclarlas en una pantalla confundía. Menos superficie por pantalla (SoC) |

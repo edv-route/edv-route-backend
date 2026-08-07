@@ -77,6 +77,11 @@ export interface SubmissionListItem {
   createdAt: Date;
   reviewedAt: Date | null;
   fileCount: number;
+  /**
+   * N° of every invoice this receipt is linked to (via its charges), sorted asc.
+   * Null while none exist yet (e.g. a still-pending debt/advance not approved).
+   */
+  invoiceNumbers: string[] | null;
 }
 
 export interface SubmissionFile {
@@ -258,7 +263,16 @@ export class PaymentSubmissionsRepository {
               ps.status, ps.amount_usd AS "amountUsd", pm.name AS "paymentMethodName",
               ps.paid_on AS "paidOn", ps.source, ps.created_at AS "createdAt",
               ps.reviewed_at AS "reviewedAt",
-              (SELECT count(*) FROM payment_submission_files f WHERE f.submission_id = ps.id)::int AS "fileCount"
+              (SELECT count(*) FROM payment_submission_files f WHERE f.submission_id = ps.id)::int AS "fileCount",
+              (SELECT array_agg(inv.invoice_number::text ORDER BY inv.invoice_number)
+                 FROM (
+                   SELECT invoice_id FROM membership_payments
+                     WHERE submission_id = ps.id AND invoice_id IS NOT NULL
+                   UNION
+                   SELECT invoice_id FROM subscription_payments
+                     WHERE submission_id = ps.id AND invoice_id IS NOT NULL
+                 ) ch
+                 JOIN invoices inv ON inv.id = ch.invoice_id) AS "invoiceNumbers"
        ${fromSql}
        LEFT JOIN payment_methods pm ON pm.id = ps.payment_method_id
        ${whereSql}
@@ -328,7 +342,7 @@ export class PaymentSubmissionsRepository {
          UNION ALL
          SELECT invoice_id, amount_usd,
                 CASE WHEN charge_kind::text = 'penalty' THEN 'Penalización'
-                     ELSE 'Semana de tarifa' END,
+                     ELSE 'Tarifa de la semana' END,
                 period_start, period_end
            FROM subscription_payments WHERE submission_id = $1 AND invoice_id IS NOT NULL
        ) c
@@ -355,7 +369,7 @@ export class PaymentSubmissionsRepository {
            UNION ALL
            SELECT sp.invoice_id, sp.amount_usd,
                   CASE WHEN sp.charge_kind::text = 'penalty' THEN 'Penalización'
-                       ELSE 'Semana de tarifa' END,
+                       ELSE 'Tarifa de la semana' END,
                   sp.period_start, sp.period_end
              FROM subscription_payments sp
              JOIN driver_subscriptions ds ON ds.id = sp.driver_subscription_id
@@ -381,7 +395,7 @@ export class PaymentSubmissionsRepository {
     }
     for (let i = 0; i < periods; i++) {
       items.push({
-        label: 'Semana de tarifa',
+        label: 'Tarifa de la semana',
         amountUsd: planPrice.toFixed(2),
         invoiceNumber: null, periodStart: null, periodEnd: null,
       });
