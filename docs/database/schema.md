@@ -74,7 +74,7 @@ solo en la UI). Tipos: **V** (venezolano), **E** (extranjero), **J** (jurídico/
 |---|---|---|---|---|
 | `user_id` | uuid | no | — | **PK y FK** → `users.id` (CASCADE). Relación 1:1 |
 | `national_id` | text | sí | — | UNIQUE. Cédula. **Obligatoria solo al registrarse desde la app**; opcional por panel (decisión 2026-07-10) |
-| `status` | driver_status | no | `'pending'` | `pending` \| `approved` \| `rejected` \| `suspended` \| `paused` (licencia administrativa, 2026-07-23) |
+| `status` | driver_status | no | `'pending'` | `pending` \| `scheduled` \| `approved` \| `rejected` \| `suspended` \| `paused` (licencia administrativa, 2026-07-23; `scheduled` = aprobado que inicia el próximo lunes, 2026-08-09) |
 | `source` | driver_source | no | — | `app` \| `admin` — de dónde nació el registro |
 | `registered_by` | uuid | sí | — | FK → `admins.id` (SET NULL). Null = se registró desde la app |
 | `registration_step` | smallint | sí | — | Paso del wizard (1-4). **Null = wizard completado** |
@@ -461,7 +461,7 @@ Claves actuales:
 |---|---|
 | `admin_status` | `active`, `suspended` |
 | `user_status` | `active`, `suspended` |
-| `driver_status` | `pending`, `approved`, `rejected`, `suspended`, `paused`, `overdue`, `penalized` (`paused` en Fase A; `overdue`/`penalized` añadidos en B1 del motor de deuda el 2026-07-23, **sin lógica que los dispare hasta B2**) |
+| `driver_status` | `pending`, `scheduled`, `approved`, `rejected`, `suspended`, `paused`, `overdue`, `penalized` (`scheduled` = aprobado con inicio el próximo lunes, mig. `1752370000000` 2026-08-09; `paused` en Fase A; `overdue`/`penalized` añadidos en B1 del motor de deuda el 2026-07-23) |
 | `driver_source` | `app`, `admin` |
 | `vehicle_approval` | `pending`, `approved`, `rejected` |
 | `requirement_applies_to` | `driver`, `vehicle` |

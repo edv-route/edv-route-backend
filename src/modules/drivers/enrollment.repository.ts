@@ -255,24 +255,26 @@ export class EnrollmentRepository {
   }
 
   /**
-   * Approval: membership stands, tariff starts running. Two anchoring modes:
+   * Approval (2026-08-09): the admin chooses WHEN the tariff starts.
    *  - Prepaid (default / debt engine off): first period = now -> next midnight
    *    boundary of the interval; the rest are exact consecutive intervals
-   *    (decision 2026-07-10).
-   *  - Weekly anchored (`anchorWeekly`, debt engine on + weekly plan): every
-   *    period is a calendar week [Monday 00:00, next Monday) anchored to the
-   *    CURRENT week's Monday and the tariff goes `active` at once (v2, 2026-08-06
-   *    — reverts the "next Monday / scheduled" rule of 2026-07-30). A manual
-   *    mid-week approval starts the driver THAT day keeping the days already
-   *    elapsed (his next charge falls on the normal Friday); the automatic Monday
-   *    job (auto-approval-scheduler) runs on a Monday, so it lands on a full week.
-   *    Same anchoring as a reactivated (penalized -> back) driver.
+   *    (decision 2026-07-10). `nextMonday` has no effect (no Monday grid).
+   *  - Weekly anchored (`anchorWeekly`, debt engine on + weekly plan): every period
+   *    is a calendar week [Monday 00:00, next Monday). Two start modes:
+   *      · `nextMonday=false` ("empezar ya"): anchored to the CURRENT week's Monday,
+   *        tariff `active` at once; a mid-week approval keeps the days already
+   *        elapsed (next charge on the normal Friday). Same as a reactivated driver.
+   *      · `nextMonday=true` ("próximo lunes"): anchored to the next Monday (today if
+   *        today IS Monday → full week now). When that Monday is in the FUTURE the
+   *        subscription stays `scheduled` and the driver goes `scheduled` (programado,
+   *        not operative); the scheduled-activation job flips both on that Monday.
    */
   async approve(
     driverId: string,
     periodInterval: string,
     timezone: string,
     anchorWeekly = false,
+    nextMonday = false,
   ): Promise<void> {
     const client = await this.db.connect();
     try {
@@ -289,9 +291,13 @@ export class EnrollmentRepository {
         await client.query(
           `WITH anchor AS (
              SELECT date_trunc('day', (now() + $2::interval) AT TIME ZONE $3) AT TIME ZONE $3 AS first_end,
-                    -- Monday of the CURRENT week (v2, 2026-08-06): approval anchors
-                    -- to the running week, never the next one.
-                    date_trunc('week', (now() AT TIME ZONE $3)) AT TIME ZONE $3 AS monday
+                    -- "empezar ya" → current week's Monday; "próximo lunes" → next
+                    -- Monday (this Monday when today is Monday), always a full week.
+                    (CASE WHEN $5::boolean THEN
+                            (CASE WHEN extract(isodow FROM (now() AT TIME ZONE $3)) = 1
+                                  THEN date_trunc('week', (now() AT TIME ZONE $3))
+                                  ELSE date_trunc('week', (now() AT TIME ZONE $3)) + interval '7 days' END)
+                          ELSE date_trunc('week', (now() AT TIME ZONE $3)) END) AT TIME ZONE $3 AS monday
            ), ordered AS (
              SELECT id, row_number() OVER (ORDER BY period_start) - 1 AS idx
              FROM subscription_payments
@@ -306,35 +312,84 @@ export class EnrollmentRepository {
                WHEN $4::boolean THEN a.monday + ($2::interval * (o.idx + 1))
                ELSE a.first_end + ($2::interval * o.idx) END
            FROM ordered o, anchor a WHERE o.id = sp.id`,
-          [sub.id, periodInterval, timezone, anchorWeekly],
+          [sub.id, periodInterval, timezone, anchorWeekly, nextMonday],
         );
-        // The current-week Monday is always <= now, so the tariff is in force
-        // immediately (`active`). The driver operates from this moment; if approved
-        // mid-week he simply keeps the days already elapsed of the running week.
+        // A future anchor Monday (only reachable in weekly + "próximo lunes") keeps
+        // the subscription `scheduled` until the activation job runs; otherwise the
+        // Monday is <= now and the tariff is `active` at once.
         await client.query(
           `WITH anchor AS (
-             SELECT date_trunc('week', (now() AT TIME ZONE $3)) AT TIME ZONE $3 AS monday
+             SELECT (CASE WHEN $5::boolean THEN
+                            (CASE WHEN extract(isodow FROM (now() AT TIME ZONE $3)) = 1
+                                  THEN date_trunc('week', (now() AT TIME ZONE $3))
+                                  ELSE date_trunc('week', (now() AT TIME ZONE $3)) + interval '7 days' END)
+                          ELSE date_trunc('week', (now() AT TIME ZONE $3)) END) AT TIME ZONE $3 AS monday
            )
            UPDATE driver_subscriptions ds SET
-             status = 'active'::subscription_status,
-             started_at = now(),
+             status = CASE WHEN $4::boolean AND a.monday > now()
+                           THEN 'scheduled'::subscription_status
+                           ELSE 'active'::subscription_status END,
+             started_at = CASE WHEN $4::boolean AND a.monday > now() THEN NULL ELSE now() END,
              current_period_start = CASE WHEN $4::boolean THEN a.monday ELSE now() END,
              current_period_end = CASE WHEN $4::boolean
                THEN a.monday + $2::interval
                ELSE date_trunc('day', (now() + $2::interval) AT TIME ZONE $3) AT TIME ZONE $3 END
            FROM anchor a
            WHERE ds.id = $1`,
-          [sub.id, periodInterval, timezone, anchorWeekly],
+          [sub.id, periodInterval, timezone, anchorWeekly, nextMonday],
         );
       }
 
-      // Approval leaves the driver `approved` and available (active by default:
-      // the availability plane, decision 2026-07-23).
+      // A future-Monday weekly approval → `scheduled` (programado), not operative
+      // yet; every other case → `approved` + available (availability plane, 2026-07-23).
       await client.query(
-        `UPDATE drivers SET status = 'approved', is_available = true WHERE user_id = $1`,
-        [driverId],
+        `WITH anchor AS (
+           SELECT (CASE WHEN $3::boolean THEN
+                          (CASE WHEN extract(isodow FROM (now() AT TIME ZONE $2)) = 1
+                                THEN date_trunc('week', (now() AT TIME ZONE $2))
+                                ELSE date_trunc('week', (now() AT TIME ZONE $2)) + interval '7 days' END)
+                        ELSE date_trunc('week', (now() AT TIME ZONE $2)) END) AT TIME ZONE $2 AS monday
+         )
+         UPDATE drivers d SET
+           status = CASE WHEN $4::boolean AND a.monday > now()
+                         THEN 'scheduled'::driver_status
+                         ELSE 'approved'::driver_status END,
+           is_available = NOT ($4::boolean AND a.monday > now())
+         FROM anchor a
+         WHERE d.user_id = $1`,
+        [driverId, timezone, nextMonday, anchorWeekly],
       );
 
+      await client.query('COMMIT');
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
+  /**
+   * Flips a `scheduled` (programado) driver to operative once his start Monday has
+   * arrived: his scheduled subscription → `active` and the driver → `approved` +
+   * available. Idempotent (only touches a still-scheduled pair). Driven by the
+   * scheduled-activation job.
+   */
+  async activateScheduled(driverId: string): Promise<void> {
+    const client = await this.db.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query(
+        `UPDATE driver_subscriptions
+            SET status = 'active'::subscription_status, started_at = COALESCE(started_at, now())
+          WHERE driver_id = $1 AND status = 'scheduled'`,
+        [driverId],
+      );
+      await client.query(
+        `UPDATE drivers SET status = 'approved', is_available = true
+          WHERE user_id = $1 AND status::text = 'scheduled'`,
+        [driverId],
+      );
       await client.query('COMMIT');
     } catch (err) {
       await client.query('ROLLBACK');

@@ -587,8 +587,19 @@ export class DriversService {
     }
   }
 
-  /** Approval requires both wizard payments (doc v7: money, not papers) and zero debt. */
-  async approve(driverId: string, adminId: string): Promise<void> {
+  /**
+   * Approval requires both wizard payments (doc v7: money, not papers) and zero
+   * debt. `startMode` picks when the tariff starts (weekly + debt engine on):
+   *  - `now`: anchors to the CURRENT week's Monday, tariff active at once (a
+   *    mid-week approval keeps the elapsed days) → driver `approved`.
+   *  - `next_monday`: anchors to the next Monday; the driver is left `scheduled`
+   *    (programado) until the activation job flips him on that Monday.
+   */
+  async approve(
+    driverId: string,
+    adminId: string,
+    startMode: 'now' | 'next_monday' = 'now',
+  ): Promise<void> {
     const detail = await this.getDetail(driverId);
     if (detail['status'] !== 'pending') {
       throw this.app.httpErrors.conflict('Solo se puede aprobar un afiliado pendiente');
@@ -604,8 +615,9 @@ export class DriversService {
       PERIOD_INTERVALS[subscription.billingPeriod]!,
       String(timezone),
       anchorWeekly,
+      startMode === 'next_monday',
     );
-    await this.audit(adminId, 'driver.approved', 'drivers', driverId, null);
+    await this.audit(adminId, 'driver.approved', 'drivers', driverId, { startMode });
   }
 
   /**
@@ -927,8 +939,17 @@ export class DriversService {
         // same gate as approve(): membership + tariff paid and zero debt. Without
         // this the endpoint would bypass every approval rule (approve with arrears,
         // or with no payment at all).
+        // Alta approval MUST go through approve() (the admin chooses when the tariff
+        // starts); the PATCH only lifts a suspension (suspended → approved). Guard so
+        // a pending driver can never be approved here, skipping that choice.
         if (input.status === 'approved') {
-          this.assertApprovable(await this.getDetail(driverId));
+          const current = await this.getDetail(driverId);
+          if (current['status'] !== 'suspended') {
+            throw this.app.httpErrors.conflict(
+              'Aprueba el alta desde el botón «Aprobar» eligiendo cuándo inicia la tarifa; el PATCH solo levanta una suspensión.',
+            );
+          }
+          this.assertApprovable(current);
         }
         // Clear the pause anchor on any status change: the PATCH only sets
         // approved/suspended (pause/resume have their own endpoints), so leaving

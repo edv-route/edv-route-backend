@@ -6,6 +6,7 @@ type DriverStatus =
   | 'suspended'
   | 'paused'
   | 'overdue'
-  | 'penalized';
+  | 'penalized'
+  | 'scheduled';
 
 export type { DriverStatus as default };

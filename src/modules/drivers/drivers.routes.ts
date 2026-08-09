@@ -44,7 +44,7 @@ const driversRoutes: FastifyPluginAsync = async (app) => {
           properties: {
             status: {
               type: 'string',
-              enum: ['pending', 'approved', 'rejected', 'suspended', 'paused', 'overdue', 'penalized'],
+              enum: ['pending', 'scheduled', 'approved', 'rejected', 'suspended', 'paused', 'overdue', 'penalized'],
             },
             search: { type: 'string', maxLength: 100 },
             page: { type: 'integer', minimum: 1, default: 1 },
@@ -249,11 +249,26 @@ const driversRoutes: FastifyPluginAsync = async (app) => {
     async (req) => service.cancelScheduledChange(req.params.id, req.user.sub),
   );
 
-  app.post<{ Params: { id: string } }>(
+  app.post<{ Params: { id: string }; Body: { startMode: 'now' | 'next_monday' } }>(
     '/:id/approve',
-    { schema: { params: idParam } },
+    {
+      schema: {
+        params: idParam,
+        // The admin MUST pick when the tariff starts: `now` (current-week Monday,
+        // active at once) or `next_monday` (starts next Monday; driver stays
+        // `scheduled`/programado until then). No implicit default — it's a choice.
+        body: {
+          type: 'object',
+          required: ['startMode'],
+          additionalProperties: false,
+          properties: {
+            startMode: { type: 'string', enum: ['now', 'next_monday'] },
+          },
+        },
+      },
+    },
     async (req) => {
-      await service.approve(req.params.id, req.user.sub);
+      await service.approve(req.params.id, req.user.sub, req.body.startMode);
       return { ok: true };
     },
   );

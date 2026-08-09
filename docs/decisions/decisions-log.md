@@ -806,3 +806,18 @@ semanal y validar el ciclo con reloj real.
 | **Listado de recibos (`payment-submissions`) agrega `invoiceNumbers`** (N° de las facturas que cubre, vía sus cargos; `null` si aún no hay ninguna), en un subquery — **sin N+1** | Mostrar en el historial a qué facturas corresponde cada pago sin pedir el detalle fila por fila |
 | Detalle de pago: el chip de factura pasa a **texto en negrita rojo** al tamaño de la fila; el concepto **"Semana de tarifa" → "Tarifa de la semana"** (renombrado en todos los desgloses: `payment-submissions`, `billing`, perfil) | Ajuste estético + wording del negocio |
 | **Separación Facturación / Recibos de pagos**: nueva pantalla `/receipts` (pestañas **Pagos** + **Por aprobar**) y `/billing` queda **solo facturas**. El detalle de recibo sigue en `/billing/submissions/:id` (compartido; vuelve con `location.back()`) | Facturas y recibos son entidades distintas; mezclarlas en una pantalla confundía. Menos superficie por pantalla (SoC) |
+
+## 2026-08-09 — 🗓️ Aprobar el alta = elegir cuándo inicia (2 opciones); se elimina la auto-aprobación
+
+> Panel (`driver-detail`, `driver-status-card`, wizard) + backend (`enrollment.approve`,
+> `drivers.service/routes`, scheduler). **Revisa** la doble vía de 2026-08-05 y la
+> auto-aprobación de 2026-08-06. Migración `1752370000000` (aditiva). Verificado por
+> `migrate` + `typecheck` (backend) + `build` (admin) + validación de la aritmética de lunes.
+
+| Decisión | Motivo |
+|---|---|
+| **El botón «Aprobar» abre un modal con dos opciones** y `POST /drivers/:id/approve` exige `{ startMode }` (`now` \| `next_monday`, **sin default** — es una elección). No hay un tercer camino silencioso: el `PATCH /:id` con `status:'approved'` solo se permite desde `suspended` (levantar suspensión), nunca desde `pending` | El negocio quiere que el admin decida explícitamente cuándo arranca la tarifa; un default o una vía paralela saltarían esa decisión |
+| **Opción «Empezar ya» (`now`)**: ancla al **lunes de la semana en curso**, tarifa `active` de inmediato, chofer `approved`. Es el comportamiento previo (2026-08-06): pierde los días ya transcurridos de la semana | Sin cambios de semántica; solo deja de ser el único modo |
+| **Opción «Empezar el próximo lunes» (`next_monday`)**: ancla al **próximo lunes** (hoy si hoy es lunes → semana completa ya). Cuando ese lunes es futuro, la suscripción queda `scheduled` y el chofer entra en el **nuevo estado `driver_status = 'scheduled'`** (programado, `is_available=false`, no opera) | Faltaba la vía "semana completa sin esperar a que el sistema decida"; el estado propio lo hace visible ("Programado · inicia DD/MM") sin ambigüedad |
+| **Se elimina la auto-aprobación de los lunes** (`auto-approval-scheduler` borrado). En su lugar, **`scheduled-driver-activation`**: cuando llega el lunes de un chofer `scheduled`, lo pasa a `approved` + disponible y su suscripción a `active`. Sigue siendo automático, pero es una **activación** de algo ya aprobado por el admin, no una aprobación | "Aprobar" vuelve a ser 100% decisión humana; el único automatismo restante es encender al programado en su fecha |
+| El motor de deuda **ignora `scheduled`** sin cambios (`debt-scheduler` ya filtra `approved/overdue/penalized`); su suscripción `scheduled` no emite cargos ni consume cobertura hasta activarse | Un programado no debe generar deuda en el intervalo hasta el lunes |
