@@ -10,8 +10,9 @@ const idParam = {
 } as const;
 
 interface ListQuery {
-  status?: 'pending' | 'approved' | 'rejected';
+  status?: 'pending' | 'approved' | 'rejected' | 'reverted';
   driverId?: string;
+  search?: string;
   page?: number;
   limit?: number;
 }
@@ -90,8 +91,9 @@ const paymentSubmissionsRoutes: FastifyPluginAsync = async (app) => {
           type: 'object',
           additionalProperties: false,
           properties: {
-            status: { type: 'string', enum: ['pending', 'approved', 'rejected'] },
+            status: { type: 'string', enum: ['pending', 'approved', 'rejected', 'reverted'] },
             driverId: { type: 'string', format: 'uuid' },
+            search: { type: 'string', maxLength: 100 },
             page: { type: 'integer', minimum: 1, default: 1 },
             limit: { type: 'integer', minimum: 1, maximum: 100, default: 20 },
           },
@@ -102,6 +104,7 @@ const paymentSubmissionsRoutes: FastifyPluginAsync = async (app) => {
       service.list({
         ...(req.query.status !== undefined ? { status: req.query.status } : {}),
         ...(req.query.driverId !== undefined ? { driverId: req.query.driverId } : {}),
+        ...(req.query.search !== undefined ? { search: req.query.search } : {}),
         page: req.query.page ?? 1,
         limit: req.query.limit ?? 20,
       }),

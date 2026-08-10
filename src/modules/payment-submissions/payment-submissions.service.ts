@@ -196,7 +196,7 @@ export class PaymentSubmissionsService {
     }
   }
 
-  list(opts: { status?: string; driverId?: string; page: number; limit: number }) {
+  list(opts: { status?: string; driverId?: string; search?: string; page: number; limit: number }) {
     return this.submissions.list(opts);
   }
 

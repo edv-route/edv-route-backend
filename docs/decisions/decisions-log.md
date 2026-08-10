@@ -836,3 +836,25 @@ semanal y validar el ciclo con reloj real.
 | Nuevos catálogos **públicos** `GET /driver-auth/membership` y `GET /driver-auth/subscription-plans`; el **monto lo calcula el servidor** (mismo `WHERE active` + primer plan **semanal**), la app solo lo espeja | La app necesitaba mostrar el total (membresía + tarifa × semanas) **antes** de pagar; calcularlo en el server garantiza **preview == cobro real** sin exponer los endpoints admin (`/memberships`, `/subscription-plans` siguen tras `authenticate`) |
 | Tarifa **solo semanal** por ahora: la app **no** ofrece selector de tarifa (fija la semanal), solo de **semanas** | Decisión del usuario; simplifica. Nota: el `enroll` cobra siempre el primer plan semanal → si a futuro hay varios planes, revisar el wizard admin (total mostrado vs cobrado) |
 | El **auto-aprobar** de los modales de pago es solo del admin; la app **nunca** auto-aprueba (el chofer no aprueba su propio pago) | Anti-fraude; la aprobación la hace un admin en Facturación → «Por aprobar» |
+
+## 2026-08-10 — 🗓️ «Próximo lunes» = el lunes SIGUIENTE (aun aprobando en lunes)
+
+> Backend (`enrollment.approve`) + panel (`driver-detail`). Refina la doble vía de
+> 2026-08-09. **Sin migraciones.** Verificado por `typecheck` (backend) + `build` (admin).
+
+| Decisión | Motivo |
+|---|---|
+| El modo `next_monday` de la aprobación ahora ancla **siempre al lunes siguiente** (`date_trunc('week', now) + 7 días`), incluso cuando hoy ES lunes (antes anclaba a hoy) | Antes, aprobar en lunes con «próximo lunes» arrancaba HOY (idéntico a «empezar ya»), así que la opción no aportaba nada. Ahora «empezar ya» = este lunes y «próximo lunes» = la semana que viene (queda `scheduled`) |
+| En lunes el modal vuelve a mostrar **ambas** opciones; «empezar ya» omite el texto de "pierde días" (hoy es lunes → semana completa, no pierde nada) | UX: en lunes no se pierden días; y el admin puede programar el arranque para la semana siguiente |
+
+## 2026-08-10 — 🔎 Consistencia de listas del admin: filtro de estado + buscador en vivo
+
+> Panel (`receipts`, `billing`, `drivers`) + backend (`payment-submissions`). **Sin
+> migraciones.** Verificado por `build` (admin) + `typecheck` (backend).
+
+| Decisión | Motivo |
+|---|---|
+| **Recibos de pagos**: se reemplazan las 2 pestañas (`Pagos`/`Por aprobar`) por un **filtro de estado** (Todos · Pendiente · Aprobado · Revertido · Rechazado) en **una sola tabla**, con columna **Origen** (Chofer/Admin). «Por aprobar» = filtro Pendiente | Un solo mecanismo de filtro; los 4 estados visibles; el origen importa ahora que los choferes se auto-registran |
+| **Backend `GET /payment-submissions`**: se añade `reverted` al enum de `status` (faltaba) y un parámetro **`search`** (nombre del pagador o N° de pago, ILIKE) | El filtro «Revertido» y el buscador lo exigían; el amount/estado ya existían |
+| **Buscador en vivo** (debounce 300 ms, Enter también) unificado en **Afiliados, Facturación y Recibos**, siempre **a la derecha** de los chips, mismo estilo/ícono | Consistencia entre las 3 listas; búsqueda al escribir es más intuitiva que solo-Enter |
+| **Facturación**: se quita la gráfica «Facturación mensual» (ApexCharts) — queda solo el panel de lista, como Recibos | Pedido del negocio; se limpió el código muerto (`monthlySeries`/`MonthlyInvoicingPoint` en el admin; el endpoint `/invoices/monthly-series` queda sin uso, reutilizable) |

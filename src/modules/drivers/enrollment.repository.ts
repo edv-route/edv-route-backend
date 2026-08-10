@@ -264,10 +264,11 @@ export class EnrollmentRepository {
    *      · `nextMonday=false` ("empezar ya"): anchored to the CURRENT week's Monday,
    *        tariff `active` at once; a mid-week approval keeps the days already
    *        elapsed (next charge on the normal Friday). Same as a reactivated driver.
-   *      · `nextMonday=true` ("próximo lunes"): anchored to the next Monday (today if
-   *        today IS Monday → full week now). When that Monday is in the FUTURE the
-   *        subscription stays `scheduled` and the driver goes `scheduled` (programado,
-   *        not operative); the scheduled-activation job flips both on that Monday.
+   *      · `nextMonday=true` ("próximo lunes"): anchored to the FOLLOWING Monday —
+   *        always next week, even when today is Monday (so "empezar ya" covers this
+   *        Monday). That Monday is always in the future, so the subscription and the
+   *        driver stay `scheduled` (programado, not operative) until the
+   *        scheduled-activation job flips both on that Monday.
    */
   async approve(
     driverId: string,
@@ -291,12 +292,10 @@ export class EnrollmentRepository {
         await client.query(
           `WITH anchor AS (
              SELECT date_trunc('day', (now() + $2::interval) AT TIME ZONE $3) AT TIME ZONE $3 AS first_end,
-                    -- "empezar ya" → current week's Monday; "próximo lunes" → next
-                    -- Monday (this Monday when today is Monday), always a full week.
-                    (CASE WHEN $5::boolean THEN
-                            (CASE WHEN extract(isodow FROM (now() AT TIME ZONE $3)) = 1
-                                  THEN date_trunc('week', (now() AT TIME ZONE $3))
-                                  ELSE date_trunc('week', (now() AT TIME ZONE $3)) + interval '7 days' END)
+                    -- "empezar ya" → current week's Monday; "próximo lunes" → the
+                    -- FOLLOWING Monday (next week even when today is Monday).
+                    (CASE WHEN $5::boolean
+                          THEN date_trunc('week', (now() AT TIME ZONE $3)) + interval '7 days'
                           ELSE date_trunc('week', (now() AT TIME ZONE $3)) END) AT TIME ZONE $3 AS monday
            ), ordered AS (
              SELECT id, row_number() OVER (ORDER BY period_start) - 1 AS idx
@@ -319,10 +318,8 @@ export class EnrollmentRepository {
         // Monday is <= now and the tariff is `active` at once.
         await client.query(
           `WITH anchor AS (
-             SELECT (CASE WHEN $5::boolean THEN
-                            (CASE WHEN extract(isodow FROM (now() AT TIME ZONE $3)) = 1
-                                  THEN date_trunc('week', (now() AT TIME ZONE $3))
-                                  ELSE date_trunc('week', (now() AT TIME ZONE $3)) + interval '7 days' END)
+             SELECT (CASE WHEN $5::boolean
+                          THEN date_trunc('week', (now() AT TIME ZONE $3)) + interval '7 days'
                           ELSE date_trunc('week', (now() AT TIME ZONE $3)) END) AT TIME ZONE $3 AS monday
            )
            UPDATE driver_subscriptions ds SET
@@ -344,10 +341,8 @@ export class EnrollmentRepository {
       // yet; every other case → `approved` + available (availability plane, 2026-07-23).
       await client.query(
         `WITH anchor AS (
-           SELECT (CASE WHEN $3::boolean THEN
-                          (CASE WHEN extract(isodow FROM (now() AT TIME ZONE $2)) = 1
-                                THEN date_trunc('week', (now() AT TIME ZONE $2))
-                                ELSE date_trunc('week', (now() AT TIME ZONE $2)) + interval '7 days' END)
+           SELECT (CASE WHEN $3::boolean
+                        THEN date_trunc('week', (now() AT TIME ZONE $2)) + interval '7 days'
                         ELSE date_trunc('week', (now() AT TIME ZONE $2)) END) AT TIME ZONE $2 AS monday
          )
          UPDATE drivers d SET

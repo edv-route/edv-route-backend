@@ -235,6 +235,7 @@ export class PaymentSubmissionsRepository {
   async list(opts: {
     status?: string;
     driverId?: string;
+    search?: string;
     page: number;
     limit: number;
   }): Promise<{ items: SubmissionListItem[]; total: number }> {
@@ -247,6 +248,19 @@ export class PaymentSubmissionsRepository {
     if (opts.driverId) {
       values.push(opts.driverId);
       where.push(`ps.driver_id = $${values.length}`);
+    }
+    // Free-text search: payer name (ILIKE) and/or receipt number (digits of the
+    // term matched against submission_number, so "#18" / "18" both work).
+    const term = opts.search?.trim();
+    if (term) {
+      values.push(`%${term}%`);
+      const conds = [`u.full_name ILIKE $${values.length}`];
+      const digits = term.replace(/\D/g, '');
+      if (digits) {
+        values.push(`%${digits}%`);
+        conds.push(`ps.submission_number::text ILIKE $${values.length}`);
+      }
+      where.push(`(${conds.join(' OR ')})`);
     }
     const whereSql = where.length > 0 ? `WHERE ${where.join(' AND ')}` : '';
     const fromSql = `FROM payment_submissions ps JOIN users u ON u.id = ps.driver_id`;
