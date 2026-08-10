@@ -34,8 +34,10 @@ por `status` (revisión / bloqueado / home). Lockout por intentos: diferido (no 
 | GET | `/driver-auth/requirements` | Requisitos activos (driver + vehicle) con `isRequired`, para el wizard (público) |
 | GET | `/driver-auth/payment-methods` | Métodos de pago activos, sin `admin_only` (público) |
 | GET | `/driver-auth/vehicle-types` | Tipos de vehículo activos `{ id, name }`, para el selector del wizard (público) |
-| POST | `/driver-auth/register` | **Auto-registro (público).** 4 pasos obligatorios (credenciales, ≥1 vehículo, todos los requisitos `isRequired`). Alta como **deuda** (`source='app'`, `pending`) → `{ token, driver, createdDocumentIds, createdVehicles }`. El pago va aparte |
-| POST | `/driver-auth/payment-submissions` | Envío de pago del chofer (guard `authenticateDriver`, multipart). `driverId` del token; `purpose='debt'`; queda `pending` |
+| GET | `/driver-auth/membership` | Membresía vigente `{ name, priceUsd }` (o `null`), para el resumen de cobro del alta (público) |
+| GET | `/driver-auth/subscription-plans` | Tarifas activas `{ id, name, priceUsd, billingPeriod }`, para el resumen de cobro (la app usa la semanal) (público) |
+| POST | `/driver-auth/register` | **Auto-registro (público).** 4 pasos obligatorios (credenciales, ≥1 vehículo, todos los requisitos `isRequired`). Alta **diferida** (`source='app'`, `pending`, **sin deuda base**): el pago `enroll` la materializa al aprobarse → `{ token, driver, createdDocumentIds, createdVehicles }` |
+| POST | `/driver-auth/payment-submissions` | Envío de pago del chofer (guard `authenticateDriver`, multipart). `driverId` del token. `purpose` = `enroll` (alta: membresía + `periods` semanas) o `debt`; `advance`/`change_plan` son solo-admin (400). Nunca auto-aprueba; queda `pending` |
 | POST | `/driver-auth/documents/:id/file` | Adjunta archivo a un documento **propio** (guard `authenticateDriver`; 404 si es de otro chofer) |
 | POST | `/driver-auth/vehicles/:vehicleId/images` | Sube foto a un vehículo **propio** (guard `authenticateDriver`; valida propiedad) |
 

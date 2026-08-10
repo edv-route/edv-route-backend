@@ -21,7 +21,9 @@ import { VehicleImagesService } from '../vehicles/vehicle-images.service.js';
 import { DriverAuthRepository } from './driver-auth.repository.js';
 import { DriverAuthService } from './driver-auth.service.js';
 import {
+  appMembershipSchema,
   appPaymentMethodsSchema,
+  appPlansSchema,
   appRequirementsSchema,
   appVehicleTypesSchema,
   driverLoginSchema,
@@ -86,9 +88,10 @@ const driverAuthRoutes: FastifyPluginAsync = async (app) => {
   });
 
   // Payment submission from the app: the driver submits ONE payment (receipt +
-  // payer details) against his own debt. `driverId` comes from the TOKEN, never
-  // the URL, so a driver can only submit for himself; purpose is always the alta
-  // debt (advance/enroll/change_plan stay admin-only). It remains `pending`.
+  // payer details) for his own alta. `driverId` comes from the TOKEN, never the
+  // URL, so a driver can only submit for himself. The app may use `enroll` (the
+  // alta: membership + N weeks) or `debt`; `advance`/`change_plan` stay admin-only.
+  // It always stays `pending` (a driver never auto-approves his own payment).
   app.post('/payment-submissions', { onRequest: [app.authenticateDriver] }, async (req, reply) => {
     const fields: Record<string, string> = {};
     const files: UploadedFile[] = [];
@@ -102,6 +105,15 @@ const driverAuthRoutes: FastifyPluginAsync = async (app) => {
         fields[part.fieldname] = String(part.value);
       }
     }
+    // The app pays the alta (`enroll`, membership + N weeks) or settles `debt`.
+    // Admin-only purposes are rejected here. `periods` (weeks) applies to enroll.
+    const rawPurpose = fields['purpose'] ?? 'debt';
+    if (rawPurpose !== 'debt' && rawPurpose !== 'enroll') {
+      throw app.httpErrors.badRequest('Tipo de pago no permitido desde la app');
+    }
+    const purpose = rawPurpose as 'debt' | 'enroll';
+    const periods =
+      purpose === 'enroll' && fields['periods'] ? Number(fields['periods']) : null;
     const result = await paymentSubmissions.create(
       req.user.sub,
       {
@@ -113,8 +125,8 @@ const driverAuthRoutes: FastifyPluginAsync = async (app) => {
         payerId: fields['payerId'] ?? null,
         payerAccount: fields['payerAccount'] ?? null,
         note: fields['note'] ?? null,
-        purpose: 'debt',
-        periods: null,
+        purpose,
+        periods,
         planId: null,
         invoiceIds: null,
         // The app never auto-approves: a driver cannot approve his own payment.
@@ -191,6 +203,17 @@ const driverAuthRoutes: FastifyPluginAsync = async (app) => {
 
   app.get('/vehicle-types', { schema: appVehicleTypesSchema }, async () =>
     service.listVehicleTypes(),
+  );
+
+  // Enrollment cost catalog: current membership + active tariffs, so the app can
+  // show the alta total (membership + weekly tariff × weeks) BEFORE paying —
+  // mirrors the panel's /memberships/current + /subscription-plans.
+  app.get('/membership', { schema: appMembershipSchema }, async () =>
+    service.getCurrentMembership(),
+  );
+
+  app.get('/subscription-plans', { schema: appPlansSchema }, async () =>
+    service.listActivePlans(),
   );
 };
 

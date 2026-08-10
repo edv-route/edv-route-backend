@@ -74,6 +74,16 @@ export class DriverAuthService {
     return this.drivers.listActiveVehicleTypes();
   }
 
+  /** Current active membership (name + price) for the alta summary; null if none. */
+  getCurrentMembership() {
+    return this.drivers.getCurrentMembership();
+  }
+
+  /** Active tariffs for the alta summary (the app charges the weekly one). */
+  listActivePlans() {
+    return this.drivers.listActivePlans();
+  }
+
   /**
    * Self-service registration from the app. Reuses the single money path
    * (`DriversService.register` with source='app'): the alta is emitted as DEBT
@@ -111,11 +121,13 @@ export class DriverAuthService {
       }
     }
 
-    // Money path is shared and app payments are never auto-settled: force the
-    // debt alta (payment:null); the payment arrives later as a submission.
+    // Money path is shared and app payments are never auto-settled. The alta is
+    // ALWAYS paid up front via a pending `enroll` submission (membership + N
+    // weeks), so defer the enrollment: no base debt is emitted here — the
+    // submission materializes the alta on approval, mirroring the panel.
     const result = await this.driversService.register(
       input,
-      { ...extras, payment: null },
+      { ...extras, payment: null, deferredEnrollment: true },
       null,
       { source: 'app' },
     );

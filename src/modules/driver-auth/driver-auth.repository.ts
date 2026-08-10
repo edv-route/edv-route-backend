@@ -72,6 +72,31 @@ export class DriverAuthRepository {
     );
     return rows;
   }
+
+  /**
+   * Current active membership (name + price) for the app's enrollment summary.
+   * Same criterion the alta uses (`memberships WHERE active`), so the preview
+   * equals what will be charged. Null when none is configured.
+   */
+  async getCurrentMembership(): Promise<AppMembership | null> {
+    const { rows } = await this.db.query<AppMembership>(
+      `SELECT name, price_usd AS "priceUsd" FROM memberships WHERE active ORDER BY id DESC LIMIT 1`,
+    );
+    return rows[0] ?? null;
+  }
+
+  /**
+   * Active subscription plans (tariffs) for the app's enrollment summary. The
+   * alta charges the weekly one; the app selects it from this list (a single
+   * weekly tariff for now), mirroring the panel's /subscription-plans.
+   */
+  async listActivePlans(): Promise<AppPlan[]> {
+    const { rows } = await this.db.query<AppPlan>(
+      `SELECT id, name, price_usd AS "priceUsd", billing_period AS "billingPeriod"
+       FROM subscription_plans WHERE active ORDER BY id`,
+    );
+    return rows;
+  }
 }
 
 /** A document requirement as the app consumes it. */
@@ -95,4 +120,19 @@ export interface AppPaymentMethod {
 export interface AppVehicleType {
   id: number;
   name: string;
+}
+
+/** The active membership as the app's enrollment summary consumes it. */
+export interface AppMembership {
+  name: string;
+  /** Numeric column serialized as a string by pg (matches the panel schema). */
+  priceUsd: string;
+}
+
+/** A subscription plan (tariff) as the app's enrollment summary consumes it. */
+export interface AppPlan {
+  id: number;
+  name: string;
+  priceUsd: string;
+  billingPeriod: string;
 }

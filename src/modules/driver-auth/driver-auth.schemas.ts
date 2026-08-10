@@ -93,6 +93,37 @@ export const appVehicleTypesSchema = {
   },
 } as const;
 
+/** Current active membership for the app's enrollment summary; null when none. */
+export const appMembershipSchema = {
+  response: {
+    200: {
+      type: ['object', 'null'],
+      properties: {
+        name: { type: 'string' },
+        priceUsd: { type: 'string' },
+      },
+    },
+  },
+} as const;
+
+/** Active tariffs for the app's enrollment summary (the app uses the weekly one). */
+export const appPlansSchema = {
+  response: {
+    200: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          id: { type: 'integer' },
+          name: { type: 'string' },
+          priceUsd: { type: 'string' },
+          billingPeriod: { type: 'string' },
+        },
+      },
+    },
+  },
+} as const;
+
 /**
  * Self-service registration (app): same body contract as the panel register;
  * the channel-specific obligations (credentials, >=1 vehicle, every required
