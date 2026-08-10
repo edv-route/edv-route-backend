@@ -821,3 +821,18 @@ semanal y validar el ciclo con reloj real.
 | **Opción «Empezar el próximo lunes» (`next_monday`)**: ancla al **próximo lunes** (hoy si hoy es lunes → semana completa ya). Cuando ese lunes es futuro, la suscripción queda `scheduled` y el chofer entra en el **nuevo estado `driver_status = 'scheduled'`** (programado, `is_available=false`, no opera) | Faltaba la vía "semana completa sin esperar a que el sistema decida"; el estado propio lo hace visible ("Programado · inicia DD/MM") sin ambigüedad |
 | **Se elimina la auto-aprobación de los lunes** (`auto-approval-scheduler` borrado). En su lugar, **`scheduled-driver-activation`**: cuando llega el lunes de un chofer `scheduled`, lo pasa a `approved` + disponible y su suscripción a `active`. Sigue siendo automático, pero es una **activación** de algo ya aprobado por el admin, no una aprobación | "Aprobar" vuelve a ser 100% decisión humana; el único automatismo restante es encender al programado en su fecha |
 | El motor de deuda **ignora `scheduled`** sin cambios (`debt-scheduler` ya filtra `approved/overdue/penalized`); su suscripción `scheduled` no emite cargos ni consume cobertura hasta activarse | Un programado no debe generar deuda en el intervalo hasta el lunes |
+
+## 2026-08-10 — 📱 Auto-registro (app): alta por flujo `enroll` con semanas + resumen de cobro
+
+> Canal `driver-auth` (backend) para la app `edv-route-mobile`. **Sin migraciones** — reutiliza
+> `DriversService.register`, `PaymentSubmissionsService.prepareEnrollContext` y `EnrollmentRepository`
+> del panel (pagos v9). Verificado por `typecheck` + endpoints en prod (commit `7c2b1b8` en `main`).
+> Detalle para retomar: `edv-route-mobile/docs/HANDOFF-2026-08-10.md`.
+
+| Decisión | Motivo |
+|---|---|
+| El auto-registro deja la ruta `debt` (simplificada, 1 semana) y usa el **flujo `enroll`** del panel: `driver-auth/payment-submissions` acepta `purpose:'enroll'` + `periods` (semanas). `advance`/`change_plan` **siguen admin-only** (400 desde la app) | El diseño de la app se había inventado un modelo que no existía en el admin; el negocio quiere **semanas adelantadas** y el mismo cálculo que el panel. No salirse del diseño del admin |
+| `POST /driver-auth/register` **difiere** el alta (`deferredEnrollment:true`): no emite deuda base; el pago `enroll` la materializa al aprobar (membresía + N semanas) | Un solo camino de dinero, idéntico al `register(true)` del admin; sin deuda huérfana si el pago no llega. La app siempre paga, así que siempre difiere |
+| Nuevos catálogos **públicos** `GET /driver-auth/membership` y `GET /driver-auth/subscription-plans`; el **monto lo calcula el servidor** (mismo `WHERE active` + primer plan **semanal**), la app solo lo espeja | La app necesitaba mostrar el total (membresía + tarifa × semanas) **antes** de pagar; calcularlo en el server garantiza **preview == cobro real** sin exponer los endpoints admin (`/memberships`, `/subscription-plans` siguen tras `authenticate`) |
+| Tarifa **solo semanal** por ahora: la app **no** ofrece selector de tarifa (fija la semanal), solo de **semanas** | Decisión del usuario; simplifica. Nota: el `enroll` cobra siempre el primer plan semanal → si a futuro hay varios planes, revisar el wizard admin (total mostrado vs cobrado) |
+| El **auto-aprobar** de los modales de pago es solo del admin; la app **nunca** auto-aprueba (el chofer no aprueba su propio pago) | Anti-fraude; la aprobación la hace un admin en Facturación → «Por aprobar» |
