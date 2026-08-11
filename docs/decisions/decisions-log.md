@@ -858,3 +858,19 @@ semanal y validar el ciclo con reloj real.
 | **Backend `GET /payment-submissions`**: se añade `reverted` al enum de `status` (faltaba) y un parámetro **`search`** (nombre del pagador o N° de pago, ILIKE) | El filtro «Revertido» y el buscador lo exigían; el amount/estado ya existían |
 | **Buscador en vivo** (debounce 300 ms, Enter también) unificado en **Afiliados, Facturación y Recibos**, siempre **a la derecha** de los chips, mismo estilo/ícono | Consistencia entre las 3 listas; búsqueda al escribir es más intuitiva que solo-Enter |
 | **Facturación**: se quita la gráfica «Facturación mensual» (ApexCharts) — queda solo el panel de lista, como Recibos | Pedido del negocio; se limpió el código muerto (`monthlySeries`/`MonthlyInvoicingPoint` en el admin; el endpoint `/invoices/monthly-series` queda sin uso, reutilizable) |
+
+## 2026-08-10 — 🪪 Membresía: beneficios gestionados en la versión (sin catálogo aparte) + regla de versionado
+
+> Panel (`membership` como resumen + nuevo `membership-editor` a **pantalla completa** en
+> `/membership/edit`, reemplaza el modal; se elimina `benefits-catalog`) + backend
+> (`memberships.repository`). **Sin migraciones.** Verificado por `build` (admin) + `typecheck`
+> (backend). Resuelve el HANDOFF `docs/HANDOFF-beneficios-membresia-2026-08-06.md`.
+
+| Decisión | Motivo |
+|---|---|
+| **Se elimina el catálogo de beneficios como sección aparte.** Los beneficios se crean y se marcan DENTRO del editor de la membresía (crear = queda incluido al instante). Las tablas `benefits`/`membership_benefits` no cambian (sin migración) | La causa del lío eran dos conceptos (catálogo vs. beneficios de la versión): crear un beneficio no lo otorgaba. Ahora hay **un solo lugar** para gestionarlos |
+| **El versionado (`hasPayments`) ignora a los choferes `rejected`**: una versión se congela solo si un chofer **no rechazado** la pagó (cualquier estado de pago: pendiente, aprobado, reembolsado). Un rechazado debe re-registrarse y tomará la versión vigente | Antes contaba cualquier fila (incluidos reembolsos de rechazados), congelando la versión para siempre e impidiendo editar in-place |
+| La respuesta de `/memberships` incluye **`memberCount`** (choferes no rechazados por versión); el editor **avisa la consecuencia antes de guardar** ("creará versión nueva · N miembros siguen en la actual") | El versionado era un efecto colateral invisible; ahora es explícito. La inmutabilidad por versión (doc v7 #22) queda intacta |
+| La edición pasa de un **modal** a una **pantalla completa** (`/membership/edit`, `membership-editor`) | El modal quedaba apretado con la gestión de beneficios |
+| **Fix CORS (`app.ts`)**: se agrega `PUT` a `methods`. Sin él, el preflight bloqueaba **cualquier `PUT`** desde el navegador (editar membresía y tarifas, resetear clave de admin) — por eso nunca se había podido editar la membresía | Bug de configuración; el método no estaba en el allowlist. Aplica a todos los `PUT`, no solo membresía |
+| El input de **precio** usa `(wheel)` → `blur` para que el scroll del mouse no cambie el valor (los `type=number` suman/restan `step` al hacer scroll: 180 → 179.99) | Footgun de HTML; el mismo guard conviene en los demás campos numéricos de dinero (tarifas, semanas) |

@@ -2,8 +2,12 @@ import type pg from 'pg';
 import type Memberships from '../../db/models/public/Memberships.js';
 import type { Camelize } from '../../db/case-types.js';
 
-/** Generated DB row + the aggregated benefit ids of the version. */
-export type MembershipRecord = Camelize<Memberships> & { benefitIds: number[] };
+/** Generated DB row + the aggregated benefit ids and the live member count. */
+export type MembershipRecord = Camelize<Memberships> & {
+  benefitIds: number[];
+  /** Non-rejected drivers who paid this version (drives the versioning warning). */
+  memberCount: number;
+};
 
 export interface MembershipData {
   name: string;
@@ -20,7 +24,11 @@ const COLUMNS = `
     (SELECT array_agg(mb.benefit_id ORDER BY mb.benefit_id)
      FROM membership_benefits mb WHERE mb.membership_id = m.id),
     '{}'
-  ) AS "benefitIds"
+  ) AS "benefitIds",
+  (SELECT count(DISTINCT mp.driver_id)::int
+     FROM membership_payments mp
+     JOIN drivers d ON d.user_id = mp.driver_id
+     WHERE mp.membership_id = m.id AND d.status <> 'rejected') AS "memberCount"
 `;
 
 export class MembershipsRepository {
@@ -40,10 +48,16 @@ export class MembershipsRepository {
     return rows[0] ?? null;
   }
 
-  /** A version with at least one payment is frozen: edits create a replica. */
+  /**
+   * A version is frozen once a NON-REJECTED member paid it: editing then creates a
+   * replica (the paid members keep their version). Rejected drivers don't count —
+   * they must register again and will take the current version (decision 2026-08-10).
+   */
   async hasPayments(membershipId: number): Promise<boolean> {
     const { rows } = await this.db.query(
-      'SELECT 1 FROM membership_payments WHERE membership_id = $1 LIMIT 1',
+      `SELECT 1 FROM membership_payments mp
+       JOIN drivers d ON d.user_id = mp.driver_id
+       WHERE mp.membership_id = $1 AND d.status <> 'rejected' LIMIT 1`,
       [membershipId],
     );
     return rows.length > 0;

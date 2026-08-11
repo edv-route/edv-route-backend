@@ -68,7 +68,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(helmet);
   await app.register(cors, {
     origin: config.CORS_ORIGIN.split(','),
-    methods: ['GET', 'HEAD', 'POST', 'PATCH', 'DELETE'],
+    methods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE'],
   });
   await app.register(sensible);
   await app.register(multipart, {

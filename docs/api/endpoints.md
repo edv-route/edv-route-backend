@@ -79,10 +79,10 @@ réplica activa automáticamente (quien pagó conserva precio y beneficios de su
 
 | Método | Ruta | Descripción |
 |---|---|---|
-| GET | `/memberships` | Historial de versiones (la activa + archivadas) |
+| GET | `/memberships` | Historial de versiones (la activa + archivadas). Cada versión trae `benefitIds` y **`memberCount`** (choferes no rechazados que la pagaron) |
 | GET | `/memberships/current` | Versión vigente con sus beneficios |
 | POST | `/memberships` | Crear la primera membresía (409 si ya existe una vigente) |
-| PUT | `/memberships/current` | Editar la vigente (versionado condicional) |
+| PUT | `/memberships/current` | Editar la vigente (**versionado condicional**): si la versión tiene pagos de choferes **no rechazados** se archiva y se crea una réplica; si no, edición in-place. Los beneficios se gestionan aquí (no hay catálogo aparte) |
 | GET / POST | `/subscription-plans` | Catálogo de tarifas (`billingPeriod: daily\|weekly\|monthly\|annual`; `allowedVehicleTypeIds` vacío/null = todos) |
 | PUT | `/subscription-plans/:id` | Editar (versionado condicional) |
 | PATCH | `/subscription-plans/:id/active` | Archivar / reactivar |

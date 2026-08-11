@@ -11,6 +11,7 @@ const membershipSchema = {
     priceUsd: { type: 'string' },
     active: { type: 'boolean' },
     benefitIds: { type: 'array', items: { type: 'integer' } },
+    memberCount: { type: 'integer' },
     createdBy: { type: ['string', 'null'] },
     createdAt: { type: 'string' },
     updatedAt: { type: 'string' },

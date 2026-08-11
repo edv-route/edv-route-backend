@@ -1,5 +1,10 @@
 # HANDOFF — Los beneficios nuevos no llegan a los choferes nuevos (UX de membresía)
 
+> ✅ **RESUELTO 2026-08-10** (Dirección B): se eliminó el catálogo aparte; los beneficios se crean y
+> marcan dentro del editor de la membresía (crear = incluido), con aviso de versionado + `memberCount`,
+> y `hasPayments` ahora ignora a los choferes `rejected`. Ver `decisions/decisions-log.md` (2026-08-10).
+> Lo de abajo es el diagnóstico histórico.
+
 **Fecha:** 2026-08-06 · **Estado:** diagnosticado, **SIN corregir** (a pedido de Luis; se ataca en una tarea aparte).
 **Prioridad:** media-alta (confunde y hace que los afiliados no reciban los beneficios que el negocio cree haber activado).
 
