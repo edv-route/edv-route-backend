@@ -2,6 +2,24 @@ import type pg from 'pg';
 import { withTransaction } from '../../db/tx.js';
 import type { EnrollmentRepository } from '../drivers/enrollment.repository.js';
 
+/** Pool or in-transaction client: the multi-pending guard re-check must run on
+ *  the same client that will insert, under the per-driver advisory lock. */
+type Executor = {
+  query<R extends pg.QueryResultRow = pg.QueryResultRow>(
+    text: string,
+    values: unknown[],
+  ): Promise<pg.QueryResult<R>>;
+};
+
+/** Raised inside create()'s transaction when the multi-pending guard is violated
+ *  under the per-driver lock — a race the service's pre-check could not see. */
+export class PendingGuardError extends Error {
+  constructor(readonly kind: 'whole_debt' | 'reserved' | 'has_pending') {
+    super('pending-payment guard violated');
+    this.name = 'PendingGuardError';
+  }
+}
+
 /** Payer/method details captured with the submission (mirrors the invoice columns). */
 export interface PaymentSubmissionMeta {
   paymentMethodId: number | null;
@@ -60,6 +78,8 @@ export interface CreateSubmissionInput extends PaymentSubmissionMeta {
   submittedBy: string | null;
   /** 1..5 storage paths of the already-uploaded receipt/bill images. */
   filePaths: string[];
+  /** Multi-pending guard inputs, re-checked under a per-driver lock in create(). */
+  guard: { targetedInvoiceIds: string[] | null };
 }
 
 export interface SubmissionListItem {
@@ -176,18 +196,82 @@ export class PaymentSubmissionsRepository {
     return Number(rows[0]?.total ?? 0).toFixed(2);
   }
 
-  /** True when the driver already has a pending submission (the DB also enforces it). */
-  async hasPending(driverId: string): Promise<boolean> {
-    const { rows } = await this.db.query(
+  /** True when the driver already has a pending submission. */
+  async hasPending(driverId: string, executor: Executor = this.db): Promise<boolean> {
+    const { rows } = await executor.query(
       `SELECT 1 FROM payment_submissions WHERE driver_id = $1 AND status = 'pending' LIMIT 1`,
       [driverId],
     );
     return rows.length > 0;
   }
 
+  /**
+   * True when a PENDING `debt` submission covers the WHOLE debt (no specific
+   * invoices in its context): such a payment implicitly reserves every debt
+   * invoice, so no other payment may coexist with it (double-charge guard —
+   * a whole-debt receipt does not enumerate invoices, so `reservedInvoiceIds`
+   * cannot see it).
+   */
+  async hasWholeDebtPending(driverId: string, executor: Executor = this.db): Promise<boolean> {
+    const { rows } = await executor.query(
+      `SELECT 1 FROM payment_submissions
+        WHERE driver_id = $1 AND status = 'pending' AND purpose = 'debt'
+          AND (context->'invoiceIds' IS NULL OR jsonb_typeof(context->'invoiceIds') <> 'array')
+        LIMIT 1`,
+      [driverId],
+    );
+    return rows.length > 0;
+  }
+
+  /**
+   * Invoice ids already reserved by the driver's PENDING submissions — the
+   * double-charge guard for allowing MULTIPLE pending payments (2026-08-12). A
+   * `debt` submission reserves the invoices in its `context.invoiceIds`; a
+   * generator submission (enroll/advance/change_plan) reserves the charges it
+   * created (linked by `submission_id`). A new payment may not cover any of these.
+   */
+  async reservedInvoiceIds(driverId: string, executor: Executor = this.db): Promise<string[]> {
+    const { rows } = await executor.query<{ invoiceId: string }>(
+      `SELECT DISTINCT inv AS "invoiceId" FROM (
+         SELECT jsonb_array_elements_text(ps.context->'invoiceIds') AS inv
+         FROM payment_submissions ps
+         WHERE ps.driver_id = $1 AND ps.status = 'pending'
+           AND jsonb_typeof(ps.context->'invoiceIds') = 'array'
+         UNION
+         SELECT mp.invoice_id::text FROM membership_payments mp
+         JOIN payment_submissions ps ON ps.id = mp.submission_id
+         WHERE ps.driver_id = $1 AND ps.status = 'pending' AND mp.invoice_id IS NOT NULL
+         UNION
+         SELECT sp.invoice_id::text FROM subscription_payments sp
+         JOIN payment_submissions ps ON ps.id = sp.submission_id
+         WHERE ps.driver_id = $1 AND ps.status = 'pending' AND sp.invoice_id IS NOT NULL
+       ) x WHERE inv IS NOT NULL`,
+      [driverId],
+    );
+    return rows.map((r) => r.invoiceId);
+  }
+
   /** Inserts a pending submission with its files, in one transaction. */
   async create(input: CreateSubmissionInput): Promise<{ id: string }> {
     return withTransaction(this.db, async (client) => {
+      // Serialize concurrent submissions for the same driver: the multi-pending
+      // guard is re-checked here, under a per-driver lock, so a race cannot bypass
+      // it (the one-pending unique index was dropped 2026-08-12). The service
+      // pre-checks the same guard for a friendly early error; this is the backstop.
+      await client.query('SELECT pg_advisory_xact_lock(hashtext($1)::bigint)', [
+        `payment_submission:${input.driverId}`,
+      ]);
+      const targeted = input.guard.targetedInvoiceIds;
+      if (targeted) {
+        if (await this.hasWholeDebtPending(input.driverId, client)) {
+          throw new PendingGuardError('whole_debt');
+        }
+        const reserved = new Set(await this.reservedInvoiceIds(input.driverId, client));
+        if (targeted.some((id) => reserved.has(id))) throw new PendingGuardError('reserved');
+      } else if (await this.hasPending(input.driverId, client)) {
+        throw new PendingGuardError('has_pending');
+      }
+
       const { rows } = await client.query<{ id: string }>(
         `INSERT INTO payment_submissions
            (driver_id, amount_usd, payment_method_id, payment_reference, payer_bank,

@@ -7,12 +7,8 @@ import {
   PaymentSubmissionsService,
   type UploadedFile,
 } from '../payment-submissions/payment-submissions.service.js';
-import type {
-  CreateDriverInput,
-  EnrollInput,
-  RegisterDocumentInput,
-  RegisterVehicleInput,
-} from '../drivers/drivers.service.js';
+import type { CreateDriverInput, DocumentInput, VehicleInput } from '../drivers/drivers.service.js';
+import { vehicleFieldProps } from '../drivers/drivers.schemas.js';
 import { DocumentsRepository } from '../documents/documents.repository.js';
 import { DocumentsService } from '../documents/documents.service.js';
 import { SettingsRepository } from '../settings/settings.repository.js';
@@ -21,6 +17,7 @@ import { VehicleImagesService } from '../vehicles/vehicle-images.service.js';
 import { DriverAuthRepository } from './driver-auth.repository.js';
 import { DriverAuthService } from './driver-auth.service.js';
 import {
+  appDebtSchema,
   appMembershipSchema,
   appPaymentMethodsSchema,
   appPlansSchema,
@@ -48,6 +45,25 @@ const vehicleIdParam = {
   properties: { vehicleId: { type: 'string', format: 'uuid' } },
 } as const;
 
+/** Applicant adds a vehicle to his own solicitud (born pending). */
+const applicantVehicleBody = {
+  type: 'object',
+  additionalProperties: false,
+  properties: { ...vehicleFieldProps },
+} as const;
+
+/** Applicant adds a document (metadata) to his own solicitud (born pending). */
+const applicantDocumentBody = {
+  type: 'object',
+  required: ['requirementId'],
+  additionalProperties: false,
+  properties: {
+    requirementId: { type: 'integer', minimum: 1 },
+    vehicleId: { type: 'string', format: 'uuid' },
+    expiresAt: { type: ['string', 'null'], format: 'date' },
+  },
+} as const;
+
 /** Driver (mobile app) authentication: national_id + password. */
 const driverAuthRoutes: FastifyPluginAsync = async (app) => {
   const enrollment = new EnrollmentRepository(app.db);
@@ -68,22 +84,15 @@ const driverAuthRoutes: FastifyPluginAsync = async (app) => {
     service.login(req.body.nationalId, req.body.password),
   );
 
-  // Public self-service registration (the 4-step wizard, all steps mandatory).
-  // Emits the alta as debt (pending) and returns a driver token so the app can
-  // then upload files and submit the payment against its own account.
+  // Public self-service registration - STEP 1 ONLY (proposal: solicitudes-app):
+  // personal data + credentials + privacy consent. Creates an `applicant` and
+  // returns a driver token so the app can log in and complete the solicitud
+  // (documents + vehicles) afterwards.
   app.post<{
-    Body: CreateDriverInput & {
-      payment?: EnrollInput | null;
-      vehicles?: RegisterVehicleInput[];
-      documents?: RegisterDocumentInput[];
-    };
+    Body: CreateDriverInput & { acceptedPrivacy?: boolean };
   }>('/register', { schema: driverRegisterSchema }, async (req, reply) => {
-    const { payment, vehicles, documents, ...person } = req.body;
-    const result = await service.register(person, {
-      payment: payment ?? null,
-      vehicles: vehicles ?? [],
-      documents: documents ?? [],
-    });
+    const { acceptedPrivacy, ...person } = req.body;
+    const result = await service.register(person, acceptedPrivacy ?? false);
     return reply.code(201).send(result);
   });
 
@@ -114,6 +123,9 @@ const driverAuthRoutes: FastifyPluginAsync = async (app) => {
     const purpose = rawPurpose as 'debt' | 'enroll';
     const periods =
       purpose === 'enroll' && fields['periods'] ? Number(fields['periods']) : null;
+    // Gate (solicitudes-app): an applicant cannot pay yet; paying requires
+    // accepting the terms & conditions (stamps accepted_terms_at).
+    await service.assertPayableAndAcceptTerms(req.user.sub, fields['acceptedTerms'] === 'true');
     const result = await paymentSubmissions.create(
       req.user.sub,
       {
@@ -190,6 +202,43 @@ const driverAuthRoutes: FastifyPluginAsync = async (app) => {
     '/me',
     { onRequest: [app.authenticateDriver], schema: driverMeSchema },
     async (req) => service.getProfile(req.user.sub),
+  );
+
+  // "Completa tu solicitud" — the applicant's document/vehicle checklist with
+  // per-item review state (missing / en revisión / aprobado / rechazado + motivo).
+  app.get(
+    '/me/checklist',
+    { onRequest: [app.authenticateDriver] },
+    async (req) => service.getChecklist(req.user.sub),
+  );
+
+  // The driver's alta/arrears debt (for the app's deferred payment screen).
+  app.get(
+    '/me/debt',
+    { onRequest: [app.authenticateDriver], schema: appDebtSchema },
+    async (req) => service.getDebt(req.user.sub),
+  );
+
+  // Applicant adds a vehicle to his OWN solicitud (driverId from the token; born
+  // pending). Images are uploaded afterwards via /vehicles/:vehicleId/images.
+  app.post<{ Body: VehicleInput }>(
+    '/me/vehicles',
+    { onRequest: [app.authenticateDriver], schema: { body: applicantVehicleBody } },
+    async (req, reply) => {
+      const vehicle = await driversService.addApplicantVehicle(req.user.sub, req.body);
+      return reply.code(201).send(vehicle);
+    },
+  );
+
+  // Applicant adds a document (metadata) to his OWN solicitud (born pending). The
+  // file is attached afterwards via /documents/:id/file.
+  app.post<{ Body: DocumentInput }>(
+    '/me/documents',
+    { onRequest: [app.authenticateDriver], schema: { body: applicantDocumentBody } },
+    async (req, reply) => {
+      const doc = await driversService.addApplicantDocument(req.user.sub, req.body);
+      return reply.code(201).send(doc);
+    },
   );
 
   // Public catalogs the registration wizard needs before the driver has an account.

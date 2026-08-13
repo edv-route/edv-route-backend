@@ -23,9 +23,9 @@ export default interface VDriverPayments {
 
   refunded_by: AdminsId | null;
 
-  period_start: Date;
+  period_start: Date | null;
 
-  period_end: Date;
+  period_end: Date | null;
 
   invoice_id: InvoicesId | null;
 

@@ -98,6 +98,17 @@ export async function runDebtEngineTick(db: pg.Pool): Promise<DebtTickResult> {
        WHERE ds.status = 'active'
          AND p.billing_period = 'weekly'
          AND d.status::text IN ('approved', 'overdue')
+         -- An approved driver whose tariff start is not set yet (solicitudes-app)
+         -- is frozen: no weekly charge until the admin sets the start.
+         AND d.tariff_start_set_at IS NOT NULL
+         -- v9: freeze a driver with a pending payment submission (he already paid
+         -- and is awaiting review) — do NOT emit next week's charge until it is
+         -- approved or rejected (matches steps 2, 4 and 5). Prevents both a free
+         -- week and a double charge while a receipt sits under review.
+         AND NOT EXISTS (
+           SELECT 1 FROM payment_submissions ps
+           WHERE ps.driver_id = ds.driver_id AND ps.status = 'pending'
+         )
          AND (now() AT TIME ZONE $1) >= m.emit_at
          AND NOT EXISTS (
            SELECT 1 FROM subscription_payments x
@@ -142,6 +153,9 @@ export async function runDebtEngineTick(db: pg.Pool): Promise<DebtTickResult> {
      JOIN drivers d ON d.user_id = ds.driver_id
      WHERE sp.driver_subscription_id = ds.id
        AND d.status::text IN ('approved', 'overdue', 'penalized')
+       -- Frozen until the tariff start is set (solicitudes-app): the alta-debt
+       -- week of an approved-without-start driver must NOT be flipped to overdue.
+       AND d.tariff_start_set_at IS NOT NULL
        AND sp.status = 'pending'
        AND sp.period_start <= now()
        AND NOT EXISTS (
@@ -197,6 +211,9 @@ export async function runDebtEngineTick(db: pg.Pool): Promise<DebtTickResult> {
        FROM drivers d
        LEFT JOIN debt x ON x.driver_id = d.user_id
        WHERE d.status::text IN ('approved', 'overdue', 'penalized')
+         -- Skip approved-without-start drivers (solicitudes-app): their state is
+         -- not derived from debt until the admin sets the tariff start.
+         AND d.tariff_start_set_at IS NOT NULL
          -- v9: freeze drivers with a pending submission (awaiting review): their
          -- state does not move until the payment is approved or rejected.
          AND NOT EXISTS (

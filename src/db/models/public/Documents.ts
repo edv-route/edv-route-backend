@@ -3,6 +3,7 @@ import type { UsersId } from './Users.js';
 import type { VehiclesId } from './Vehicles.js';
 import type { default as DocumentStatus } from './DocumentStatus.js';
 import type { AdminsId } from './Admins.js';
+import type { default as DocumentApproval } from './DocumentApproval.js';
 
 /** Identifier type for public.documents */
 export type DocumentsId = string & { __brand: 'public.documents' };
@@ -28,6 +29,14 @@ export default interface Documents {
   created_at: Date;
 
   updated_at: Date;
+
+  approval_status: DocumentApproval;
+
+  rejection_reason: string | null;
+
+  reviewed_by: AdminsId | null;
+
+  reviewed_at: Date | null;
 }
 
 /** Represents the initializer for the table public.documents */
@@ -55,6 +64,15 @@ export interface DocumentsInitializer {
 
   /** Default value: now() */
   updated_at?: Date;
+
+  /** Default value: 'pending'::document_approval */
+  approval_status?: DocumentApproval;
+
+  rejection_reason?: string | null;
+
+  reviewed_by?: AdminsId | null;
+
+  reviewed_at?: Date | null;
 }
 
 /** Represents the mutator for the table public.documents */
@@ -78,4 +96,12 @@ export interface DocumentsMutator {
   created_at?: Date;
 
   updated_at?: Date;
+
+  approval_status?: DocumentApproval;
+
+  rejection_reason?: string | null;
+
+  reviewed_by?: AdminsId | null;
+
+  reviewed_at?: Date | null;
 }

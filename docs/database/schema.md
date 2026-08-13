@@ -74,7 +74,7 @@ solo en la UI). Tipos: **V** (venezolano), **E** (extranjero), **J** (jurídico/
 |---|---|---|---|---|
 | `user_id` | uuid | no | — | **PK y FK** → `users.id` (CASCADE). Relación 1:1 |
 | `national_id` | text | sí | — | UNIQUE. Cédula. **Obligatoria solo al registrarse desde la app**; opcional por panel (decisión 2026-07-10) |
-| `status` | driver_status | no | `'pending'` | `pending` \| `scheduled` \| `approved` \| `rejected` \| `suspended` \| `paused` (licencia administrativa, 2026-07-23; `scheduled` = aprobado que inicia el próximo lunes, 2026-08-09) |
+| `status` | driver_status | no | `'pending'` | `applicant` (solicitud de la app en revisión, 2026-08-11) \| `pending` \| `scheduled` \| `approved` \| `rejected` \| `suspended` \| `paused` (licencia administrativa, 2026-07-23; `scheduled` = aprobado que inicia el próximo lunes, 2026-08-09) |
 | `source` | driver_source | no | — | `app` \| `admin` — de dónde nació el registro |
 | `registered_by` | uuid | sí | — | FK → `admins.id` (SET NULL). Null = se registró desde la app |
 | `registration_step` | smallint | sí | — | Paso del wizard (1-4). **Null = wizard completado** |
@@ -86,11 +86,18 @@ solo en la UI). Tipos: **V** (venezolano), **E** (extranjero), **J** (jurídico/
 | `contract_url` | text | sí | — | Contrato de afiliación firmado (Storage, futuro) |
 | `paused_at` | timestamptz | sí | — | Cuándo empezó la pausa administrativa; al reanudar, la tarifa corre por ese lapso (congelamiento). NULL = no está en pausa (2026-07-23) |
 | `reactivates_at` | timestamptz | sí | — | **Motor de deuda (v8)**: momento en que un `penalized` que ya saldó vuelve a operar (`reactivation_mode = auto` → lunes siguiente). El admin puede adelantarlo con `/reactivate`. NULL = nada pendiente |
+| `accepted_privacy_at` | timestamptz | sí | — | Consentimiento de la política de privacidad; se sella al enviar la solicitud desde la app (paso 1). NULL = no aceptada (2026-08-11) |
+| `accepted_terms_at` | timestamptz | sí | — | Consentimiento de términos y condiciones; se sella al pagar desde la app. NULL = no aceptados (2026-08-11) |
 | `created_at` / `updated_at` | timestamptz | no | `now()` | — |
 
 Ciclo de vida: `pending` → (aprobar, **exige pagos**) → `approved` (queda `is_available = true`)
 ⇄ `suspended`; `approved` ⇄ `paused` (licencia administrativa, exige tarifa al día, **congela**
 la tarifa); o `pending` → (rechazar, **doble reembolso + facturas anuladas**) → `rejected`.
+
+> 📱 **Canal app — solicitud (2026-08-11)**: un registro desde la app nace `applicant`
+> (solicitud, no afiliado); al aprobar su documentación pasa **directo a `approved` con deuda
+> base** (membresía + 1 semana) — este canal **no** exige deuda 0 para aprobar. Ver
+> [proposals/solicitudes-app/](../proposals/solicitudes-app/README.md).
 
 > 📋 **Rediseño del estado del chofer — modelo cerrado 2026-07-23 (`driver_status` +
 > `is_available`)**. **Fase A implementada** (migración `1752250000000`): el enum incorpora
@@ -114,7 +121,8 @@ la tarifa); o `pending` → (rechazar, **doble reembolso + facturas anuladas**) 
 | `brand` / `model` / `color` | text | sí | — | — |
 | `year` | smallint | sí | — | — |
 | `plate` | text | sí | — | UNIQUE. Se normaliza a mayúsculas en el backend |
-| `approval_status` | vehicle_approval | no | `'pending'` | `pending` \| `approved` \| `rejected`. Por panel nace `approved` |
+| `approval_status` | vehicle_approval | no | `'pending'` | `pending` \| `approved` \| `rejected`. Por panel nace `approved`; desde la app nace `pending` y lo revisa el admin |
+| `rejection_reason` | text | sí | — | Motivo del rechazo, visible al solicitante para corregir y reenviar (2026-08-11) |
 | `registered_by` | uuid | sí | — | FK → `admins.id` (SET NULL) |
 | `created_at` / `updated_at` | timestamptz | no | `now()` | — |
 
@@ -149,8 +157,12 @@ la tarifa); o `pending` → (rechazar, **doble reembolso + facturas anuladas**) 
 | `driver_id` | uuid | sí | — | FK → `drivers.user_id` (CASCADE) |
 | `vehicle_id` | uuid | sí | — | FK → `vehicles.id` (CASCADE) |
 | `file_url` | text | sí | — | Referencia (path) del archivo en el bucket privado de Supabase Storage; se lee con URL firmada. NULL = documento registrado sin archivo adjunto |
-| `expires_at` | date | sí | — | Vencimiento (alimentará las alertas del panel) |
-| `status` | document_status | no | `'valid'` | `valid` \| `expired` \| `rejected` |
+| `expires_at` | date | sí | — | Vencimiento. **Eje de vigencia — inerte desde 2026-08-11** (D10) |
+| `status` | document_status | no | `'valid'` | `valid` \| `expired` \| `rejected`. **Eje de vigencia — inerte** (ya no se usa; la revisión vive en `approval_status`) |
+| `approval_status` | document_approval | no | `'pending'` | **Eje de revisión**: `pending` \| `approved` \| `rejected`. Desde la app nace `pending`; subido por el admin nace `approved` (autoridad). Los preexistentes se backfillearon a `approved` (2026-08-11) |
+| `rejection_reason` | text | sí | — | Motivo del rechazo, visible al solicitante para corregir y reenviar (2026-08-11) |
+| `reviewed_by` | uuid | sí | — | FK → `admins.id` (SET NULL). Quién revisó el documento (2026-08-11) |
+| `reviewed_at` | timestamptz | sí | — | Cuándo se revisó (2026-08-11) |
 | `uploaded_by` | uuid | sí | — | FK → `admins.id` (SET NULL) |
 | `created_at` / `updated_at` | timestamptz | no | `now()` | — |
 
@@ -259,7 +271,7 @@ Mismo versionado condicional que `memberships` (sin tabla hija de beneficios).
 | `id` | uuid | no | `gen_random_uuid()` | PK |
 | `driver_subscription_id` | uuid | no | — | FK → `driver_subscriptions.id` (RESTRICT) |
 | `invoice_id` | uuid | sí | — | FK → `invoices.id` (RESTRICT) |
-| `period_start` / `period_end` | timestamptz | no | — | Ventana **exacta** que cubre este pago. Al aprobar al afiliado se re-anclan consecutivamente desde ese momento |
+| `period_start` / `period_end` | timestamptz | **sí** | — | Ventana que cubre este pago. **NULL hasta que se establece el inicio de tarifa** (solicitudes-app 2026-08-11): `enrollOnClient`/`enrollDebtOnClient` crean la semana **sin fechas** y `enrollment.approve` (startTariff) las ancla consecutivas. Antes no existe ninguna fecha de período (solo `created_at`/`paid_at`) |
 | `amount_usd` | numeric(10,2) | no | — | Snapshot |
 | `status` | subscription_payment_status | no | `'pending'` | `pending` \| `paid` \| `overdue` \| `refunded`. Con el **motor de deuda (v8)**: `pending` = cargo emitido sin pagar (sin factura aún), `overdue` = semana ya arrancada sin pagar = **deuda** |
 | `charge_kind` | subscription_charge_kind | no | `'period'` | **v8**: `period` (semana de tarifa) \| `penalty` (multa por incumplimiento). La vista muestra la multa como "Penalización" en vez del nombre del plan |
@@ -461,11 +473,12 @@ Claves actuales:
 |---|---|
 | `admin_status` | `active`, `suspended` |
 | `user_status` | `active`, `suspended` |
-| `driver_status` | `pending`, `scheduled`, `approved`, `rejected`, `suspended`, `paused`, `overdue`, `penalized` (`scheduled` = aprobado con inicio el próximo lunes, mig. `1752370000000` 2026-08-09; `paused` en Fase A; `overdue`/`penalized` añadidos en B1 del motor de deuda el 2026-07-23) |
+| `driver_status` | `applicant` (solicitud de la app, mig. `1752380000000` 2026-08-11), `pending`, `scheduled`, `approved`, `rejected`, `suspended`, `paused`, `overdue`, `penalized` (`scheduled` = aprobado con inicio el próximo lunes, mig. `1752370000000` 2026-08-09; `paused` en Fase A; `overdue`/`penalized` añadidos en B1 del motor de deuda el 2026-07-23) |
 | `driver_source` | `app`, `admin` |
 | `vehicle_approval` | `pending`, `approved`, `rejected` |
 | `requirement_applies_to` | `driver`, `vehicle` |
-| `document_status` | `valid`, `expired`, `rejected` |
+| `document_status` | `valid`, `expired`, `rejected` (**eje de vigencia, inerte** desde 2026-08-11) |
+| `document_approval` | `pending`, `approved`, `rejected` (**eje de revisión** de documentos, mig. `1752380000000` 2026-08-11) |
 | `billing_period` | `daily`, `weekly`, `monthly`, `annual` |
 | `subscription_status` | `pending_payment`, `active`, `scheduled`, `expired`, `cancelled` |
 | `membership_payment_status` | `pending`, `paid`, `refunded` |

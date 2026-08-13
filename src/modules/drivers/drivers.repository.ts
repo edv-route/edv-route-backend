@@ -16,7 +16,7 @@ export interface DriverSubscriptionSummary {
 
 /** List projection (multi-table) - anchored to the generated row models. */
 export type DriverListItem = Pick<UserRow, 'fullName' | 'email' | 'phone'> &
-  Pick<DriverRow, 'userId' | 'nationalId' | 'status' | 'source' | 'registrationStep' | 'createdAt'> & {
+  Pick<DriverRow, 'userId' | 'nationalId' | 'status' | 'source' | 'registrationStep' | 'createdAt' | 'tariffStartSetAt'> & {
     subscription: DriverSubscriptionSummary | null;
     /** Outstanding debt (membership + owed tariff weeks), USD string ("0.00" if none). */
     debtUsd: string;
@@ -46,12 +46,17 @@ export interface CreateDriverData {
   registeredBy: string | null;
   /** Registration channel. Defaults to 'admin' when omitted. */
   source?: 'admin' | 'app';
+  /** Initial driver_status. Defaults to 'pending'; the app channel uses 'applicant'. */
+  status?: 'pending' | 'applicant';
+  /** When true, stamps accepted_privacy_at = now() (app step-1 privacy consent). */
+  acceptedPrivacy?: boolean;
 }
 
 const LIST_COLUMNS = `
   d.user_id AS "userId", u.full_name AS "fullName", u.email, u.phone,
   d.national_id AS "nationalId", d.status, d.source,
-  d.registration_step AS "registrationStep", d.created_at AS "createdAt"
+  d.registration_step AS "registrationStep", d.created_at AS "createdAt",
+  d.tariff_start_set_at AS "tariffStartSetAt"
 `;
 
 /**
@@ -71,6 +76,7 @@ export class DriversRepository {
 
   async list(opts: {
     status?: string;
+    source?: string;
     search?: string;
     page: number;
     limit: number;
@@ -85,6 +91,14 @@ export class DriversRepository {
       // cache would reject a newly added enum value (see the note in
       // plugins/subscription-scheduler.ts).
       where.push(`d.status::text = $${values.length}`);
+    } else {
+      // Afiliados default: app solicitudes (applicant) live in their own section
+      // (source=app & status=applicant); they never show up in the affiliate list.
+      where.push(`d.status::text <> 'applicant'`);
+    }
+    if (opts.source) {
+      values.push(opts.source);
+      where.push(`d.source::text = $${values.length}`);
     }
     if (opts.search) {
       values.push(`%${opts.search}%`);
@@ -180,14 +194,27 @@ export class DriversRepository {
     );
     const userId = rows[0]!.id;
     await client.query(
-      `INSERT INTO drivers (user_id, national_id, source, registered_by, registration_step)
-       VALUES ($1, $2, $3, $4, $5)`,
-      [userId, data.nationalId, data.source ?? 'admin', data.registeredBy, registrationStep],
+      `INSERT INTO drivers
+         (user_id, national_id, source, registered_by, registration_step, status, accepted_privacy_at)
+       VALUES ($1, $2, $3, $4, $5, $6, CASE WHEN $7 THEN now() ELSE NULL END)`,
+      [
+        userId,
+        data.nationalId,
+        data.source ?? 'admin',
+        data.registeredBy,
+        registrationStep,
+        data.status ?? 'pending',
+        data.acceptedPrivacy ?? false,
+      ],
     );
     return userId;
   }
 
-  /** Inserts a vehicle on the given client (admin-registered = approved). */
+  /**
+   * Inserts a vehicle on the given client. `approvalStatus` defaults to
+   * `approved` (admin channel = authority); the self-service app passes
+   * `pending` so the admin reviews it before the solicitud is approved.
+   */
   async insertVehicle(
     client: pg.PoolClient,
     driverId: string,
@@ -200,11 +227,12 @@ export class DriversRepository {
       plate?: string | null;
     },
     registeredBy: string | null,
+    approvalStatus: 'approved' | 'pending' = 'approved',
   ): Promise<string> {
     const { rows } = await client.query<{ id: string }>(
       `INSERT INTO vehicles
          (driver_id, vehicle_type_id, brand, model, year, color, plate, approval_status, registered_by)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, 'approved', $8) RETURNING id`,
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id`,
       [
         driverId,
         input.vehicleTypeId ?? null,
@@ -213,25 +241,32 @@ export class DriversRepository {
         input.year ?? null,
         input.color ?? null,
         input.plate?.trim().toUpperCase() || null,
+        approvalStatus,
         registeredBy,
       ],
     );
     return rows[0]!.id;
   }
 
-  /** Inserts a document's metadata owned by a driver XOR a vehicle (file attached later). */
+  /**
+   * Inserts a document's metadata owned by a driver XOR a vehicle (file attached
+   * later). `approvalStatus` defaults to `approved` (admin channel = authority);
+   * the self-service app passes `pending` so the admin reviews it.
+   */
   async insertDocument(
     client: pg.PoolClient,
     owner: { driverId: string } | { vehicleId: string },
     input: { requirementId: number; expiresAt?: string | null },
     uploadedBy: string | null,
+    approvalStatus: 'approved' | 'pending' = 'approved',
   ): Promise<string> {
     const driverId = 'driverId' in owner ? owner.driverId : null;
     const vehicleId = 'vehicleId' in owner ? owner.vehicleId : null;
     const { rows } = await client.query<{ id: string }>(
-      `INSERT INTO documents (requirement_id, driver_id, vehicle_id, file_url, expires_at, uploaded_by)
-       VALUES ($1, $2, $3, NULL, $4, $5) RETURNING id`,
-      [input.requirementId, driverId, vehicleId, input.expiresAt ?? null, uploadedBy],
+      `INSERT INTO documents
+         (requirement_id, driver_id, vehicle_id, file_url, expires_at, approval_status, uploaded_by)
+       VALUES ($1, $2, $3, NULL, $4, $5, $6) RETURNING id`,
+      [input.requirementId, driverId, vehicleId, input.expiresAt ?? null, approvalStatus, uploadedBy],
     );
     return rows[0]!.id;
   }
@@ -251,7 +286,7 @@ export class DriversRepository {
          (SELECT COALESCE(json_agg(json_build_object(
             'id', v.id, 'vehicleTypeId', v.vehicle_type_id, 'brand', v.brand,
             'model', v.model, 'year', v.year, 'color', v.color, 'plate', v.plate,
-            'approvalStatus', v.approval_status,
+            'approvalStatus', v.approval_status, 'rejectionReason', v.rejection_reason,
             'images', (SELECT COALESCE(json_agg(json_build_object('id', vi.id, 'position', vi.position)
                          ORDER BY vi.position), '[]'::json)
                        FROM vehicle_images vi WHERE vi.vehicle_id = v.id)
@@ -260,7 +295,9 @@ export class DriversRepository {
          (SELECT COALESCE(json_agg(json_build_object(
             'id', doc.id, 'requirementId', doc.requirement_id, 'requirementName', r.name,
             'appliesTo', r.applies_to, 'vehicleId', doc.vehicle_id, 'fileUrl', doc.file_url,
-            'expiresAt', doc.expires_at, 'status', doc.status) ORDER BY doc.created_at), '[]'::json)
+            'expiresAt', doc.expires_at, 'status', doc.status,
+            'approvalStatus', doc.approval_status, 'rejectionReason', doc.rejection_reason
+            ) ORDER BY doc.created_at), '[]'::json)
           FROM documents doc JOIN requirements r ON r.id = doc.requirement_id
           WHERE doc.driver_id = d.user_id
              OR doc.vehicle_id IN (SELECT id FROM vehicles WHERE driver_id = d.user_id)
@@ -364,7 +401,42 @@ export class DriversRepository {
             'invoiceIds', ps.context->'invoiceIds')
           FROM payment_submissions ps
           WHERE ps.driver_id = d.user_id AND ps.status = 'pending'
-          LIMIT 1) AS "pendingSubmission",
+          ORDER BY ps.created_at DESC LIMIT 1) AS "pendingSubmission",
+         -- Every pending payment (2026-08-12: multiple allowed), so the profile can
+         -- list each with its amount instead of only showing the most recent.
+         (SELECT COALESCE(json_agg(json_build_object(
+            'id', ps.id, 'submissionNumber', ps.submission_number::text,
+            'amountUsd', ps.amount_usd::text, 'purpose', ps.purpose,
+            'createdAt', ps.created_at, 'invoiceIds', ps.context->'invoiceIds',
+            -- N° of every invoice this payment covers (by receipt link or the debt
+            -- invoiceIds it targets), so the card names the exact factura.
+            'invoiceNumbers', (
+              SELECT COALESCE(json_agg(i.invoice_number::text ORDER BY i.invoice_number), '[]'::json)
+              FROM invoices i
+              WHERE i.submission_id = ps.id
+                 OR i.id::text IN (SELECT jsonb_array_elements_text(ps.context->'invoiceIds'))))
+            ORDER BY ps.created_at DESC), '[]'::json)
+          FROM payment_submissions ps
+          WHERE ps.driver_id = d.user_id AND ps.status = 'pending') AS "pendingSubmissions",
+         -- Multiple pending payments (2026-08-12): how many are under review, plus
+         -- the UNION of every invoice they cover — so the profile knows which debt
+         -- is still UNRESERVED and can offer a new payment for the rest.
+         (SELECT count(*)::int FROM payment_submissions ps
+          WHERE ps.driver_id = d.user_id AND ps.status = 'pending') AS "pendingCount",
+         (SELECT COALESCE(array_agg(DISTINCT inv), '{}') FROM (
+            SELECT jsonb_array_elements_text(ps.context->'invoiceIds') AS inv
+            FROM payment_submissions ps
+            WHERE ps.driver_id = d.user_id AND ps.status = 'pending'
+              AND jsonb_typeof(ps.context->'invoiceIds') = 'array'
+            UNION
+            SELECT mp.invoice_id::text FROM membership_payments mp
+            JOIN payment_submissions ps ON ps.id = mp.submission_id
+            WHERE ps.driver_id = d.user_id AND ps.status = 'pending' AND mp.invoice_id IS NOT NULL
+            UNION
+            SELECT sp2.invoice_id::text FROM subscription_payments sp2
+            JOIN payment_submissions ps ON ps.id = sp2.submission_id
+            WHERE ps.driver_id = d.user_id AND ps.status = 'pending' AND sp2.invoice_id IS NOT NULL
+          ) cov WHERE inv IS NOT NULL) AS "coveredInvoiceIds",
          (SELECT CASE WHEN ps.status = 'rejected'
                     THEN json_build_object('rejectionReason', ps.rejection_reason,
                            'reviewedAt', ps.reviewed_at)
@@ -377,5 +449,42 @@ export class DriversRepository {
       [userId],
     );
     return rows[0] ?? null;
+  }
+
+  /**
+   * When the debt engine will EMIT this driver's next weekly charge: the billing
+   * Friday (billing_day_of_week/hour) of the week BEFORE his paid coverage ends —
+   * the exact moment debt-scheduler issues next week's charge. Returns null when
+   * the engine is off, there is no active weekly coverage, or that Friday already
+   * passed (the charge is then already emitted/pending). Config read from app_settings.
+   */
+  async weeklyNextChargeAt(driverId: string): Promise<string | null> {
+    const { rows } = await this.db.query<{ nextChargeAt: Date | string | null }>(
+      `WITH cfg AS (
+         SELECT
+           (SELECT (value #>> '{}')::boolean FROM app_settings WHERE key = 'debt_engine_enabled') AS enabled,
+           COALESCE((SELECT value #>> '{}' FROM app_settings WHERE key = 'business_timezone'), 'America/Caracas') AS tz,
+           COALESCE((SELECT (value #>> '{}')::int FROM app_settings WHERE key = 'billing_day_of_week'), 5) AS bdow,
+           COALESCE((SELECT (value #>> '{}')::int FROM app_settings WHERE key = 'billing_hour'), 18) AS bh
+       ), cov AS (
+         SELECT max(spp.period_end) AS paid_until
+         FROM subscription_payments spp
+         JOIN driver_subscriptions ds ON ds.id = spp.driver_subscription_id
+         WHERE ds.driver_id = $1 AND ds.status = 'active'
+           AND spp.status = 'paid' AND spp.charge_kind::text = 'period'
+       )
+       SELECT (
+         date_trunc('week', (cov.paid_until - interval '1 day') AT TIME ZONE cfg.tz)
+           + make_interval(days => cfg.bdow - 1, hours => cfg.bh)
+       ) AT TIME ZONE cfg.tz AS "nextChargeAt"
+       FROM cfg, cov
+       WHERE cfg.enabled IS TRUE AND cov.paid_until IS NOT NULL`,
+      [driverId],
+    );
+    const raw = rows[0]?.nextChargeAt ?? null;
+    if (!raw) return null;
+    const when = new Date(raw);
+    // Only expose a FUTURE emission; a past one means the charge is already emitted.
+    return when.getTime() > Date.now() ? when.toISOString() : null;
   }
 }

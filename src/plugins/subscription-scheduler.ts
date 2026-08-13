@@ -89,6 +89,9 @@ export default fp(
         // 3) Start a scheduled plan change whose paid coverage began.
         // Pending drivers also have scheduled subscriptions (wizard step 4):
         // those must only start at approval, hence the approved filter.
+        // solicitudes-app: an approved driver whose tariff START hasn't been set
+        // yet (tariff_start_set_at null) also has a scheduled subscription — it
+        // must NOT auto-start here; it waits for `startTariff`, which anchors it.
         const started = await app.db.query<{ id: string; driver_id: string; plan_id: number }>(
           `UPDATE driver_subscriptions ds SET
              status = 'active',
@@ -98,6 +101,7 @@ export default fp(
            FROM subscription_payments sp, drivers d
            WHERE ds.status = 'scheduled'
              AND d.user_id = ds.driver_id AND d.status::text = 'approved'
+             AND d.tariff_start_set_at IS NOT NULL
              AND sp.driver_subscription_id = ds.id AND sp.status = 'paid'
              AND sp.period_start <= now() AND sp.period_end > now()
              AND NOT EXISTS (

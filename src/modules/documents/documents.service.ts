@@ -38,7 +38,10 @@ export class DocumentsService {
   /**
    * Stores the file and links it to the document record. The MIME type is
    * validated against the sniffed content, never trusting the client's
-   * declared type or filename.
+   * declared type or filename. When the driver (app channel) replaces a file,
+   * the document goes back to `pending` review: a prior verdict no longer
+   * applies to the new file (anti-fraud gate of solicitudes-app). An admin
+   * upload keeps the current verdict (admin-registered docs are born approved).
    */
   async attachFile(
     documentId: string,
@@ -75,7 +78,8 @@ export class DocumentsService {
     // Path derived server-side: the client never chooses where it lands.
     const path = `${document.driverId}/${documentId}.${extensionFor(sniffed)}`;
     await storage.upload(path, file.buffer, sniffed);
-    await this.documents.setFileUrl(documentId, path);
+    // App/driver channel (ownerUserId set): re-open review on the replaced file.
+    await this.documents.setFileUrl(documentId, path, ownerUserId !== null);
 
     await writeAudit(this.app.db, {
       actorAdminId: adminId,
@@ -86,6 +90,37 @@ export class DocumentsService {
       data: { driverId: document.driverId, mimeType: sniffed, bytes: file.buffer.length },
     });
     return { path };
+  }
+
+  /**
+   * Admin review of a document (proposal: solicitudes-app). Approving clears any
+   * rejection reason; rejecting requires a reason the applicant sees to fix it.
+   * A solicitud cannot be approved until every one of its documents is approved.
+   */
+  async review(
+    documentId: string,
+    approve: boolean,
+    reason: string | null,
+    adminId: string,
+  ): Promise<void> {
+    const document = await this.requireDocument(documentId);
+    const trimmed = reason?.trim() || null;
+    if (!approve && !trimmed) {
+      throw this.app.httpErrors.badRequest('Debe indicar el motivo del rechazo');
+    }
+    await this.documents.review(
+      documentId,
+      approve ? 'approved' : 'rejected',
+      approve ? null : trimmed,
+      adminId,
+    );
+    await writeAudit(this.app.db, {
+      actorAdminId: adminId,
+      eventType: approve ? 'document.approved' : 'document.rejected',
+      entity: 'documents',
+      entityId: documentId,
+      data: { driverId: document.driverId, ...(approve ? {} : { reason: trimmed }) },
+    });
   }
 
   /** Time-limited link; the bucket is private and never served publicly. */

@@ -37,6 +37,12 @@ export default interface Drivers {
   paused_at: Date | null;
 
   reactivates_at: Date | null;
+
+  accepted_privacy_at: Date | null;
+
+  accepted_terms_at: Date | null;
+
+  tariff_start_set_at: Date | null;
 }
 
 /** Represents the initializer for the table public.drivers */
@@ -78,6 +84,12 @@ export interface DriversInitializer {
   paused_at?: Date | null;
 
   reactivates_at?: Date | null;
+
+  accepted_privacy_at?: Date | null;
+
+  accepted_terms_at?: Date | null;
+
+  tariff_start_set_at?: Date | null;
 }
 
 /** Represents the mutator for the table public.drivers */
@@ -113,4 +125,10 @@ export interface DriversMutator {
   paused_at?: Date | null;
 
   reactivates_at?: Date | null;
+
+  accepted_privacy_at?: Date | null;
+
+  accepted_terms_at?: Date | null;
+
+  tariff_start_set_at?: Date | null;
 }

@@ -1,4 +1,4 @@
-import { registerBody } from '../drivers/drivers.schemas.js';
+import { personProperties } from '../drivers/drivers.schemas.js';
 
 export const driverPublicSchema = {
   type: 'object',
@@ -6,7 +6,13 @@ export const driverPublicSchema = {
     userId: { type: 'string', format: 'uuid' },
     fullName: { type: 'string' },
     nationalId: { type: ['string', 'null'] },
-    status: { type: 'string', enum: ['pending', 'approved', 'rejected', 'suspended'] },
+    status: {
+      type: 'string',
+      enum: [
+        'applicant', 'pending', 'scheduled', 'approved',
+        'rejected', 'suspended', 'paused', 'overdue', 'penalized',
+      ],
+    },
     registrationStep: { type: ['integer', 'null'] },
     phone: { type: ['string', 'null'] },
     email: { type: ['string', 'null'] },
@@ -93,7 +99,7 @@ export const appVehicleTypesSchema = {
   },
 } as const;
 
-/** Current active membership for the app's enrollment summary; null when none. */
+/** Current active membership + benefits for the app's informational pre-screen. */
 export const appMembershipSchema = {
   response: {
     200: {
@@ -101,6 +107,40 @@ export const appMembershipSchema = {
       properties: {
         name: { type: 'string' },
         priceUsd: { type: 'string' },
+        benefits: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              id: { type: 'integer' },
+              name: { type: 'string' },
+              description: { type: ['string', 'null'] },
+            },
+          },
+        },
+      },
+    },
+  },
+} as const;
+
+/** The driver's alta/arrears debt for the app's deferred payment screen. */
+export const appDebtSchema = {
+  response: {
+    200: {
+      type: 'object',
+      properties: {
+        totalUsd: { type: 'string' },
+        items: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              label: { type: 'string' },
+              amountUsd: { type: 'string' },
+            },
+          },
+        },
+        hasPendingPayment: { type: 'boolean' },
       },
     },
   },
@@ -125,13 +165,24 @@ export const appPlansSchema = {
 } as const;
 
 /**
- * Self-service registration (app): same body contract as the panel register;
- * the channel-specific obligations (credentials, >=1 vehicle, every required
- * document) are enforced in the service. Responds with a driver token so the
- * app can immediately upload files and submit the payment.
+ * Self-service registration (app) — STEP 1 ONLY (proposal: solicitudes-app):
+ * personal data + credentials + privacy consent. No vehicles, documents or
+ * payment here — those are added afterwards from the app once the driver logs
+ * in as an `applicant`. The service enforces credentials and the privacy check.
  */
+export const appRegisterBody = {
+  type: 'object',
+  required: ['firstName', 'lastName', 'nationalId', 'password', 'acceptedPrivacy'],
+  additionalProperties: false,
+  properties: {
+    ...personProperties,
+    // Privacy consent captured at registration; the service requires it true.
+    acceptedPrivacy: { type: 'boolean' },
+  },
+} as const;
+
 export const driverRegisterSchema = {
-  body: registerBody,
+  body: appRegisterBody,
   response: {
     201: {
       type: 'object',

@@ -16,9 +16,9 @@ export default interface SubscriptionPayments {
 
   invoice_id: InvoicesId | null;
 
-  period_start: Date;
+  period_start: Date | null;
 
-  period_end: Date;
+  period_end: Date | null;
 
   amount_usd: string;
 
@@ -48,9 +48,9 @@ export interface SubscriptionPaymentsInitializer {
 
   invoice_id?: InvoicesId | null;
 
-  period_start: Date;
+  period_start?: Date | null;
 
-  period_end: Date;
+  period_end?: Date | null;
 
   amount_usd: string;
 
@@ -82,9 +82,9 @@ export interface SubscriptionPaymentsMutator {
 
   invoice_id?: InvoicesId | null;
 
-  period_start?: Date;
+  period_start?: Date | null;
 
-  period_end?: Date;
+  period_end?: Date | null;
 
   amount_usd?: string;
 

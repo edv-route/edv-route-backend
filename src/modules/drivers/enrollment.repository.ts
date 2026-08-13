@@ -69,8 +69,9 @@ export class EnrollmentRepository {
     );
     const subscriptionId = subRows[0]!.id;
 
-    // Owed periods: N rows with exact consecutive windows (re-anchored to real
-    // dates when the DRIVER is approved). Each week is its OWN invoice.
+    // Owed periods: N rows WITHOUT dates. Period windows are anchored only when
+    // the admin sets the tariff start (enrollment.approve) — no provisional dates
+    // exist beforehand (solicitudes-app, 2026-08-11). Each week is its OWN invoice.
     const invoiceNumbers = [membershipInvoice.invoiceNumber];
     for (let i = 0; i < input.periods; i++) {
       const weekInvoice = await this.createInvoice(
@@ -81,10 +82,8 @@ export class EnrollmentRepository {
         `INSERT INTO subscription_payments
            (driver_subscription_id, invoice_id, period_start, period_end,
             amount_usd, status, registered_by, submission_id)
-         VALUES ($1, $2,
-                 now() + ($3::interval * $4), now() + ($3::interval * ($4 + 1)),
-                 $5, 'pending', $6, $7)`,
-        [subscriptionId, weekInvoice.id, input.periodInterval, i, input.planPriceUsd, input.registeredBy, submissionId],
+         VALUES ($1, $2, NULL, NULL, $3, 'pending', $4, $5)`,
+        [subscriptionId, weekInvoice.id, input.planPriceUsd, input.registeredBy, submissionId],
       );
     }
 
@@ -183,8 +182,10 @@ export class EnrollmentRepository {
    * the first tariff week are inserted `pending` (no `paid_at`), tied to that
    * invoice; the subscription is `scheduled`. The driver stays pending and cannot
    * be approved until the debt is settled (settling flips these rows to `paid`,
-   * and then the invoice reads as paid). Dates anchor at approval, like the paid
-   * flow. The debt engine ignores these rows while the driver is not approved.
+   * and then the invoice reads as paid). The week is created WITHOUT period dates
+   * (NULL): they are anchored only when the tariff start is set (startTariff), so
+   * no provisional dates exist beforehand (solicitudes-app 2026-08-11). The debt
+   * engine ignores these rows while the driver has no tariff start set.
    */
   async enrollDebtOnClient(
     client: pg.PoolClient,
@@ -196,9 +197,6 @@ export class EnrollmentRepository {
       planPriceUsd: number;
       /** Admin who registered (panel); null for self-service app registrations. */
       registeredBy: string | null;
-      /** Debt engine on + weekly: anchor the first week to the buying Monday. */
-      anchorWeekly: boolean;
-      timezone: string;
     },
   ): Promise<{ invoiceNumbers: string[] }> {
     // Billing redesign (2026-08-04): TWO debt invoices, one per concept
@@ -231,19 +229,11 @@ export class EnrollmentRepository {
       client, input.driverId, input.planPriceUsd, input.registeredBy,
     );
     await client.query(
-      `WITH anchor AS (
-         SELECT CASE WHEN $5::boolean THEN
-                       (CASE WHEN extract(isodow FROM (now() AT TIME ZONE $6)) = 1
-                             THEN date_trunc('week', (now() AT TIME ZONE $6))
-                             ELSE date_trunc('week', (now() AT TIME ZONE $6)) + interval '7 days'
-                        END) AT TIME ZONE $6
-                     ELSE now() END AS start
-       )
-       INSERT INTO subscription_payments
+      `INSERT INTO subscription_payments
          (driver_subscription_id, invoice_id, period_start, period_end,
           amount_usd, status, registered_by)
-       SELECT $1, $2, a.start, a.start + interval '7 days', $3, 'pending', $4 FROM anchor a`,
-      [subscriptionId, weekInvoice.id, input.planPriceUsd, input.registeredBy, input.anchorWeekly, input.timezone],
+       VALUES ($1, $2, NULL, NULL, $3, 'pending', $4)`,
+      [subscriptionId, weekInvoice.id, input.planPriceUsd, input.registeredBy],
     );
 
     await client.query(
@@ -298,7 +288,8 @@ export class EnrollmentRepository {
                           THEN date_trunc('week', (now() AT TIME ZONE $3)) + interval '7 days'
                           ELSE date_trunc('week', (now() AT TIME ZONE $3)) END) AT TIME ZONE $3 AS monday
            ), ordered AS (
-             SELECT id, row_number() OVER (ORDER BY period_start) - 1 AS idx
+             -- Order by creation (period_start is NULL until this anchor runs).
+             SELECT id, row_number() OVER (ORDER BY created_at, id) - 1 AS idx
              FROM subscription_payments
              WHERE driver_subscription_id = $1 AND status = 'paid'
            )
@@ -349,7 +340,10 @@ export class EnrollmentRepository {
            status = CASE WHEN $4::boolean AND a.monday > now()
                          THEN 'scheduled'::driver_status
                          ELSE 'approved'::driver_status END,
-           is_available = NOT ($4::boolean AND a.monday > now())
+           is_available = NOT ($4::boolean AND a.monday > now()),
+           -- Decoupled tariff start (solicitudes-app): anchoring the tariff IS
+           -- setting the start, atomically. From here the debt engine bills him.
+           tariff_start_set_at = now()
          FROM anchor a
          WHERE d.user_id = $1`,
         [driverId, timezone, nextMonday, anchorWeekly],
@@ -845,22 +839,6 @@ export class EnrollmentRepository {
       settledCharges: charges.length + memberships.length,
       totalUsd: total.toFixed(2),
     };
-  }
-
-  /**
-   * External payment (design v8 + option A, 2026-07-30): the admin registers
-   * money the driver settled outside the system, in its own transaction. Thin
-   * wrapper over settleDebtOnClient (shared with the v9 approval flow).
-   */
-  async registerExternalPayment(input: {
-    driverId: string;
-    registeredBy: string;
-  }): Promise<{ settledCharges: number; totalUsd: string } | null> {
-    return withTransaction(this.db, async (client) => {
-      const result = await this.settleDebtOnClient(client, input);
-      if (!result) return null;
-      return { settledCharges: result.settledCharges, totalUsd: result.totalUsd };
-    });
   }
 
   /**

@@ -1,7 +1,7 @@
 import argon2 from 'argon2';
 import type { FastifyInstance } from 'fastify';
 import { DriversService } from '../drivers/drivers.service.js';
-import type { CreateDriverInput, RegisterInput } from '../drivers/drivers.service.js';
+import type { CreateDriverInput } from '../drivers/drivers.service.js';
 import type { DriverAuthRepository, DriverProfile } from './driver-auth.repository.js';
 
 // Verified against when the national id is unknown or has no app password, so
@@ -59,6 +59,26 @@ export class DriverAuthService {
     return driver;
   }
 
+  /**
+   * Gate before a payment submission (proposal: solicitudes-app): an `applicant`
+   * cannot pay yet (his solicitud is not approved), and paying requires accepting
+   * the terms & conditions — stamps accepted_terms_at.
+   */
+  async assertPayableAndAcceptTerms(userId: string, acceptedTerms: boolean): Promise<void> {
+    const { httpErrors } = this.app;
+    const profile = await this.drivers.findProfileById(userId);
+    if (!profile) throw httpErrors.unauthorized('Sesión inválida');
+    if (profile.status === 'applicant') {
+      throw httpErrors.conflict(
+        'Tu solicitud aún no ha sido aprobada; no puedes registrar el pago todavía',
+      );
+    }
+    if (!acceptedTerms) {
+      throw httpErrors.badRequest('Debe aceptar los términos y condiciones para pagar');
+    }
+    await this.drivers.markTermsAccepted(userId);
+  }
+
   /** Active requirements (driver + vehicle) the registration wizard asks for. */
   listRequirements() {
     return this.drivers.listActiveRequirements();
@@ -84,52 +104,42 @@ export class DriverAuthService {
     return this.drivers.listActivePlans();
   }
 
+  /** "Completa tu solicitud" checklist for the authenticated applicant. */
+  getChecklist(userId: string) {
+    return this.drivers.getChecklist(userId);
+  }
+
+  /** The driver's current alta/arrears debt (for the app's deferred payment). */
+  getDebt(userId: string) {
+    return this.drivers.getDebt(userId);
+  }
+
   /**
-   * Self-service registration from the app. Reuses the single money path
-   * (`DriversService.register` with source='app'): the alta is emitted as DEBT
-   * and the driver stays `pending` until an admin approves. Channel rule: the 4
-   * wizard steps are mandatory here, so credentials, at least one vehicle and
-   * every active required document (driver + per-vehicle) must be present -
-   * these obligations live in this endpoint, not in the shared register.
-   * Returns a driver token so the app can upload files and submit the payment.
+   * Self-service registration from the app — STEP 1 ONLY (proposal:
+   * docs/proposals/solicitudes-app). Creates the identity + driver as an
+   * `applicant` (a solicitud, NOT an affiliate): no documents, no vehicle, no
+   * money. Documents and vehicles are added afterwards from the app; an admin
+   * reviews them and, on approving the solicitud, the driver is promoted to
+   * `approved` WITH his base debt. Privacy consent is captured here. Returns a
+   * driver token so the app can log in and complete the solicitud.
    */
-  async register(input: CreateDriverInput, extras: RegisterInput): Promise<DriverRegisterResult> {
+  async register(input: CreateDriverInput, acceptedPrivacy: boolean): Promise<DriverRegisterResult> {
     const { httpErrors } = this.app;
     if (!input.nationalId || !input.password) {
       throw httpErrors.badRequest('La cédula y la clave son obligatorias');
     }
-    if (extras.vehicles.length === 0) {
-      throw httpErrors.badRequest('Debe registrar al menos un vehículo');
-    }
-    const requirements = await this.drivers.listActiveRequirements();
-    const missingDriver = requirements.find(
-      (r) =>
-        r.appliesTo === 'driver' &&
-        r.isRequired &&
-        !extras.documents.some((d) => d.requirementId === r.id),
-    );
-    if (missingDriver) {
-      throw httpErrors.badRequest(`Falta un documento obligatorio del chofer: ${missingDriver.name}`);
-    }
-    const vehicleRequired = requirements.filter((r) => r.appliesTo === 'vehicle' && r.isRequired);
-    for (const vehicle of extras.vehicles) {
-      const missing = vehicleRequired.find(
-        (r) => !(vehicle.documents ?? []).some((d) => d.requirementId === r.id),
-      );
-      if (missing) {
-        throw httpErrors.badRequest(`Falta un documento obligatorio del vehículo: ${missing.name}`);
-      }
+    if (!acceptedPrivacy) {
+      throw httpErrors.badRequest('Debe aceptar la política de privacidad para continuar');
     }
 
-    // Money path is shared and app payments are never auto-settled. The alta is
-    // ALWAYS paid up front via a pending `enroll` submission (membership + N
-    // weeks), so defer the enrollment: no base debt is emitted here — the
-    // submission materializes the alta on approval, mirroring the panel.
+    // Reduced alta: no money (deferred), no children. The driver is born
+    // `applicant`; documents/vehicles come next from the app and the admin
+    // approves the solicitud, which is what emits the base debt.
     const result = await this.driversService.register(
       input,
-      { ...extras, payment: null, deferredEnrollment: true },
+      { payment: null, vehicles: [], documents: [], deferredEnrollment: true },
       null,
-      { source: 'app' },
+      { source: 'app', initialStatus: 'applicant', acceptedPrivacy: true },
     );
     const userId = result['userId'] as string;
     const token = this.app.jwt.sign({ sub: userId, type: 'driver' });

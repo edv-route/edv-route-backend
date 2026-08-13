@@ -59,8 +59,43 @@ export class DocumentsRepository {
     return rows[0] ?? null;
   }
 
-  async setFileUrl(id: string, fileUrl: string): Promise<void> {
+  /**
+   * Links (or replaces) the stored file. `resetApproval` re-opens the review:
+   * replacing the file invalidates any prior verdict, so an approved/rejected
+   * document goes back to `pending` (and its rejection reason/reviewer clear).
+   * Used for the app/driver channel — the anti-fraud gate of solicitudes-app,
+   * where an applicant must not be able to swap an approved file for another.
+   */
+  async setFileUrl(id: string, fileUrl: string, resetApproval = false): Promise<void> {
+    if (resetApproval) {
+      await this.db.query(
+        `UPDATE documents
+            SET file_url = $2, approval_status = 'pending',
+                rejection_reason = NULL, reviewed_by = NULL, reviewed_at = NULL
+          WHERE id = $1`,
+        [id, fileUrl],
+      );
+      return;
+    }
     await this.db.query('UPDATE documents SET file_url = $2 WHERE id = $1', [id, fileUrl]);
+  }
+
+  /**
+   * Records the admin's review verdict (approve/reject). `rejectionReason` is
+   * shown to the applicant so he can fix and resubmit; it's cleared on approval.
+   */
+  async review(
+    id: string,
+    approvalStatus: 'approved' | 'rejected',
+    rejectionReason: string | null,
+    reviewedBy: string,
+  ): Promise<void> {
+    await this.db.query(
+      `UPDATE documents
+          SET approval_status = $2, rejection_reason = $3, reviewed_by = $4, reviewed_at = now()
+        WHERE id = $1`,
+      [id, approvalStatus, rejectionReason, reviewedBy],
+    );
   }
 
   async delete(id: string): Promise<void> {

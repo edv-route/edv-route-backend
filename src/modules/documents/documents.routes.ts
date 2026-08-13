@@ -80,6 +80,34 @@ const documentsRoutes: FastifyPluginAsync = async (app) => {
     service.getFileUrl(req.params.id),
   );
 
+  /** Review verdict (solicitudes-app): approve, or reject with a reason. */
+  app.post<{ Params: { id: string } }>(
+    '/:id/approve',
+    { schema: { params: documentIdParam } },
+    async (req, reply) => {
+      await service.review(req.params.id, true, null, req.user.sub);
+      return reply.code(200).send({ ok: true });
+    },
+  );
+
+  app.post<{ Params: { id: string }; Body: { reason?: string } }>(
+    '/:id/reject',
+    {
+      schema: {
+        params: documentIdParam,
+        body: {
+          type: 'object',
+          additionalProperties: false,
+          properties: { reason: { type: 'string', minLength: 1, maxLength: 500 } },
+        },
+      },
+    },
+    async (req, reply) => {
+      await service.review(req.params.id, false, req.body?.reason ?? null, req.user.sub);
+      return reply.code(200).send({ ok: true });
+    },
+  );
+
   /** Removes a document (and its stored file). Used from the profile and vehicle detail. */
   app.delete<{ Params: { id: string } }>(
     '/:id',

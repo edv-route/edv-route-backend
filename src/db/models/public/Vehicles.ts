@@ -31,6 +31,8 @@ export default interface Vehicles {
   created_at: Date;
 
   updated_at: Date;
+
+  rejection_reason: string | null;
 }
 
 /** Represents the initializer for the table public.vehicles */
@@ -62,6 +64,8 @@ export interface VehiclesInitializer {
 
   /** Default value: now() */
   updated_at?: Date;
+
+  rejection_reason?: string | null;
 }
 
 /** Represents the mutator for the table public.vehicles */
@@ -89,4 +93,6 @@ export interface VehiclesMutator {
   created_at?: Date;
 
   updated_at?: Date;
+
+  rejection_reason?: string | null;
 }

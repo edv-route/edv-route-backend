@@ -26,15 +26,22 @@ async function cleanupEnabled(db: pg.Pool): Promise<boolean> {
 }
 
 /**
- * Applicants eligible for purge (decision 2026-08-04):
+ * Applicants eligible for purge (decision 2026-08-04, extended for solicitudes-app
+ * 2026-08-13):
  *  - `pending` WITHOUT a live (pending/approved) payment submission, older than
  *    the grace period. "No live payment" = never finished step 4, OR the payment
  *    was rejected and never retried. A completed applicant awaiting review keeps
  *    a `pending` submission, so he is NOT selected (kept until approved/rejected).
- *  - `rejected` past the grace period (measured from the last status change).
- * `registration_step` is deliberately NOT used: the transactional register leaves
- * it null (=done) even before the files/payment arrive, so it cannot tell apart
- * an abandoned alta from a completed one.
+ *  - `applicant` (app registration born `applicant`) that stayed EMPTY — no
+ *    documents and no vehicles — past the grace period: a step-1-only registration
+ *    that was abandoned. An applicant who uploaded anything is "in progress" and
+ *    is left for the admin to approve/reject (not purged by time).
+ * `rejected` records are NOT purged (policy 2026-08-13): a rejected solicitud is
+ * kept on file so its cédula stays blocked from self-service re-registration; the
+ * applicant must contact an admin, who may reopen it. `registration_step` is
+ * deliberately NOT used: the transactional register leaves it null (=done) even
+ * before the files/payment arrive, so it cannot tell an abandoned alta from a
+ * completed one.
  */
 async function findExpiredApplicants(db: pg.Pool): Promise<string[]> {
   const { rows } = await db.query<{ userId: string }>(
@@ -46,8 +53,10 @@ async function findExpiredApplicants(db: pg.Pool): Promise<string[]> {
                SELECT 1 FROM payment_submissions ps
                 WHERE ps.driver_id = d.user_id
                   AND ps.status IN ('pending', 'approved')))
-         OR (d.status = 'rejected'
-             AND d.updated_at < now() - make_interval(days => $1))`,
+         OR (d.status = 'applicant'
+             AND d.created_at < now() - make_interval(days => $1)
+             AND NOT EXISTS (SELECT 1 FROM documents doc WHERE doc.driver_id = d.user_id)
+             AND NOT EXISTS (SELECT 1 FROM vehicles v WHERE v.driver_id = d.user_id))`,
     [GRACE_DAYS],
   );
   return rows.map((r) => r.userId);

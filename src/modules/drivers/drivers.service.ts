@@ -99,7 +99,13 @@ export class DriversService {
     private readonly enrollment: EnrollmentRepository,
   ) {}
 
-  async list(opts: { status?: string; search?: string; page: number; limit: number }): Promise<DriverListResult> {
+  async list(opts: {
+    status?: string;
+    source?: string;
+    search?: string;
+    page: number;
+    limit: number;
+  }): Promise<DriverListResult> {
     const reminderDays = await this.getSetting('payment_reminder_days', 3);
     return this.drivers.list({ ...opts, reminderDays: Number(reminderDays) });
   }
@@ -107,6 +113,12 @@ export class DriversService {
   async getDetail(driverId: string): Promise<Record<string, unknown>> {
     const detail = await this.drivers.findDetail(driverId);
     if (!detail) throw this.app.httpErrors.notFound('Afiliado no encontrado');
+    // Debt engine (weekly): expose WHEN the next charge is emitted (the billing
+    // Friday) so the profile shows the real cobro date, not the coverage end.
+    const subscription = detail['subscription'] as Record<string, unknown> | null;
+    if (subscription && subscription['billingPeriod'] === 'weekly' && subscription['status'] === 'active') {
+      subscription['nextChargeAt'] = await this.drivers.weeklyNextChargeAt(driverId);
+    }
     return detail;
   }
 
@@ -142,7 +154,13 @@ export class DriversService {
     input: CreateDriverInput,
     extras: RegisterInput,
     adminId: string | null,
-    opts?: { source?: 'admin' | 'app' },
+    opts?: {
+      source?: 'admin' | 'app';
+      /** Initial driver_status. App solicitudes are born 'applicant'. */
+      initialStatus?: 'pending' | 'applicant';
+      /** Stamp accepted_privacy_at = now() (app step-1 consent). */
+      acceptedPrivacy?: boolean;
+    },
   ): Promise<Record<string, unknown>> {
     const person = await this.validatePersonalData(input);
     const { payment, vehicles, documents, deferredEnrollment } = extras;
@@ -151,6 +169,11 @@ export class DriversService {
     // (a driver/user for app, an admin for the panel).
     const source = opts?.source ?? 'admin';
     const registeredBy = source === 'app' ? null : adminId;
+    const initialStatus = opts?.initialStatus ?? 'pending';
+    const acceptedPrivacy = opts?.acceptedPrivacy ?? false;
+    // App documents/vehicles are born `pending` (the admin reviews them before
+    // the solicitud is approved); the panel is the authority -> `approved`.
+    const childApproval: 'approved' | 'pending' = source === 'app' ? 'pending' : 'approved';
 
     // Resolve catalog prices before opening the transaction (read-only lookups;
     // amounts are snapshotted at insert time). Mirrors the checks in `enroll`.
@@ -200,17 +223,12 @@ export class DriversService {
       );
       const plan = pRows[0];
       if (membership && plan) {
-        // The debt plan is weekly by query; anchor to Monday when the engine is on.
-        const anchorWeekly = await this.isDebtEngineOn();
-        const timezone = String(await this.getSetting('business_timezone', 'America/Caracas'));
         debtAlta = {
           membershipId: membership.id,
           membershipPriceUsd: Number(membership.priceUsd),
           planId: plan.id,
           planPriceUsd: Number(plan.priceUsd),
           registeredBy,
-          anchorWeekly,
-          timezone,
         };
       }
     }
@@ -251,22 +269,36 @@ export class DriversService {
         // The whole alta is transactional: no incremental step to resume (null).
         const userId = await this.drivers.insertUserAndDriver(
           client,
-          { ...person, registeredBy, source },
+          { ...person, registeredBy, source, status: initialStatus, acceptedPrivacy },
           null,
         );
         const createdVehicles: { id: string; documentIds: string[] }[] = [];
         for (const vehicle of vehicles) {
-          const vehicleId = await this.drivers.insertVehicle(client, userId, vehicle, registeredBy);
+          const vehicleId = await this.drivers.insertVehicle(
+            client,
+            userId,
+            vehicle,
+            registeredBy,
+            childApproval,
+          );
           const vDocIds: string[] = [];
           for (const doc of vehicle.documents ?? []) {
-            vDocIds.push(await this.drivers.insertDocument(client, { vehicleId }, doc, registeredBy));
+            vDocIds.push(
+              await this.drivers.insertDocument(client, { vehicleId }, doc, registeredBy, childApproval),
+            );
           }
           createdVehicles.push({ id: vehicleId, documentIds: vDocIds });
         }
         const documentIds: string[] = [];
         for (const doc of documents) {
           documentIds.push(
-            await this.drivers.insertDocument(client, { driverId: userId }, doc, registeredBy),
+            await this.drivers.insertDocument(
+              client,
+              { driverId: userId },
+              doc,
+              registeredBy,
+              childApproval,
+            ),
           );
         }
         let invoiceNumbers: string[] = [];
@@ -459,6 +491,106 @@ export class DriversService {
     }
   }
 
+  /**
+   * Admin review of a vehicle (proposal: solicitudes-app): approve, or reject
+   * with a reason the applicant sees. A solicitud needs every vehicle approved.
+   */
+  async reviewVehicle(
+    driverId: string,
+    vehicleId: string,
+    approve: boolean,
+    reason: string | null,
+    adminId: string,
+  ): Promise<void> {
+    await this.assertDriver(driverId);
+    const trimmed = reason?.trim() || null;
+    if (!approve && !trimmed) {
+      throw this.app.httpErrors.badRequest('Debe indicar el motivo del rechazo');
+    }
+    const { rowCount } = await this.app.db.query(
+      `UPDATE vehicles
+          SET approval_status = $3, rejection_reason = $4, updated_at = now()
+        WHERE id = $1 AND driver_id = $2`,
+      [vehicleId, driverId, approve ? 'approved' : 'rejected', approve ? null : trimmed],
+    );
+    if (rowCount === 0) throw this.app.httpErrors.notFound('Vehículo no encontrado');
+    await this.audit(adminId, approve ? 'vehicle.approved' : 'vehicle.rejected', 'drivers', driverId, {
+      vehicleId,
+      ...(approve ? {} : { reason: trimmed }),
+    });
+  }
+
+  /**
+   * App channel (solicitudes-app): the applicant adds a vehicle to his OWN
+   * solicitud (driverId from the token). Born `pending` (the admin reviews it);
+   * no admin actor. Files/images are uploaded afterwards.
+   */
+  async addApplicantVehicle(driverId: string, input: VehicleInput): Promise<{ id: string }> {
+    await this.assertDriver(driverId);
+    try {
+      const { rows } = await this.app.db.query<{ id: string }>(
+        `INSERT INTO vehicles
+           (driver_id, vehicle_type_id, brand, model, year, color, plate, approval_status, registered_by)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending', NULL) RETURNING id`,
+        [
+          driverId,
+          input.vehicleTypeId ?? null,
+          input.brand ?? null,
+          input.model ?? null,
+          input.year ?? null,
+          input.color ?? null,
+          input.plate?.trim().toUpperCase() || null,
+        ],
+      );
+      await this.audit(null, 'vehicle.registered', 'drivers', driverId, { plate: input.plate ?? null }, driverId);
+      return { id: rows[0]!.id };
+    } catch (err) {
+      if ((err as { code?: string }).code === UNIQUE_VIOLATION) {
+        throw this.app.httpErrors.conflict('Ya existe un vehículo con esa placa');
+      }
+      throw err;
+    }
+  }
+
+  /**
+   * App channel (solicitudes-app): the applicant adds a document to his OWN
+   * solicitud (driverId from the token). Born `pending`; vehicle documents must
+   * reference a vehicle that belongs to him. The file is uploaded afterwards.
+   */
+  async addApplicantDocument(driverId: string, input: DocumentInput): Promise<{ id: string }> {
+    await this.assertDriver(driverId);
+    const { rows } = await this.app.db.query<{ appliesTo: string }>(
+      'SELECT applies_to AS "appliesTo" FROM requirements WHERE id = $1 AND active',
+      [input.requirementId],
+    );
+    const requirement = rows[0];
+    if (!requirement) throw this.app.httpErrors.badRequest('Requerimiento no válido');
+    const isVehicleDoc = requirement.appliesTo === 'vehicle';
+    if (isVehicleDoc && !input.vehicleId) {
+      throw this.app.httpErrors.badRequest('Este requerimiento aplica a un vehículo: indica cuál');
+    }
+    if (isVehicleDoc) {
+      const { rowCount } = await this.app.db.query(
+        'SELECT 1 FROM vehicles WHERE id = $1 AND driver_id = $2',
+        [input.vehicleId, driverId],
+      );
+      if (!rowCount) throw this.app.httpErrors.notFound('Vehículo no encontrado');
+    }
+    const { rows: created } = await this.app.db.query<{ id: string }>(
+      `INSERT INTO documents
+         (requirement_id, driver_id, vehicle_id, file_url, expires_at, approval_status, uploaded_by)
+       VALUES ($1, $2, $3, NULL, $4, 'pending', NULL) RETURNING id`,
+      [
+        input.requirementId,
+        isVehicleDoc ? null : driverId,
+        isVehicleDoc ? input.vehicleId : null,
+        input.expiresAt ?? null,
+      ],
+    );
+    await this.audit(null, 'document.registered', 'drivers', driverId, { requirementId: input.requirementId }, driverId);
+    return { id: created[0]!.id };
+  }
+
   /** Wizard step 2 (optional via admin): document metadata against a requirement. */
   async addDocument(driverId: string, input: DocumentInput, adminId: string): Promise<{ id: string }> {
     await this.assertDriver(driverId);
@@ -475,8 +607,10 @@ export class DriversService {
     }
 
     const { rows: created } = await this.app.db.query<{ id: string }>(
-      `INSERT INTO documents (requirement_id, driver_id, vehicle_id, file_url, expires_at, uploaded_by)
-       VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
+      // Admin is the authority: a document he registers is born approved.
+      `INSERT INTO documents
+         (requirement_id, driver_id, vehicle_id, file_url, expires_at, approval_status, uploaded_by)
+       VALUES ($1, $2, $3, $4, $5, 'approved', $6) RETURNING id`,
       [
         input.requirementId,
         isVehicleDoc ? null : driverId,
@@ -567,42 +701,236 @@ export class DriversService {
   }
 
   /**
-   * Shared gate for every path that moves a driver into `approved`: both wizard
-   * payments settled (membership `paid` + a tariff) and zero outstanding debt.
-   * Centralised so approve() and the PATCH status change cannot drift apart — a
-   * driver with arrears (or with no payment at all) must never reach `approved`.
+   * STRICT gate — payments settled (membership `paid` + a tariff) AND zero debt.
+   * Used where the driver must be fully up to date: STARTING the tariff
+   * (startTariff) and reactivating a suspension (PATCH status). Approval itself no
+   * longer uses this (see `assertEnrolled`): approve and the tariff start are
+   * decoupled (solicitudes-app), so an affiliate can be approved WITH debt and
+   * won't operate until his start is set, which does require debt 0.
    */
   private assertApprovable(detail: Record<string, unknown>): void {
     const membershipPayment = detail['membershipPayment'] as { status: string } | null;
     const subscription = detail['subscription'] as { billingPeriod: string } | null;
     if (!membershipPayment || membershipPayment.status !== 'paid' || !subscription) {
-      throw this.app.httpErrors.conflict(
-        'No se puede aprobar: faltan los pagos de membresía y tarifa',
-      );
+      throw this.app.httpErrors.conflict('Faltan los pagos de membresía y tarifa');
     }
     if (this.debtTotal(detail) > 0) {
+      throw this.app.httpErrors.conflict('El afiliado tiene deuda pendiente por saldar');
+    }
+  }
+
+  /**
+   * RELAXED gate for APPROVING an affiliate (panel): he must be ENROLLED (has a
+   * membership + a tariff, paid OR as debt), but debt is ALLOWED — approve and the
+   * tariff start are decoupled (solicitudes-app). He won't operate until the start
+   * is set (which requires debt 0), so approving with a pending payment is safe.
+   */
+  private assertEnrolled(detail: Record<string, unknown>): void {
+    const membershipPayment = detail['membershipPayment'] as { status: string } | null;
+    const subscription = detail['subscription'] as { billingPeriod: string } | null;
+    if (!membershipPayment || !subscription) {
       throw this.app.httpErrors.conflict(
-        'No se puede aprobar: el afiliado tiene deuda pendiente por saldar',
+        'No se puede aprobar: primero regístrale la membresía y la tarifa (alta o deuda)',
       );
     }
   }
 
   /**
-   * Approval requires both wizard payments (doc v7: money, not papers) and zero
-   * debt. `startMode` picks when the tariff starts (weekly + debt engine on):
-   *  - `now`: anchors to the CURRENT week's Monday, tariff active at once (a
-   *    mid-week approval keeps the elapsed days) → driver `approved`.
-   *  - `next_monday`: anchors to the next Monday; the driver is left `scheduled`
-   *    (programado) until the activation job flips him on that Monday.
+   * Approves a PENDING affiliate (panel channel). Requires only that he is
+   * ENROLLED (membership + tariff, paid or as debt) — NOT zero debt: approve and
+   * the tariff start are DECOUPLED (solicitudes-app), so he can be approved even
+   * with a pending payment. He becomes `approved` but does NOT operate until the
+   * admin sets the tariff start via `startTariff` ("Establecer inicio"), which
+   * does require debt 0.
    */
-  async approve(
+  async approve(driverId: string, adminId: string): Promise<void> {
+    const detail = await this.getDetail(driverId);
+    if (detail['status'] !== 'pending') {
+      throw this.app.httpErrors.conflict('Solo se puede aprobar un afiliado pendiente');
+    }
+    this.assertEnrolled(detail);
+    await this.app.db.query(`UPDATE drivers SET status = 'approved' WHERE user_id = $1`, [driverId]);
+    await this.audit(adminId, 'driver.approved', 'drivers', driverId, {});
+  }
+
+  /**
+   * Approves a SOLICITUD from the app (proposal: solicitudes-app): the applicant
+   * becomes an affiliate at once — `applicant` → `approved` WITH his base debt
+   * (membership + 1 week). Unlike the panel this does NOT require zero debt (D6):
+   * the debt is settled later by the payment. Requires every document and vehicle
+   * approved and at least one vehicle. Tariff start stays decoupled (startTariff),
+   * so the debt engine leaves him frozen (tariff_start_set_at null) until then.
+   */
+  async approveApplication(driverId: string, adminId: string): Promise<Record<string, unknown>> {
+    const detail = await this.getDetail(driverId);
+    if (detail['status'] !== 'applicant') {
+      throw this.app.httpErrors.conflict('Solo se puede aprobar una solicitud en revisión');
+    }
+    await this.assertApplicationComplete(driverId);
+
+    const { rows: mRows } = await this.app.db.query<{ id: number; priceUsd: string }>(
+      'SELECT id, price_usd AS "priceUsd" FROM memberships WHERE active',
+    );
+    const membership = mRows[0];
+    const { rows: pRows } = await this.app.db.query<{ id: number; priceUsd: string }>(
+      `SELECT id, price_usd AS "priceUsd" FROM subscription_plans
+        WHERE active AND billing_period = 'weekly' ORDER BY id LIMIT 1`,
+    );
+    const plan = pRows[0];
+    if (!membership || !plan) {
+      throw this.app.httpErrors.conflict(
+        'No hay membresía o tarifa semanal vigente para emitir la deuda del alta',
+      );
+    }
+    try {
+      await withTransaction(this.app.db, async (client) => {
+        // Guard the transition INSIDE the tx (the status read above is outside it):
+        // a concurrent approve/reject can only win once. rowCount 0 = no longer an
+        // applicant (double-click, or a rejection landed first) → conflict, not a
+        // second approval that would revert the reject.
+        const { rowCount } = await client.query(
+          `UPDATE drivers SET status = 'approved' WHERE user_id = $1 AND status = 'applicant'`,
+          [driverId],
+        );
+        if (!rowCount) {
+          throw this.app.httpErrors.conflict('La solicitud ya no está en revisión');
+        }
+        await this.enrollment.enrollDebtOnClient(client, {
+          driverId,
+          membershipId: membership.id,
+          membershipPriceUsd: Number(membership.priceUsd),
+          planId: plan.id,
+          planPriceUsd: Number(plan.priceUsd),
+          registeredBy: adminId,
+        });
+      });
+    } catch (err) {
+      // The base-debt unique indexes (membership/subscription) turn a race that
+      // slipped past the status guard into a clean 409 instead of a raw 500.
+      if ((err as { code?: string }).code === '23505') {
+        throw this.app.httpErrors.conflict('La solicitud ya fue aprobada');
+      }
+      throw err;
+    }
+
+    await this.audit(adminId, 'application.approved', 'drivers', driverId, {});
+    return this.getDetail(driverId);
+  }
+
+  /**
+   * Rejects a SOLICITUD (app): applicant → rejected. Policy 2026-08-13: a rejected
+   * solicitud is kept on file (not purged) and its cédula stays blocked from
+   * self-service re-registration; the applicant must contact an admin, who may
+   * reopen it with `reopenApplication`.
+   */
+  async rejectApplication(driverId: string, adminId: string): Promise<void> {
+    const detail = await this.getDetail(driverId);
+    if (detail['status'] !== 'applicant') {
+      throw this.app.httpErrors.conflict('Solo se puede rechazar una solicitud en revisión');
+    }
+    await this.app.db.query(`UPDATE drivers SET status = 'rejected' WHERE user_id = $1`, [driverId]);
+    await this.audit(adminId, 'application.rejected', 'drivers', driverId, {});
+  }
+
+  /**
+   * Reopens a REJECTED solicitud back to `applicant` so the admin can review it
+   * again (policy 2026-08-13). Its documents/vehicles are kept (they were never
+   * purged), so the review resumes where it left off. Atomic status guard.
+   */
+  async reopenApplication(driverId: string, adminId: string): Promise<void> {
+    const { rowCount } = await this.app.db.query(
+      `UPDATE drivers SET status = 'applicant' WHERE user_id = $1 AND status = 'rejected'`,
+      [driverId],
+    );
+    if (!rowCount) {
+      throw this.app.httpErrors.conflict('Solo se puede reabrir una solicitud rechazada');
+    }
+    await this.audit(adminId, 'application.reopened', 'drivers', driverId, {});
+  }
+
+  /**
+   * Completeness gate for approving a solicitud: at least one vehicle, every
+   * vehicle approved, no document left pending/rejected, and every required
+   * requirement (driver + per-vehicle) satisfied by an APPROVED document.
+   */
+  private async assertApplicationComplete(driverId: string): Promise<void> {
+    const { httpErrors } = this.app;
+
+    const { rows: vRows } = await this.app.db.query<{ total: string; approved: string }>(
+      `SELECT count(*) AS total,
+              count(*) FILTER (WHERE approval_status = 'approved') AS approved
+         FROM vehicles WHERE driver_id = $1`,
+      [driverId],
+    );
+    if (Number(vRows[0]!.total) === 0) {
+      throw httpErrors.conflict('La solicitud no tiene vehículos registrados');
+    }
+    if (Number(vRows[0]!.approved) < Number(vRows[0]!.total)) {
+      throw httpErrors.conflict('Faltan vehículos por aprobar');
+    }
+
+    const { rows: dRows } = await this.app.db.query<{ notApproved: string }>(
+      `SELECT count(*) AS "notApproved"
+         FROM documents doc
+         LEFT JOIN vehicles v ON v.id = doc.vehicle_id
+        WHERE (doc.driver_id = $1 OR v.driver_id = $1)
+          AND doc.approval_status <> 'approved'`,
+      [driverId],
+    );
+    if (Number(dRows[0]!.notApproved) > 0) {
+      throw httpErrors.conflict('Faltan documentos por aprobar');
+    }
+
+    const { rows: missDriver } = await this.app.db.query<{ name: string }>(
+      `SELECT r.name FROM requirements r
+        WHERE r.applies_to = 'driver' AND r.is_required AND r.active
+          AND NOT EXISTS (
+            SELECT 1 FROM documents doc
+             WHERE doc.driver_id = $1 AND doc.requirement_id = r.id
+               AND doc.approval_status = 'approved')
+        LIMIT 1`,
+      [driverId],
+    );
+    if (missDriver[0]) {
+      throw httpErrors.conflict(`Falta el documento obligatorio aprobado: ${missDriver[0].name}`);
+    }
+
+    const { rows: missVehicle } = await this.app.db.query<{ name: string }>(
+      `SELECT r.name FROM vehicles v
+         CROSS JOIN requirements r
+        WHERE v.driver_id = $1 AND r.applies_to = 'vehicle' AND r.is_required AND r.active
+          AND NOT EXISTS (
+            SELECT 1 FROM documents doc
+             WHERE doc.vehicle_id = v.id AND doc.requirement_id = r.id
+               AND doc.approval_status = 'approved')
+        LIMIT 1`,
+      [driverId],
+    );
+    if (missVehicle[0]) {
+      throw httpErrors.conflict(
+        `Falta un documento obligatorio de vehículo aprobado: ${missVehicle[0].name}`,
+      );
+    }
+  }
+
+  /**
+   * Sets when the affiliate's tariff starts ("Establecer inicio", proposal:
+   * solicitudes-app), decoupled from approval and shared by both channels.
+   * Requires the affiliate approved with the start not set yet, his payment
+   * settled and zero debt (assertApprovable). Anchoring the subscription
+   * (enrollment.approve) also seals tariff_start_set_at atomically, so the debt
+   * engine starts billing him. `next_monday` leaves him `scheduled` until then.
+   */
+  async startTariff(
     driverId: string,
     adminId: string,
     startMode: 'now' | 'next_monday' = 'now',
   ): Promise<void> {
     const detail = await this.getDetail(driverId);
-    if (detail['status'] !== 'pending') {
-      throw this.app.httpErrors.conflict('Solo se puede aprobar un afiliado pendiente');
+    if (detail['status'] !== 'approved' || detail['tariffStartSetAt']) {
+      throw this.app.httpErrors.conflict(
+        'Solo se puede establecer el inicio de un afiliado aprobado sin inicio previo',
+      );
     }
     this.assertApprovable(detail);
     const subscription = detail['subscription'] as { billingPeriod: string };
@@ -617,7 +945,7 @@ export class DriversService {
       anchorWeekly,
       startMode === 'next_monday',
     );
-    await this.audit(adminId, 'driver.approved', 'drivers', driverId, { startMode });
+    await this.audit(adminId, 'driver.tariff_started', 'drivers', driverId, { startMode });
   }
 
   /**
@@ -644,36 +972,6 @@ export class DriversService {
     );
     await this.audit(adminId, 'driver.paused', 'drivers', driverId, null);
     return this.getDetail(driverId);
-  }
-
-  /**
-   * External payment (design v8): registers money the driver handed to the
-   * admin outside the system. It settles every outstanding charge (arrears +
-   * penalty fine) and emits its invoice; the debt engine then derives the
-   * driver out of `overdue`/`penalized`. The admin never writes the state by
-   * hand - the debt is what changes. `note` leaves the reason on the record.
-   */
-  async registerExternalPayment(
-    driverId: string,
-    input: PaymentMeta & { note?: string | null },
-    adminId: string,
-  ): Promise<{ settledCharges: number; totalUsd: string }> {
-    await this.assertDriver(driverId);
-    // Legacy direct external payment (v8): superseded by the v9 receipt flow. With
-    // the billing redesign the payment details live on the receipt, so this path
-    // no longer stamps them onto an invoice; it just settles the owed charges.
-    const result = await this.enrollment.registerExternalPayment({
-      driverId,
-      registeredBy: adminId,
-    });
-    if (!result) {
-      throw this.app.httpErrors.conflict('El afiliado no tiene cargos pendientes por saldar');
-    }
-    await this.audit(adminId, 'driver.external_payment', 'drivers', driverId, {
-      ...result,
-      note: input.note ?? null,
-    });
-    return result;
   }
 
   /**

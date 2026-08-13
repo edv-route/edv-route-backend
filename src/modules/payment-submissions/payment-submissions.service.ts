@@ -8,6 +8,7 @@ import {
   sniffMimeType,
   type StorageProvider,
 } from '../../storage/storage-provider.js';
+import { PendingGuardError } from './payment-submissions.repository.js';
 import type {
   PaymentSubmissionMeta,
   PaymentSubmissionsRepository,
@@ -73,9 +74,32 @@ export class PaymentSubmissionsService {
     actorId: string,
   ): Promise<{ id: string; approved: boolean }> {
     await this.assertDriver(driverId);
-    if (await this.submissions.hasPending(driverId)) {
+    // Multiple pending payments are allowed as long as they cover DIFFERENT
+    // invoices (2026-08-12). A `debt` payment listing specific invoices may not
+    // touch one already reserved by another pending submission (double-charge
+    // guard); any other payment (whole-debt, enroll, advance, change_plan) still
+    // requires no other pending payment.
+    const targetedInvoiceIds =
+      input.purpose === 'debt' && input.invoiceIds && input.invoiceIds.length > 0
+        ? input.invoiceIds
+        : null;
+    if (targetedInvoiceIds) {
+      // A whole-debt pending payment covers ALL debt (these invoices included),
+      // so a targeted one may not coexist with it (double-charge guard).
+      if (await this.submissions.hasWholeDebtPending(driverId)) {
+        throw this.app.httpErrors.conflict(
+          'Ya hay un pago en revisión que cubre toda la deuda del afiliado. Apruébalo o recházalo antes de registrar otro.',
+        );
+      }
+      const reserved = new Set(await this.submissions.reservedInvoiceIds(driverId));
+      if (targetedInvoiceIds.some((id) => reserved.has(id))) {
+        throw this.app.httpErrors.conflict(
+          'Alguna de esas facturas ya tiene un pago en revisión. Elige facturas distintas.',
+        );
+      }
+    } else if (await this.submissions.hasPending(driverId)) {
       throw this.app.httpErrors.conflict(
-        'El afiliado ya tiene un pago en revisión. Espera a que se resuelva antes de registrar otro.',
+        'El afiliado ya tiene un pago en revisión. Para registrar otro, indica las facturas específicas que cubre.',
       );
     }
 
@@ -107,7 +131,7 @@ export class PaymentSubmissionsService {
       if (!input.periods || input.periods < 1) {
         throw this.app.httpErrors.badRequest('Indica cuántas semanas incluye el alta');
       }
-      const prep = await this.prepareEnrollContext(driverId, input.periods);
+      const prep = await this.prepareEnrollContext(driverId, input.periods, input.planId);
       context = prep.context;
       amountUsd = prep.amountUsd;
     } else if (input.purpose === 'advance') {
@@ -170,6 +194,7 @@ export class PaymentSubmissionsService {
         source: input.source,
         submittedBy: input.submittedBy,
         filePaths,
+        guard: { targetedInvoiceIds },
       });
       await writeAudit(this.app.db, {
         actorAdminId: input.source === 'admin' ? actorId : null,
@@ -188,9 +213,17 @@ export class PaymentSubmissionsService {
       }
       return { id, approved: false };
     } catch (err) {
-      // The partial unique index closes the race the hasPending check leaves open.
+      // Lost the race for the per-driver lock: another pending payment landed
+      // first and now reserves these invoices (backstop for the pre-check above).
+      if (err instanceof PendingGuardError) {
+        throw this.app.httpErrors.conflict(
+          'El afiliado ya tiene un pago en revisión que cubre esas facturas. Actualiza y revisa los pagos pendientes.',
+        );
+      }
+      // The one-pending unique index was dropped (2026-08-12); a unique violation
+      // here is no longer the pending guard, so surface it generically.
       if ((err as { code?: string }).code === UNIQUE_VIOLATION) {
-        throw this.app.httpErrors.conflict('El afiliado ya tiene un pago en revisión');
+        throw this.app.httpErrors.conflict('No se pudo registrar el pago por un conflicto de datos.');
       }
       throw err;
     }
@@ -275,6 +308,7 @@ export class PaymentSubmissionsService {
   private async prepareEnrollContext(
     driverId: string,
     periods: number,
+    planId: number | null,
   ): Promise<{ context: Record<string, unknown>; amountUsd: string }> {
     const { rows: mp } = await this.app.db.query(
       `SELECT 1 FROM membership_payments WHERE driver_id = $1 AND status <> 'refunded'`,
@@ -288,16 +322,28 @@ export class PaymentSubmissionsService {
     );
     const membership = mem[0];
     if (!membership) throw this.app.httpErrors.conflict('No existe una membresía vigente');
-    const { rows: pl } = await this.app.db.query<{
-      id: number;
-      priceUsd: string;
-      billingPeriod: string;
-    }>(
-      `SELECT id, price_usd AS "priceUsd", billing_period AS "billingPeriod"
-       FROM subscription_plans WHERE active AND billing_period = 'weekly' ORDER BY id LIMIT 1`,
-    );
+    // Honour the tariff chosen in the wizard (so the invoice matches the summary);
+    // fall back to the sole active weekly one for callers that send no plan. It
+    // must be weekly — enroll bills membership + N WEEKLY weeks.
+    const { rows: pl } =
+      planId != null
+        ? await this.app.db.query<{ id: number; priceUsd: string; billingPeriod: string }>(
+            `SELECT id, price_usd AS "priceUsd", billing_period AS "billingPeriod"
+             FROM subscription_plans WHERE id = $1 AND active AND billing_period = 'weekly'`,
+            [planId],
+          )
+        : await this.app.db.query<{ id: number; priceUsd: string; billingPeriod: string }>(
+            `SELECT id, price_usd AS "priceUsd", billing_period AS "billingPeriod"
+             FROM subscription_plans WHERE active AND billing_period = 'weekly' ORDER BY id LIMIT 1`,
+          );
     const plan = pl[0];
-    if (!plan) throw this.app.httpErrors.conflict('No existe una tarifa semanal vigente');
+    if (!plan) {
+      throw this.app.httpErrors.conflict(
+        planId != null
+          ? 'La tarifa elegida no existe, está archivada o no es semanal'
+          : 'No existe una tarifa semanal vigente',
+      );
+    }
 
     const membershipPriceUsd = Number(membership.priceUsd);
     const planPriceUsd = Number(plan.priceUsd);

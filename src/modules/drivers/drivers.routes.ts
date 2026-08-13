@@ -25,6 +25,22 @@ const idParam = {
   properties: { id: { type: 'string', format: 'uuid' } },
 } as const;
 
+const vehicleParams = {
+  type: 'object',
+  required: ['id', 'vehicleId'],
+  properties: {
+    id: { type: 'string', format: 'uuid' },
+    vehicleId: { type: 'string', format: 'uuid' },
+  },
+} as const;
+
+/** Reject action body: a reason the applicant sees (required on reject). */
+const reviewBody = {
+  type: 'object',
+  additionalProperties: false,
+  properties: { reason: { type: 'string', minLength: 1, maxLength: 500 } },
+} as const;
+
 const driversRoutes: FastifyPluginAsync = async (app) => {
   const service = new DriversService(
     app,
@@ -34,7 +50,9 @@ const driversRoutes: FastifyPluginAsync = async (app) => {
 
   app.addHook('onRequest', app.authenticate);
 
-  app.get<{ Querystring: { status?: string; search?: string; page?: number; limit?: number } }>(
+  app.get<{
+    Querystring: { status?: string; source?: string; search?: string; page?: number; limit?: number };
+  }>(
     '/',
     {
       schema: {
@@ -44,8 +62,11 @@ const driversRoutes: FastifyPluginAsync = async (app) => {
           properties: {
             status: {
               type: 'string',
-              enum: ['pending', 'scheduled', 'approved', 'rejected', 'suspended', 'paused', 'overdue', 'penalized'],
+              enum: ['applicant', 'pending', 'scheduled', 'approved', 'rejected', 'suspended', 'paused', 'overdue', 'penalized'],
             },
+            // Channel filter (solicitudes-app): the admin's Solicitudes list uses
+            // source=app & status=applicant; Afiliados excludes applicant.
+            source: { type: 'string', enum: ['app', 'admin'] },
             search: { type: 'string', maxLength: 100 },
             page: { type: 'integer', minimum: 1, default: 1 },
             limit: { type: 'integer', minimum: 1, maximum: 100, default: 20 },
@@ -56,6 +77,7 @@ const driversRoutes: FastifyPluginAsync = async (app) => {
     async (req) =>
       service.list({
         ...(req.query.status !== undefined ? { status: req.query.status } : {}),
+        ...(req.query.source !== undefined ? { source: req.query.source } : {}),
         ...(req.query.search !== undefined ? { search: req.query.search } : {}),
         page: req.query.page ?? 1,
         limit: req.query.limit ?? 20,
@@ -166,6 +188,31 @@ const driversRoutes: FastifyPluginAsync = async (app) => {
     },
   );
 
+  // Vehicle review (solicitudes-app): approve, or reject with a reason.
+  app.post<{ Params: { id: string; vehicleId: string } }>(
+    '/:id/vehicles/:vehicleId/approve',
+    { schema: { params: vehicleParams } },
+    async (req, reply) => {
+      await service.reviewVehicle(req.params.id, req.params.vehicleId, true, null, req.user.sub);
+      return reply.code(200).send({ ok: true });
+    },
+  );
+
+  app.post<{ Params: { id: string; vehicleId: string }; Body: { reason?: string } }>(
+    '/:id/vehicles/:vehicleId/reject',
+    { schema: { params: vehicleParams, body: reviewBody } },
+    async (req, reply) => {
+      await service.reviewVehicle(
+        req.params.id,
+        req.params.vehicleId,
+        false,
+        req.body?.reason ?? null,
+        req.user.sub,
+      );
+      return reply.code(200).send({ ok: true });
+    },
+  );
+
   app.post<{ Params: { id: string }; Body: DocumentInput }>(
     '/:id/documents',
     {
@@ -249,14 +296,25 @@ const driversRoutes: FastifyPluginAsync = async (app) => {
     async (req) => service.cancelScheduledChange(req.params.id, req.user.sub),
   );
 
-  app.post<{ Params: { id: string }; Body: { startMode: 'now' | 'next_monday' } }>(
+  // Approve a PENDING affiliate (panel). Tariff start is DECOUPLED now
+  // (solicitudes-app): set it afterwards with /start-tariff. No startMode here.
+  app.post<{ Params: { id: string } }>(
     '/:id/approve',
+    { schema: { params: idParam } },
+    async (req) => {
+      await service.approve(req.params.id, req.user.sub);
+      return { ok: true };
+    },
+  );
+
+  // Set when the tariff starts ("Establecer inicio"): `now` (current-week Monday,
+  // active at once) or `next_monday` (scheduled/programado until then). Requires
+  // the affiliate approved with the start not set, payment settled and zero debt.
+  app.post<{ Params: { id: string }; Body: { startMode: 'now' | 'next_monday' } }>(
+    '/:id/start-tariff',
     {
       schema: {
         params: idParam,
-        // The admin MUST pick when the tariff starts: `now` (current-week Monday,
-        // active at once) or `next_monday` (starts next Monday; driver stays
-        // `scheduled`/programado until then). No implicit default — it's a choice.
         body: {
           type: 'object',
           required: ['startMode'],
@@ -268,8 +326,38 @@ const driversRoutes: FastifyPluginAsync = async (app) => {
       },
     },
     async (req) => {
-      await service.approve(req.params.id, req.user.sub, req.body.startMode);
+      await service.startTariff(req.params.id, req.user.sub, req.body.startMode);
       return { ok: true };
+    },
+  );
+
+  // Approve an app SOLICITUD: applicant -> approved + base debt. Requires every
+  // document and vehicle approved and at least one vehicle.
+  app.post<{ Params: { id: string } }>(
+    '/:id/approve-application',
+    { schema: { params: idParam } },
+    async (req) => service.approveApplication(req.params.id, req.user.sub),
+  );
+
+  // Reject an app SOLICITUD: applicant -> rejected. Policy 2026-08-13: kept on file,
+  // no self-service re-registration; only an admin can reopen it.
+  app.post<{ Params: { id: string } }>(
+    '/:id/reject-application',
+    { schema: { params: idParam } },
+    async (req, reply) => {
+      await service.rejectApplication(req.params.id, req.user.sub);
+      return reply.code(200).send({ ok: true });
+    },
+  );
+
+  // Reopen a REJECTED app SOLICITUD back to applicant for another review (the only
+  // path back for a rejected applicant — self-service re-registration is blocked).
+  app.post<{ Params: { id: string } }>(
+    '/:id/reopen-application',
+    { schema: { params: idParam } },
+    async (req, reply) => {
+      await service.reopenApplication(req.params.id, req.user.sub);
+      return reply.code(200).send({ ok: true });
     },
   );
 
@@ -291,43 +379,6 @@ const driversRoutes: FastifyPluginAsync = async (app) => {
     '/:id/resume',
     { schema: { params: idParam } },
     async (req) => service.resume(req.params.id, req.user.sub),
-  );
-
-  // External payment (v8): settles the outstanding charges (arrears + penalty)
-  // received outside the system and issues their invoice. The debt engine then
-  // derives the driver out of overdue/penalized - no state is forced by hand.
-  app.post<{
-    Params: { id: string };
-    Body?: { note?: string | null } & PaymentMeta;
-  }>(
-    '/:id/external-payment',
-    {
-      schema: {
-        params: idParam,
-        body: {
-          type: ['object', 'null'],
-          additionalProperties: false,
-          properties: { note: { type: ['string', 'null'], maxLength: 1000 }, ...paymentMetaProps },
-        },
-      },
-    },
-    async (req, reply) => {
-      const result = await service.registerExternalPayment(
-        req.params.id,
-        {
-          note: req.body?.note ?? null,
-          paymentMethodId: req.body?.paymentMethodId ?? null,
-          reference: req.body?.reference ?? null,
-          payerBank: req.body?.payerBank ?? null,
-          paidOn: req.body?.paidOn ?? null,
-          payerPhone: req.body?.payerPhone ?? null,
-          payerId: req.body?.payerId ?? null,
-          payerAccount: req.body?.payerAccount ?? null,
-        },
-        req.user.sub,
-      );
-      return reply.code(201).send(result);
-    },
   );
 
   // Manual reactivation (v8): back on the road now instead of waiting for the
