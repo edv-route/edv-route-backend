@@ -176,6 +176,15 @@ const driverAuthRoutes: FastifyPluginAsync = async (app) => {
     },
   );
 
+  // Read one of the driver's OWN document files: a short-lived signed URL so the
+  // app can PREVIEW what he uploaded. The service checks the document resolves to
+  // this driver (404 otherwise). Read-only counterpart of POST /documents/:id/file.
+  app.get<{ Params: { id: string } }>(
+    '/documents/:id/file',
+    { onRequest: [app.authenticateDriver], schema: { params: documentIdParam } },
+    async (req) => documents.getFileUrl(req.params.id, req.user.sub),
+  );
+
   // Add a photo to one of the driver's OWN vehicles. Ownership is enforced by
   // the service (vehicleBelongsToDriver) using the token's driver id.
   app.post<{ Params: { vehicleId: string } }>(

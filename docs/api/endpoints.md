@@ -43,6 +43,7 @@ por `status` (revisión / bloqueado / home). Lockout por intentos: diferido (no 
 | GET | `/driver-auth/me/debt` | **Deuda del alta** para el **pago diferido** de la app (guard `authenticateDriver`): membresía pendiente + cargos de tarifa/penalización adeudados, con desglose por línea y total, y si ya hay un pago en revisión. `{ totalUsd, items: [{ label, amountUsd }], hasPendingPayment }` |
 | POST | `/driver-auth/payment-submissions` | Envío de pago del chofer (guard `authenticateDriver`, multipart). `driverId` del token. **Un `applicant` no puede pagar (409)**; exige `acceptedTerms=true` (sella `accepted_terms_at`). `purpose` = `enroll` (membresía + `periods` semanas) o `debt`; `advance`/`change_plan` son solo-admin (400). Nunca auto-aprueba; queda `pending` |
 | POST | `/driver-auth/documents/:id/file` | Adjunta archivo a un documento **propio** (guard `authenticateDriver`; 404 si es de otro chofer) |
+| GET | `/driver-auth/documents/:id/file` | URL firmada (60 s) para **previsualizar** el archivo de un documento **propio** (guard `authenticateDriver`; 404 si es de otro chofer o no tiene archivo). `{ url, expiresIn }`. El tipo (imagen/PDF) se infiere por la extensión de la `url` |
 | POST | `/driver-auth/vehicles/:vehicleId/images` | Sube foto a un vehículo **propio** (guard `authenticateDriver`; valida propiedad) |
 
 **Auto-registro y limpieza.** El registro es abierto (la barrera de calidad es la aprobación del

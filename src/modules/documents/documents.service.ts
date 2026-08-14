@@ -123,10 +123,21 @@ export class DocumentsService {
     });
   }
 
-  /** Time-limited link; the bucket is private and never served publicly. */
-  async getFileUrl(documentId: string): Promise<{ url: string; expiresIn: number }> {
+  /**
+   * Time-limited link; the bucket is private and never served publicly. When
+   * [ownerUserId] is set (app/driver channel) the document must resolve to that
+   * driver — 404 (not 403) so it never reveals another driver's document. Admin
+   * passes no owner and reads any document.
+   */
+  async getFileUrl(
+    documentId: string,
+    ownerUserId: string | null = null,
+  ): Promise<{ url: string; expiresIn: number }> {
     const storage = this.requireStorage();
     const document = await this.requireDocument(documentId);
+    if (ownerUserId && document.driverId !== ownerUserId) {
+      throw this.app.httpErrors.notFound('Documento no encontrado');
+    }
     if (!document.fileUrl) {
       throw this.app.httpErrors.notFound('Este documento no tiene archivo adjunto');
     }
