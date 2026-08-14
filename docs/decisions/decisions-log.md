@@ -926,3 +926,16 @@ semanal y validar el ciclo con reloj real.
 | **M2 · El alta factura la tarifa ELEGIDA**: el wizard solo ofrece tarifas **semanales** y envía `planId`; `prepareEnrollContext` lo respeta (validando activo+weekly), con fallback a la única semanal | Con >1 tarifa activa, el wizard mostraba un total con la tarifa elegida pero el backend facturaba "la primera semanal por id" → **monto y plan divergentes** (regla del dinero). Enmascarado con una sola tarifa activa |
 | **M3/M4 · Solicitudes rechazadas: política de retención** (decisión de negocio de Luis): un `rejected` **se conserva** (el `applicant-cleanup` deja de purgarlo a los 7 días) y su cédula queda **bloqueada** para auto-registro; el solicitante debe **contactar al admin**, que puede **reabrirla** (`POST /reopen-application`, `rejected`→`applicant`) | El reintento self-service prometido antes chocaba con `national_id` UNIQUE. La nueva política da control humano: nada se re-registra solo; el admin decide. El cleanup ahora solo purga `pending` sin pago y `applicant` **vacíos** (sin docs ni vehículos) vencidos |
 | **UI de reapertura**: la lista de **Solicitudes** gana un filtro **En revisión / Rechazadas**; el detalle de una rechazada ofrece **"Reabrir solicitud"** (modal de confirmación) | Sin visibilidad de las rechazadas el admin no podía actuar sobre ellas; el filtro + el botón cierran el flujo de reapertura de punta a punta |
+
+## 2026-08-13 — 🚀 App del chofer (Fase 3) desplegada + gotcha de conexiones
+
+> El backend de **solicitudes-app + auditoría (Tanda 1/2) + `GET /me/debt`** se **desplegó a
+> prod** (commit `8ac8530`) para habilitar la **app del chofer** (Flutter, `edv-route-mobile`),
+> cuya Fase 3 quedó completa (informativa → registro paso 1 → checklist → pago diferido `debt`).
+> APK entregado a Luis. `typecheck` verde; servidor nuevo verificado activo.
+
+| Decisión | Motivo |
+|---|---|
+| **App re-arquitecturada al modelo `applicant`** (no `enroll`): registro paso 1 (`/register`) → checklist (`/me/checklist`) → `/me/{documents,vehicles}` → pago diferido `purpose='debt'` + T&C; nuevo **`GET /driver-auth/me/debt`** (total + desglose + `hasPendingPayment`) | El backend evolucionó a solicitudes-app; el wizard monolítico de la app enviaba docs/vehículos en `/register` (rechazado por `additionalProperties:false`). El pago se difiere a tras la aprobación |
+| **⚠️ No correr dos backends contra la BD compartida**: prod y dev usan el mismo Supabase (**15 conexiones**). Railway + `npm run dev` local agotan el pool → `EMAXCONNSESSION` y **pantallas en blanco**. Mitigación: uno solo; el panel local se apuntó a Railway temporalmente | Riesgo asumido de prod=dev; fix de fondo pendiente: Supabase separado para prod |
+| 🐛 **`request-detail` del panel: `load()` movido del constructor a `ngOnInit`** | Leer el input requerido `id` en el constructor lanza `NG0950` → el detalle de la solicitud quedaba **en blanco** |
