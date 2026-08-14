@@ -121,8 +121,14 @@ const driverAuthRoutes: FastifyPluginAsync = async (app) => {
       throw app.httpErrors.badRequest('Tipo de pago no permitido desde la app');
     }
     const purpose = rawPurpose as 'debt' | 'enroll';
-    const periods =
-      purpose === 'enroll' && fields['periods'] ? Number(fields['periods']) : null;
+    // `periods` applies to enroll (membership + N weeks) and to a debt payment that
+    // prepays advance weeks at the alta (Forma A): the TOTAL weeks the applicant
+    // pays (>= 1; the base week plus any extra).
+    const rawPeriods = fields['periods'] ? Number(fields['periods']) : null;
+    if (rawPeriods !== null && (!Number.isInteger(rawPeriods) || rawPeriods < 1)) {
+      throw app.httpErrors.badRequest('El número de semanas no es válido');
+    }
+    const periods = rawPeriods;
     // Gate (solicitudes-app): an applicant cannot pay yet; paying requires
     // accepting the terms & conditions (stamps accepted_terms_at).
     await service.assertPayableAndAcceptTerms(req.user.sub, fields['acceptedTerms'] === 'true');

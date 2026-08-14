@@ -18,6 +18,9 @@ import type {
 const UNIQUE_VIOLATION = '23505';
 const MAX_FILES = 5;
 const SIGNED_URL_TTL_SECONDS = 60;
+// Alta advance (Forma A): weeks a driver may prepay are free per product; this is
+// only a technical guard against a typo (e.g. 99999 weeks).
+const MAX_ADVANCE_WEEKS = 520;
 
 const PERIOD_INTERVALS: Record<string, string> = {
   daily: '1 day',
@@ -156,7 +159,18 @@ export class PaymentSubmissionsService {
       if (Number(debt) <= 0) {
         throw this.app.httpErrors.badRequest('El afiliado no tiene deuda por pagar');
       }
-      amountUsd = debt;
+      // Alta advance (Forma A): the applicant may pay N weeks at the alta (the base
+      // week plus N-1 extra). The base debt (membership + week 1) is settled as
+      // usual; the extra weeks are created at approval, so a rejection leaves no
+      // phantom debt.
+      const advanceWeeks = input.periods && input.periods > 1 ? input.periods - 1 : 0;
+      if (advanceWeeks > 0) {
+        const prep = await this.prepareAltaAdvanceContext(driverId, advanceWeeks, debt);
+        context = prep.context;
+        amountUsd = prep.amountUsd;
+      } else {
+        amountUsd = debt;
+      }
     }
 
     // Validate + upload every image before touching the DB (orphans in storage
@@ -298,6 +312,46 @@ export class PaymentSubmissionsService {
       entityId: id,
       data: { reason: reason.trim() },
     });
+  }
+
+  /**
+   * Validates an alta ADVANCE (Forma A): the applicant pays [advanceWeeks] extra
+   * weeks ON TOP of his base alta debt (membership + week 1). Requires the base
+   * debt to exist as a `scheduled` weekly subscription (an approved solicitud not
+   * yet paid/started). The amount is baseDebt + planPrice × advanceWeeks; the extra
+   * weeks are created (paid) at approval. Weeks are free per product — only a
+   * generous technical cap guards against a typo.
+   */
+  private async prepareAltaAdvanceContext(
+    driverId: string,
+    advanceWeeks: number,
+    baseDebt: string,
+  ): Promise<{ context: Record<string, unknown>; amountUsd: string }> {
+    if (advanceWeeks > MAX_ADVANCE_WEEKS) {
+      throw this.app.httpErrors.badRequest(
+        `No puedes adelantar más de ${MAX_ADVANCE_WEEKS} semanas`,
+      );
+    }
+    const { rows } = await this.app.db.query<{ id: string; priceUsd: string }>(
+      `SELECT ds.id, sp.price_usd AS "priceUsd"
+       FROM driver_subscriptions ds
+       JOIN subscription_plans sp ON sp.id = ds.plan_id
+       WHERE ds.driver_id = $1 AND ds.status = 'scheduled' AND sp.billing_period = 'weekly'
+       ORDER BY ds.created_at DESC LIMIT 1`,
+      [driverId],
+    );
+    const sub = rows[0];
+    if (!sub) {
+      throw this.app.httpErrors.conflict(
+        'No se pueden adelantar semanas: el alta del afiliado aún no está lista.',
+      );
+    }
+    const planPriceUsd = Number(sub.priceUsd);
+    const amountUsd = (Number(baseDebt) + planPriceUsd * advanceWeeks).toFixed(2);
+    return {
+      context: { subscriptionId: sub.id, planPriceUsd, advanceWeeks },
+      amountUsd,
+    };
   }
 
   /**

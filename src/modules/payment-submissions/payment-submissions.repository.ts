@@ -479,7 +479,21 @@ export class PaymentSubmissionsRepository {
          ORDER BY i.invoice_number`,
         [driverId, invoiceIds],
       );
-      return rows;
+      // Alta advance (Forma A): the extra weeks are created only at approval, so
+      // while pending they are shown from the context to match the amount charged.
+      const advanceWeeks = Number((context as { advanceWeeks?: unknown }).advanceWeeks ?? 0);
+      const planPrice = Number((context as { planPriceUsd?: unknown }).planPriceUsd ?? 0);
+      const items = [...rows];
+      for (let i = 0; i < advanceWeeks; i++) {
+        items.push({
+          label: 'Tarifa de la semana',
+          amountUsd: planPrice.toFixed(2),
+          invoiceNumber: null,
+          periodStart: null,
+          periodEnd: null,
+        });
+      }
+      return items;
     }
     const items: SubmissionDetail['items'] = [];
     const periods = Number(context['periods'] ?? 0);
@@ -572,18 +586,38 @@ export class PaymentSubmissionsRepository {
       } else {
         // Partial payment: the receipt settles only the selected invoices (each in
         // full). `invoiceIds` in the context restricts them; absent = all debt.
-        const invoiceIds = (sub.context as { invoiceIds?: string[] }).invoiceIds ?? null;
+        const ctx = sub.context as {
+          invoiceIds?: string[];
+          advanceWeeks?: number;
+          subscriptionId?: string;
+          planPriceUsd?: number;
+        };
         const settle = await this.enrollment.settleDebtOnClient(client, {
           driverId: sub.driverId,
           registeredBy: adminId,
           submissionId: id,
-          invoiceIds,
+          invoiceIds: ctx.invoiceIds ?? null,
         });
         if (!settle) return { ok: false, reason: 'no_debt' };
+        settledCharges = settle.settledCharges;
+        // Alta advance (Forma A): pay N extra weeks on top of the base alta debt.
+        // Created PAID here — not at submission time — so a rejected payment leaves
+        // NO phantom debt. Anchored with the base week at startTariff.
+        const advanceWeeks = Number(ctx.advanceWeeks ?? 0);
+        if (advanceWeeks > 0 && ctx.subscriptionId) {
+          await this.enrollment.addPaidAltaWeeksOnClient(client, {
+            driverId: sub.driverId,
+            subscriptionId: ctx.subscriptionId,
+            planPriceUsd: Number(ctx.planPriceUsd ?? 0),
+            periods: advanceWeeks,
+            registeredBy: adminId,
+            submissionId: id,
+          });
+          settledCharges += advanceWeeks;
+        }
         // Debt now settles per-concept invoices; payment details live on the receipt.
         invoiceId = null;
         invoiceNumber = '';
-        settledCharges = settle.settledCharges;
       }
 
       if (invoiceId) {

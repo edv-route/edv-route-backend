@@ -114,6 +114,44 @@ export class EnrollmentRepository {
   }
 
   /**
+   * Alta advance (Forma A, 2026-08-14): adds N EXTRA prepaid weeks onto the alta's
+   * scheduled subscription when the applicant chooses to pay ahead. Each week is
+   * created `paid`, WITHOUT dates (period NULL) — anchored together with the base
+   * week when the tariff start is set (`approve`), so all N weeks chain
+   * consecutively. One invoice per week, all linked to the receipt that paid them
+   * (so a reversal voids/refunds them cleanly). Does NOT touch the membership nor
+   * create a second subscription: no double charge. Runs at APPROVAL, so a
+   * rejected payment never leaves phantom debt.
+   */
+  async addPaidAltaWeeksOnClient(
+    client: pg.PoolClient,
+    input: {
+      driverId: string;
+      subscriptionId: string;
+      planPriceUsd: number;
+      periods: number;
+      registeredBy: string;
+      submissionId: string;
+    },
+  ): Promise<{ invoiceNumbers: string[] }> {
+    const invoiceNumbers: string[] = [];
+    for (let i = 0; i < input.periods; i++) {
+      const weekInvoice = await this.createInvoice(
+        client, input.driverId, input.planPriceUsd, input.registeredBy, input.submissionId,
+      );
+      invoiceNumbers.push(weekInvoice.invoiceNumber);
+      await client.query(
+        `INSERT INTO subscription_payments
+           (driver_subscription_id, invoice_id, period_start, period_end,
+            amount_usd, status, paid_at, registered_by, submission_id)
+         VALUES ($1, $2, NULL, NULL, $3, 'paid', now(), $4, $5)`,
+        [input.subscriptionId, weekInvoice.id, input.planPriceUsd, input.registeredBy, input.submissionId],
+      );
+    }
+    return { invoiceNumbers };
+  }
+
+  /**
    * Reverses an APPROVED receipt's money effects (billing redesign 2026-08-04):
    *  - invoices this receipt GENERATED → voided; their charges → refunded (money
    *    never deleted, regla #7).
