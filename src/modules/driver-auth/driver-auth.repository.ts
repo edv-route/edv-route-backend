@@ -176,6 +176,51 @@ export class DriverAuthRepository {
     );
     return { totalUsd: total.toFixed(2), items, hasPendingPayment: pending.length > 0 };
   }
+
+  /**
+   * The driver's vehicles with full detail + photo references (for the profile's
+   * vehicle catalog/detail). Photos come as bucket paths (`fileUrl`); the service
+   * turns them into short-lived signed URLs.
+   */
+  async getVehicles(driverId: string): Promise<AppVehicleRow[]> {
+    const { rows } = await this.db.query<AppVehicleRow>(
+      `SELECT v.id, v.brand, v.model, v.year, v.color, v.plate,
+              vt.name AS "vehicleType",
+              v.approval_status AS "approvalStatus", v.rejection_reason AS "rejectionReason",
+              COALESCE((
+                SELECT json_agg(json_build_object(
+                         'id', vi.id, 'position', vi.position, 'fileUrl', vi.file_url)
+                       ORDER BY vi.position)
+                FROM vehicle_images vi WHERE vi.vehicle_id = v.id), '[]'::json) AS images
+         FROM vehicles v
+         LEFT JOIN vehicle_types vt ON vt.id = v.vehicle_type_id
+        WHERE v.driver_id = $1
+        ORDER BY v.created_at`,
+      [driverId],
+    );
+    return rows;
+  }
+}
+
+/** A vehicle photo reference (bucket path; signed by the service before leaving). */
+export interface AppVehicleImageRow {
+  id: string;
+  position: number;
+  fileUrl: string;
+}
+
+/** A driver's vehicle with full detail, as the repository returns it. */
+export interface AppVehicleRow {
+  id: string;
+  brand: string | null;
+  model: string | null;
+  year: number | null;
+  color: string | null;
+  plate: string | null;
+  vehicleType: string | null;
+  approvalStatus: string;
+  rejectionReason: string | null;
+  images: AppVehicleImageRow[];
 }
 
 /** A document requirement as the app consumes it. */

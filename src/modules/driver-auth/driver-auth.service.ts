@@ -2,11 +2,14 @@ import argon2 from 'argon2';
 import type { FastifyInstance } from 'fastify';
 import { DriversService } from '../drivers/drivers.service.js';
 import type { CreateDriverInput } from '../drivers/drivers.service.js';
-import type { DriverAuthRepository, DriverProfile } from './driver-auth.repository.js';
+import type { AppVehicleRow, DriverAuthRepository, DriverProfile } from './driver-auth.repository.js';
 
 // Verified against when the national id is unknown or has no app password, so
 // both paths cost the same time (prevents user enumeration via response timing).
 const DUMMY_HASH_PROMISE = argon2.hash('timing-equalizer-dummy-password');
+
+/** Vehicle photo signed URLs are short-lived: enough to view, not to share. */
+const VEHICLE_IMAGE_TTL_SECONDS = 60;
 
 export interface DriverLoginResult {
   token: string;
@@ -18,6 +21,27 @@ export interface DriverRegisterResult {
   driver: DriverProfile;
   createdDocumentIds: string[];
   createdVehicles: { id: string; documentIds: string[] }[];
+}
+
+/** A vehicle photo with a short-lived signed URL, as the app consumes it. */
+export interface AppVehicleImage {
+  id: string;
+  position: number;
+  url: string;
+}
+
+/** A driver's vehicle for the profile: full detail + signed photo URLs. */
+export interface AppVehicle {
+  id: string;
+  brand: string | null;
+  model: string | null;
+  year: number | null;
+  color: string | null;
+  plate: string | null;
+  vehicleType: string | null;
+  approvalStatus: string;
+  rejectionReason: string | null;
+  images: AppVehicleImage[];
 }
 
 export class DriverAuthService {
@@ -57,6 +81,38 @@ export class DriverAuthService {
       throw this.app.httpErrors.unauthorized('Sesión inválida');
     }
     return driver;
+  }
+
+  /**
+   * The driver's vehicles for the profile, with each photo resolved to a
+   * short-lived signed URL (the bucket is private, so paths never leave the API).
+   */
+  async getVehicles(driverId: string): Promise<AppVehicle[]> {
+    const storage = this.app.storage;
+    const rows = await this.drivers.getVehicles(driverId);
+    return Promise.all(
+      rows.map(async (v: AppVehicleRow): Promise<AppVehicle> => {
+        const images: AppVehicleImage[] = [];
+        if (storage) {
+          for (const img of v.images) {
+            const url = await storage.getSignedUrl(img.fileUrl, VEHICLE_IMAGE_TTL_SECONDS);
+            images.push({ id: img.id, position: img.position, url });
+          }
+        }
+        return {
+          id: v.id,
+          brand: v.brand,
+          model: v.model,
+          year: v.year,
+          color: v.color,
+          plate: v.plate,
+          vehicleType: v.vehicleType,
+          approvalStatus: v.approvalStatus,
+          rejectionReason: v.rejectionReason,
+          images,
+        };
+      }),
+    );
   }
 
   /**

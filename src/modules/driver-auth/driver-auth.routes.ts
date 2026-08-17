@@ -227,6 +227,14 @@ const driverAuthRoutes: FastifyPluginAsync = async (app) => {
     async (req) => service.getChecklist(req.user.sub),
   );
 
+  // The driver's vehicles with full detail + signed photo URLs, for the profile's
+  // vehicle catalog/detail.
+  app.get(
+    '/me/vehicles',
+    { onRequest: [app.authenticateDriver] },
+    async (req) => service.getVehicles(req.user.sub),
+  );
+
   // The driver's alta/arrears debt (for the app's deferred payment screen).
   app.get(
     '/me/debt',
