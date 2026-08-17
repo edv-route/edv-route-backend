@@ -19,6 +19,9 @@ export const driverPublicSchema = {
     photoUrl: { type: ['string', 'null'] },
     isAvailable: { type: 'boolean' },
     avgRating: { type: ['string', 'null'] },
+    // Whether the admin already set the tariff start; false = approved but not yet
+    // activated (the app shows a waiting screen instead of the home).
+    tariffStarted: { type: 'boolean' },
   },
 } as const;
 

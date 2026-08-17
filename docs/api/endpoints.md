@@ -29,8 +29,8 @@ por `status` (revisión / bloqueado / home). Lockout por intentos: diferido (no 
 
 | Método | Ruta | Descripción |
 |---|---|---|
-| POST | `/driver-auth/login` | `{ nationalId, password }` → `{ token, driver }` (perfil incluye `status`, `registrationStep`, `fullName`, `phone`, `photoUrl`, `email`, `isAvailable`, `avgRating`). 401 si la cédula no existe o el chofer no tiene clave de app |
-| GET | `/driver-auth/me` | Perfil del chofer autenticado (guard `authenticateDriver`) |
+| POST | `/driver-auth/login` | `{ nationalId, password }` → `{ token, driver }` (perfil incluye `status`, `registrationStep`, `fullName`, `phone`, `photoUrl`, `email`, `isAvailable`, `avgRating`, `tariffStarted`). 401 si la cédula no existe o el chofer no tiene clave de app |
+| GET | `/driver-auth/me` | Perfil del chofer autenticado (guard `authenticateDriver`). **`tariffStarted`** = `tariff_start_set_at IS NOT NULL`: `false` significa **aprobado pero el admin aún no estableció el inicio de la tarifa** → la app muestra una pantalla de espera («falta activación»), no el home |
 | GET | `/driver-auth/requirements` | Requisitos activos (driver + vehicle) con `isRequired`, para el wizard (público) |
 | GET | `/driver-auth/payment-methods` | Métodos de pago activos, sin `admin_only` (público) |
 | GET | `/driver-auth/vehicle-types` | Tipos de vehículo activos `{ id, name }`, para el selector del wizard (público) |

@@ -10,6 +10,9 @@ type UserRow = Camelize<Users>;
 export type DriverProfile = Pick<UserRow, 'fullName' | 'phone' | 'email' | 'photoUrl'> &
   Pick<DriverRow, 'nationalId' | 'status' | 'registrationStep' | 'isAvailable' | 'avgRating'> & {
     userId: string;
+    /** Whether the admin has already set the tariff start. Drives the app between
+     *  the "approved, waiting for activation" screen and the operating home. */
+    tariffStarted: boolean;
   };
 
 /** Profile + credential hash; the hash never leaves the auth service. */
@@ -18,7 +21,8 @@ export type DriverAuthRecord = DriverProfile & { passwordHash: string | null };
 const PROFILE_COLUMNS = `
   u.id AS "userId", u.full_name AS "fullName", u.phone, u.email, u.photo_url AS "photoUrl",
   d.national_id AS "nationalId", d.status, d.registration_step AS "registrationStep",
-  d.is_available AS "isAvailable", d.avg_rating AS "avgRating"
+  d.is_available AS "isAvailable", d.avg_rating AS "avgRating",
+  (d.tariff_start_set_at IS NOT NULL) AS "tariffStarted"
 `;
 
 export class DriverAuthRepository {
