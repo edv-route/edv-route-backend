@@ -24,6 +24,13 @@ const DUMMY_HASH_PROMISE = argon2.hash('timing-equalizer-dummy-password');
 
 const UNIQUE_VIOLATION = '23505';
 
+/**
+ * Statuses that may take work. `overdue` is deliberately in: he owes weeks but
+ * is under the tolerance cap, so he keeps operating (debt engine, decision
+ * 2026-07-23). `penalized` and `paused` are out.
+ */
+const CAN_OPERATE_STATUSES = ['approved', 'overdue'];
+
 /** Vehicle photo signed URLs are short-lived: enough to view, not to share. */
 const VEHICLE_IMAGE_TTL_SECONDS = 60;
 
@@ -291,6 +298,39 @@ export class DriverAuthService {
   /** The driver's current alta/arrears debt (for the app's deferred payment). */
   getDebt(userId: string) {
     return this.drivers.getDebt(userId);
+  }
+
+  /**
+   * The driver marks himself available (or not) for work. Going OFF is always
+   * allowed — he may stop for the day whenever he wants. Going ON is gated by
+   * the same rule the app shows him: only an affiliate who may operate can take
+   * work, so a penalized or paused driver cannot put himself back on the road by
+   * flipping a switch. This is the first real consumer of that rule.
+   */
+  async setAvailability(userId: string, available: boolean): Promise<{ isAvailable: boolean }> {
+    const { httpErrors } = this.app;
+    const status = await this.drivers.findStatus(userId);
+    if (!status) throw httpErrors.notFound('No se encontró tu perfil');
+
+    if (available && !CAN_OPERATE_STATUSES.includes(status)) {
+      throw httpErrors.conflict(
+        status === 'penalized'
+          ? 'No puedes ponerte activo mientras estés penalizado. Paga lo que debes para volver a operar.'
+          : 'Tu cuenta no está habilitada para trabajar. Contacta a la oficina.',
+      );
+    }
+
+    const isAvailable = await this.drivers.setAvailability(userId, available);
+    if (isAvailable === null) throw httpErrors.notFound('No se encontró tu perfil');
+
+    await writeAudit(this.app.db, {
+      actorUserId: userId,
+      eventType: 'driver.availability_changed',
+      entity: 'drivers',
+      entityId: userId,
+      data: { isAvailable },
+    });
+    return { isAvailable };
   }
 
   /** Address prefill for the app's edit form (the rest already travels in /me). */

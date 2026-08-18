@@ -108,6 +108,28 @@ export class DriverAuthRepository {
     return rows[0]?.previous ?? null;
   }
 
+  /**
+   * Flips the driver's own availability. Returns null when the id is not a
+   * driver, so the caller can answer 404 instead of pretending it worked.
+   */
+  async setAvailability(userId: string, available: boolean): Promise<boolean | null> {
+    const { rows } = await this.db.query<{ isAvailable: boolean }>(
+      `UPDATE drivers SET is_available = $2 WHERE user_id = $1
+       RETURNING is_available AS "isAvailable"`,
+      [userId, available],
+    );
+    return rows[0]?.isAvailable ?? null;
+  }
+
+  /** The driver's operating status, to decide whether he may go available. */
+  async findStatus(userId: string): Promise<string | null> {
+    const { rows } = await this.db.query<{ status: string }>(
+      'SELECT status::text AS status FROM drivers WHERE user_id = $1',
+      [userId],
+    );
+    return rows[0]?.status ?? null;
+  }
+
   /** Current password hash, to re-authenticate before a self-service change. */
   async findPasswordHash(userId: string): Promise<string | null> {
     const { rows } = await this.db.query<{ passwordHash: string | null }>(

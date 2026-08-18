@@ -172,6 +172,22 @@ export const appSelfUpdateSchema = {
   },
 } as const;
 
+/** The driver marks himself available (or not) for work. */
+export const appAvailabilitySchema = {
+  body: {
+    type: 'object',
+    required: ['available'],
+    additionalProperties: false,
+    properties: { available: { type: 'boolean' } },
+  },
+  response: {
+    200: {
+      type: 'object',
+      properties: { isAvailable: { type: 'boolean' } },
+    },
+  },
+} as const;
+
 /**
  * Account standing for the driver's own profile. Every date is an ISO string;
  * `upcoming` (charge already emitted) and `nextChargeAt` (when it will be

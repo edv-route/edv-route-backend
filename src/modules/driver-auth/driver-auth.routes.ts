@@ -20,6 +20,7 @@ import { DriverAuthRepository } from './driver-auth.repository.js';
 import { DriverAuthService } from './driver-auth.service.js';
 import {
   appAccountSchema,
+  appAvailabilitySchema,
   appDebtSchema,
   appMembershipSchema,
   appPaymentMethodsSchema,
@@ -248,6 +249,15 @@ const driverAuthRoutes: FastifyPluginAsync = async (app) => {
     });
     return service.replacePhoto(req.user.sub, { buffer, mimeType: file.mimetype });
   });
+
+  // The driver puts himself on or off duty. Going ON is refused when his status
+  // does not allow operating (penalized/paused) — the switch cannot buy him back
+  // onto the road.
+  app.patch<{ Body: { available: boolean } }>(
+    '/me/availability',
+    { onRequest: [app.authenticateDriver], schema: appAvailabilitySchema },
+    async (req) => service.setAvailability(req.user.sub, req.body.available),
+  );
 
   // Address prefill for the edit form (the rest of the fields travel in /me).
   app.get(
