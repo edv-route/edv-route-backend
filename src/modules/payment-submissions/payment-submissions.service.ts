@@ -151,11 +151,10 @@ export class PaymentSubmissionsService {
         throw this.app.httpErrors.badRequest('Las facturas seleccionadas no tienen deuda por pagar');
       }
       amountUsd = total;
-      // The reservation itself is recorded as rows in payment_submission_invoices
-      // (see the repository). This JSON copy is ONLY a compatibility mirror for
-      // the build still running in production, which reads it; it goes away with
-      // the follow-up migration once this one is deployed.
-      context = { invoiceIds: input.invoiceIds };
+      // Which invoices this payment covers is recorded as ROWS in
+      // payment_submission_invoices (repository.create), where a constraint can
+      // police it. The context carries no copy of them on purpose.
+      context = {};
     } else {
       // Whole outstanding debt. Each concept has its own invoice now, so the amount
       // is the debt itself — a captured cash amount no longer defines it.
