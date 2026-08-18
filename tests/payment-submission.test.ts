@@ -103,9 +103,13 @@ test('approve settles the debt and stamps the invoice', async () => {
 
     const sub = (await (await app.inject({
       method: 'GET', url: `/api/v1/payment-submissions/${submissionId}`, headers: auth(),
-    })).json()) as { status: string; invoiceId: string | null };
+    })).json()) as { status: string; invoiceId: string | null; items: unknown[] };
     assert.equal(sub.status, 'approved');
-    assert.ok(sub.invoiceId, 'el envío queda enlazado a su factura');
+    // Billing redesign 2026-08-04: ONE INVOICE PER CONCEPT and a receipt covers
+    // N of them, so there is no single "the receipt's invoice" any more. What the
+    // receipt does carry is the list of what it settled.
+    assert.equal(sub.invoiceId, null, 'un recibo cubre N facturas, no una');
+    assert.ok(sub.items.length >= 2, 'el recibo detalla la membresía y la semana');
 
     // The invoice carries the stamped reference.
     const list = (await (await app.inject({
@@ -198,7 +202,7 @@ test('several pending payments are allowed; two on the same invoice are not', as
   }
 });
 
-test('approve of an ADVANCE emits ONE invoice for the N weeks (2B fix)', async () => {
+test('approve of an ADVANCE emits one invoice PER WEEK, all on the receipt', async () => {
   let driverId = '';
   let methodId = 0;
   const periods = 4;
@@ -238,23 +242,26 @@ test('approve of an ADVANCE emits ONE invoice for the N weeks (2B fix)', async (
       method: 'GET', url: `/api/v1/payment-submissions/${submissionId}`, headers: auth(),
     })).json()) as { status: string; invoiceId: string | null };
     assert.equal(sub.status, 'approved');
-    assert.ok(sub.invoiceId, 'el adelanto queda enlazado a su factura');
+    assert.equal(sub.invoiceId, null, 'el adelanto cubre N facturas, no una');
 
-    // ONE invoice for the whole advance, with N weekly charges under it.
-    const inv = await pool.query<{ total: string }>(
-      `SELECT total_usd::text AS total FROM invoices WHERE id = $1`, [sub.invoiceId]);
-    assert.equal(Number(inv.rows[0]!.total).toFixed(2), (price * periods).toFixed(2), 'la factura agrupa las N semanas');
+    // One invoice PER WEEK (redesign 2026-08-04), all linked to the receipt and
+    // adding up to what was charged.
+    const inv = await pool.query<{ n: string; suma: string }>(
+      `SELECT count(*)::text AS n, sum(total_usd)::text AS suma
+       FROM invoices WHERE submission_id = $1`, [submissionId]);
+    assert.equal(inv.rows[0]!.n, String(periods), 'una factura por cada semana adelantada');
+    assert.equal(Number(inv.rows[0]!.suma).toFixed(2), (price * periods).toFixed(2), 'las facturas suman el adelanto');
     const cnt = await pool.query<{ n: string }>(
       `SELECT count(*)::text AS n FROM subscription_payments
-       WHERE invoice_id = $1 AND submission_id = $2 AND status = 'paid'`, [sub.invoiceId, submissionId]);
-    assert.equal(cnt.rows[0]!.n, String(periods), 'las N semanas comparten UNA sola factura');
+       WHERE submission_id = $1 AND status = 'paid'`, [submissionId]);
+    assert.equal(cnt.rows[0]!.n, String(periods), 'las N semanas quedan pagadas');
   } finally {
     if (driverId) await removeDriver(driverId);
     if (methodId) await app.inject({ method: 'DELETE', url: `/api/v1/payment-methods/${methodId}`, headers: auth() });
   }
 });
 
-test('approve of an ENROLL emits ONE invoice (membership + N weeks)', async () => {
+test('approve of an ENROLL emits one invoice per concept (membership + N weeks)', async () => {
   let driverId = '';
   let methodId = 0;
   const periods = 2;
@@ -302,9 +309,13 @@ test('approve of an ENROLL emits ONE invoice (membership + N weeks)', async () =
 
     const sub = (await (await app.inject({
       method: 'GET', url: `/api/v1/payment-submissions/${submissionId}`, headers: auth() })).json()) as { invoiceId: string | null };
-    const inv = await pool.query<{ total: string }>(
-      `SELECT total_usd::text AS total FROM invoices WHERE id = $1`, [sub.invoiceId]);
-    assert.equal(Number(inv.rows[0]!.total).toFixed(2), total.toFixed(2), 'una factura por membresía + semanas');
+    assert.equal(sub.invoiceId, null, 'el alta cubre N facturas, no una');
+    // One per concept: the membership plus one per week (redesign 2026-08-04).
+    const inv = await pool.query<{ n: string; suma: string }>(
+      `SELECT count(*)::text AS n, sum(total_usd)::text AS suma
+       FROM invoices WHERE submission_id = $1`, [submissionId]);
+    assert.equal(inv.rows[0]!.n, String(1 + periods), 'una factura por la membresía y una por semana');
+    assert.equal(Number(inv.rows[0]!.suma).toFixed(2), total.toFixed(2), 'las facturas suman el alta');
   } finally {
     if (driverId) await removeDriver(driverId);
     if (methodId) await app.inject({ method: 'DELETE', url: `/api/v1/payment-methods/${methodId}`, headers: auth() });
