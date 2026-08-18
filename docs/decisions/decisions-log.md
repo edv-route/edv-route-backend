@@ -1041,3 +1041,23 @@ deja el problema a la vista: **las pruebas de integración de un scheduler no
 pueden compartir base con una instancia viva de ese mismo scheduler**. No se
 arregla aflojando aserciones de dinero; se arregla separando la base de dev. Hoy
 eso ya no es deuda estructural: es lo único que impide una suite verde.
+
+## 2026-08-18 — 🚗 Con qué vehículo trabaja el afiliado
+
+> `drivers.current_vehicle_id` existía desde el diseño original de la BD y **nadie
+> la escribía nunca**: solo se leía, así que todos los choferes figuraban sin
+> vehículo en uso. Ahora la maneja el afiliado desde la app.
+
+| Decisión | Motivo |
+|---|---|
+| **La elección es del AFILIADO, no del admin** (`PATCH /driver-auth/me/vehicles/:id/primary`) | Decisión de Luis. El admin aprueba vehículos; con cuál de los suyos trabaja lo decide él |
+| **Elegir uno libera el anterior solo** | Una sola columna guarda la respuesta: es imposible acabar con dos activos, no porque el código se acuerde sino porque no cabe |
+| **Solo se puede elegir un vehículo APROBADO** (única regla) | Uno en revisión o rechazado no pasó el control de documentos; dejarlo trabajar con él haría inútil esa revisión. La app ni ofrece el botón, y el backend lo rechaza con 409 aunque se intente por fuera |
+| **Con UN solo vehículo aprobado se asigna solo** (al aprobarlo, y migración `1752440000000` para los 5 que ya estaban así) | No contradice lo anterior: elegir entre una sola opción no es elegir. Desde el segundo vehículo aprobado nunca vuelve a tocarlo — decide él. Sin esto, cinco afiliados con su único vehículo aprobado figuraban sin ninguno en uso, y al llegar Viajes eso sería un «no puedo trabajar y no sé por qué» |
+
+**Gotcha de Postgres encontrado al escribir la migración:** no existe `min(uuid)`.
+La primera versión agrupaba por chofer para sacar «su único vehículo» y falló;
+node-pg-migrate revirtió limpio. Se reformuló uniendo directo al vehículo, ya que
+la subconsulta de conteo garantiza que hay exactamente uno. Es el mismo tipo de
+fallo que la multa de penalización (`make_interval(weeks => numeric)`): funciones
+de Postgres que no aceptan el tipo que se les pasa, y que solo se ven al ejecutar.

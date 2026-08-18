@@ -541,6 +541,22 @@ export class DriversService {
       [vehicleId, driverId, approve ? 'approved' : 'rejected', approve ? null : trimmed],
     );
     if (rowCount === 0) throw this.app.httpErrors.notFound('Vehículo no encontrado');
+
+    // WHICH vehicle he works with is HIS decision, not the admin's — except when
+    // there is nothing to decide. Approving his only approved vehicle, with none
+    // in use, simply puts it in use; from the second one onwards the choice is
+    // his and this never touches it again (decision de Luis, 2026-08-18).
+    if (approve) {
+      await this.app.db.query(
+        `UPDATE drivers d SET current_vehicle_id = $2
+          WHERE d.user_id = $1
+            AND d.current_vehicle_id IS NULL
+            AND (SELECT count(*) FROM vehicles v
+                  WHERE v.driver_id = $1 AND v.approval_status = 'approved') = 1`,
+        [driverId, vehicleId],
+      );
+    }
+
     await this.audit(adminId, approve ? 'vehicle.approved' : 'vehicle.rejected', 'drivers', driverId, {
       vehicleId,
       ...(approve ? {} : { reason: trimmed }),
