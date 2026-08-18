@@ -250,6 +250,14 @@ const driverAuthRoutes: FastifyPluginAsync = async (app) => {
     return service.replacePhoto(req.user.sub, { buffer, mimeType: file.mimetype });
   });
 
+  // Which of his vehicles he is operating with. Choosing one releases the
+  // previous automatically; only an approved vehicle can be chosen.
+  app.patch<{ Params: { vehicleId: string } }>(
+    '/me/vehicles/:vehicleId/primary',
+    { onRequest: [app.authenticateDriver], schema: { params: vehicleIdParam } },
+    async (req) => service.setPrimaryVehicle(req.user.sub, req.params.vehicleId),
+  );
+
   // The driver puts himself on or off duty. Going ON is refused when his status
   // does not allow operating (penalized/paused) — the switch cannot buy him back
   // onto the road.

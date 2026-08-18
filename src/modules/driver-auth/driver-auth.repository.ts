@@ -109,6 +109,31 @@ export class DriverAuthRepository {
   }
 
   /**
+   * The vehicle he is operating with. A single column means the choice is
+   * mutually exclusive by construction: naming one un-names the previous one,
+   * with no way to end up with two.
+   */
+  async setPrimaryVehicle(userId: string, vehicleId: string): Promise<void> {
+    await this.db.query('UPDATE drivers SET current_vehicle_id = $2 WHERE user_id = $1', [
+      userId,
+      vehicleId,
+    ]);
+  }
+
+  /** A vehicle of THIS driver, with the state that decides if it may be used. */
+  async findOwnVehicle(
+    userId: string,
+    vehicleId: string,
+  ): Promise<{ approvalStatus: string } | null> {
+    const { rows } = await this.db.query<{ approvalStatus: string }>(
+      `SELECT approval_status AS "approvalStatus" FROM vehicles
+        WHERE id = $1 AND driver_id = $2`,
+      [vehicleId, userId],
+    );
+    return rows[0] ?? null;
+  }
+
+  /**
    * Flips the driver's own availability. Returns null when the id is not a
    * driver, so the caller can answer 404 instead of pretending it worked.
    */
@@ -323,12 +348,14 @@ export class DriverAuthRepository {
       `SELECT v.id, v.brand, v.model, v.year, v.color, v.plate,
               vt.name AS "vehicleType",
               v.approval_status AS "approvalStatus", v.rejection_reason AS "rejectionReason",
+              (v.id = d.current_vehicle_id) AS "isPrimary",
               COALESCE((
                 SELECT json_agg(json_build_object(
                          'id', vi.id, 'position', vi.position, 'fileUrl', vi.file_url)
                        ORDER BY vi.position)
                 FROM vehicle_images vi WHERE vi.vehicle_id = v.id), '[]'::json) AS images
          FROM vehicles v
+         JOIN drivers d ON d.user_id = v.driver_id
          LEFT JOIN vehicle_types vt ON vt.id = v.vehicle_type_id
         WHERE v.driver_id = $1
         ORDER BY v.created_at`,
@@ -356,6 +383,8 @@ export interface AppVehicleRow {
   vehicleType: string | null;
   approvalStatus: string;
   rejectionReason: string | null;
+  /** The one he is operating with (drivers.current_vehicle_id). */
+  isPrimary: boolean;
   images: AppVehicleImageRow[];
 }
 

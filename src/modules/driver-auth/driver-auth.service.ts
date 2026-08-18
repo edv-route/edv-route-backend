@@ -72,6 +72,8 @@ export interface AppVehicle {
   vehicleType: string | null;
   approvalStatus: string;
   rejectionReason: string | null;
+  /** The one he is operating with; only one vehicle can hold it. */
+  isPrimary: boolean;
   images: AppVehicleImage[];
 }
 
@@ -239,6 +241,7 @@ export class DriverAuthService {
           vehicleType: v.vehicleType,
           approvalStatus: v.approvalStatus,
           rejectionReason: v.rejectionReason,
+          isPrimary: v.isPrimary,
           images,
         };
       }),
@@ -298,6 +301,37 @@ export class DriverAuthService {
   /** The driver's current alta/arrears debt (for the app's deferred payment). */
   getDebt(userId: string) {
     return this.drivers.getDebt(userId);
+  }
+
+  /**
+   * Picks which of his vehicles he is operating with. Choosing one releases the
+   * previous automatically (a single column holds the answer).
+   *
+   * Only an APPROVED vehicle can be chosen: one under review or rejected has not
+   * passed the document check, and letting him work with it would make that
+   * review pointless.
+   */
+  async setPrimaryVehicle(userId: string, vehicleId: string): Promise<{ id: string }> {
+    const { httpErrors } = this.app;
+    const vehicle = await this.drivers.findOwnVehicle(userId, vehicleId);
+    if (!vehicle) throw httpErrors.notFound('Ese vehículo no es tuyo');
+    if (vehicle.approvalStatus !== 'approved') {
+      throw httpErrors.conflict(
+        vehicle.approvalStatus === 'rejected'
+          ? 'Ese vehículo fue rechazado. Corrige lo indicado para poder usarlo.'
+          : 'Ese vehículo todavía está en revisión. Podrás usarlo cuando lo aprueben.',
+      );
+    }
+
+    await this.drivers.setPrimaryVehicle(userId, vehicleId);
+    await writeAudit(this.app.db, {
+      actorUserId: userId,
+      eventType: 'driver.primary_vehicle_changed',
+      entity: 'vehicles',
+      entityId: vehicleId,
+      data: { driverId: userId },
+    });
+    return { id: vehicleId };
   }
 
   /**
