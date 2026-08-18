@@ -4,6 +4,8 @@ import assert from 'node:assert/strict';
 import pg from 'pg';
 import type { FastifyInstance } from 'fastify';
 import { buildApp } from '../src/app.js';
+import { PaymentSubmissionsRepository } from '../src/modules/payment-submissions/payment-submissions.repository.js';
+import { EnrollmentRepository } from '../src/modules/drivers/enrollment.repository.js';
 import { removeDriver as removeDriverFixture } from './helpers/db-fixtures.js';
 
 /**
@@ -111,14 +113,16 @@ test('approve settles the debt and stamps the invoice', async () => {
     assert.equal(sub.invoiceId, null, 'un recibo cubre N facturas, no una');
     assert.ok(sub.items.length >= 2, 'el recibo detalla la membresía y la semana');
 
-    // The invoice carries the stamped reference.
+    // Every invoice the receipt settled reads Pagada and shows ITS reference:
+    // the payment details live on the receipt and each invoice surfaces them.
     const list = (await (await app.inject({
       method: 'GET', url: `/api/v1/invoices?driverId=${driverId}`, headers: auth(),
     })).json()) as { items: { id: string; status: string; paymentReference: string | null }[] };
-    const invoice = list.items.find((i) => i.id === sub.invoiceId);
-    assert.ok(invoice, 'la factura del envío aparece en el listado');
-    assert.equal(invoice!.status, 'paid', 'la factura queda pagada');
-    assert.equal(invoice!.paymentReference, 'REFV9APPR', 'la referencia del pago queda estampada');
+    assert.equal(list.items.length, 2, 'membresía y semana: una factura cada una');
+    for (const invoice of list.items) {
+      assert.equal(invoice.status, 'paid', 'la factura queda pagada');
+      assert.equal(invoice.paymentReference, 'REFV9APPR', 'muestra la referencia del recibo');
+    }
   } finally {
     if (driverId) await removeDriver(driverId);
     if (methodId) await app.inject({ method: 'DELETE', url: `/api/v1/payment-methods/${methodId}`, headers: auth() });
@@ -288,12 +292,18 @@ test('approve of an ENROLL emits one invoice per concept (membership + N weeks)'
       planId: Number(pl[0]!.id), planPriceUsd: planPrice, periods, periodInterval: '7 days',
     };
 
-    const { rows } = await pool.query<{ id: string }>(
-      `INSERT INTO payment_submissions
-         (driver_id, amount_usd, payment_method_id, payment_reference, source, status, purpose, context)
-       VALUES ($1, $2, $3, 'REFV9ENR', 'admin', 'pending', 'enroll', $4::jsonb) RETURNING id`,
-      [driverId, total.toFixed(2), methodId, JSON.stringify(context)]);
-    const submissionId = rows[0]!.id;
+    // Through the repository, NOT a raw INSERT: an `enroll` receipt GENERATES its
+    // invoices and charges when it is created (redesign 2026-08-04), and approval
+    // only settles them. Inserting the row by hand skipped that generation, so
+    // approval found nothing to pay.
+    const submissions = new PaymentSubmissionsRepository(pool, new EnrollmentRepository(pool));
+    const { id: submissionId } = await submissions.create({
+      driverId, amountUsd: total.toFixed(2), note: null, purpose: 'enroll', context,
+      source: 'admin', submittedBy: null, filePaths: [],
+      guard: { targetedInvoiceIds: null },
+      paymentMethodId: methodId, reference: 'REFV9ENR', payerBank: null,
+      paidOn: null, payerPhone: null, payerId: null, payerAccount: null,
+    });
 
     const approve = await app.inject({
       method: 'POST', url: `/api/v1/payment-submissions/${submissionId}/approve`, headers: auth() });

@@ -102,38 +102,50 @@ test('derivación: una factura sin cargos NO es "pagada" (queda Emitida)', async
   }
 });
 
-test('derivación: pago PARCIAL de sus cargos sigue siendo Emitida (sin fecha de pago)', async () => {
-  const { driverId, subId } = await makeDriver('InvStatePartial');
+/**
+ * Since the billing redesign (2026-08-04) an invoice bills ONE concept, so
+ * "some of its charges are paid" cannot happen: what the derived state has to
+ * get right is the single charge's own status. A pending charge reads Emitida
+ * and an overdue one reads Vencida — never Pagada.
+ */
+test('derivación: su único cargo pendiente = Emitida; vencido = Vencida', async () => {
+  const { driverId, subId } = await makeDriver('InvStatePending');
   try {
     const invoiceId = await makeInvoice(driverId, 20);
-    await addWeek(subId, invoiceId, 'paid');
     await addWeek(subId, invoiceId, 'pending');
-    const invoice = await invoiceOf(driverId);
-    assert.equal(invoice.status, 'issued', 'mientras quede un cargo por pagar, no está pagada');
-    assert.equal(invoice.paidAt, null, 'la fecha de pago solo existe si se saldó por completo');
+    let invoice = await invoiceOf(driverId);
+    assert.equal(invoice.status, 'issued', 'cargo pendiente = Emitida');
+    assert.equal(invoice.paidAt, null, 'sin fecha de pago');
+
+    await pool.query(
+      `UPDATE subscription_payments SET status = 'overdue' WHERE invoice_id = $1`,
+      [invoiceId],
+    );
+    invoice = await invoiceOf(driverId);
+    assert.equal(invoice.status, 'overdue', 'cargo vencido = Vencida');
+    assert.equal(invoice.paidAt, null, 'seguir sin pagar no produce fecha de pago');
   } finally {
     await removeDriver(driverId);
   }
 });
 
-test('derivación: con TODOS sus cargos pagados es Pagada, con fecha = el pago más reciente', async () => {
+test('derivación: su cargo pagado = Pagada, con la fecha de ESE cargo', async () => {
   const { driverId, subId } = await makeDriver('InvStatePaid');
   try {
     const invoiceId = await makeInvoice(driverId, 20);
-    await addWeek(subId, invoiceId, 'paid', '2 hours');
     await addWeek(subId, invoiceId, 'paid', '10 minutes');
     const invoice = await invoiceOf(driverId);
-    assert.equal(invoice.status, 'paid', 'todos los cargos pagados = factura pagada');
+    assert.equal(invoice.status, 'paid', 'cargo pagado = factura pagada');
     assert.ok(invoice.paidAt, 'expone la fecha de pago');
 
-    const { rows } = await pool.query<{ max: Date }>(
-      `SELECT max(paid_at) AS max FROM subscription_payments WHERE invoice_id = $1`,
+    const { rows } = await pool.query<{ paidAt: Date }>(
+      `SELECT paid_at AS "paidAt" FROM subscription_payments WHERE invoice_id = $1`,
       [invoiceId],
     );
     assert.equal(
       new Date(invoice.paidAt!).getTime(),
-      new Date(rows[0]!.max).getTime(),
-      'la fecha de pago es la del último cargo saldado',
+      new Date(rows[0]!.paidAt).getTime(),
+      'la fecha es la de su propio cargo',
     );
   } finally {
     await removeDriver(driverId);
@@ -176,10 +188,12 @@ test('filtro por estado derivado: issued / paid / voided seleccionan lo mismo qu
   }
 });
 
-test('ciclo opción A (E2E): alta sin pago = factura Emitida -> pago externo = Pagada con fecha', async () => {
+test('ciclo opción A (E2E): alta sin pago = Emitidas -> recibo aprobado = Pagadas con fecha', async () => {
   let driverId = '';
   try {
-    // Registration WITHOUT payment: emits the debt invoice (membership + 1 week).
+    // Registration WITHOUT payment emits the debt as one invoice PER CONCEPT
+    // (redesign 2026-08-04): the membership and the first week, each with its
+    // own number — not one grouped invoice.
     const registered = await app.inject({
       method: 'POST',
       url: '/api/v1/drivers/register',
@@ -197,31 +211,47 @@ test('ciclo opción A (E2E): alta sin pago = factura Emitida -> pago externo = P
       })).json();
 
     const debt = await list();
-    assert.equal(debt.total, 1, 'el alta sin pago emite una sola factura de deuda');
-    assert.equal(debt.items[0]!.status, 'issued', 'nace Emitida: el dinero aún no entró');
-    assert.equal(debt.items[0]!.paidAt, null, 'sin fecha de pago');
-    assert.equal((await list('&status=paid')).total, 0, 'no aparece entre las pagadas');
+    assert.equal(debt.total, 2, 'el alta sin pago emite una factura por concepto');
+    for (const item of debt.items) {
+      assert.equal(item.status, 'issued', 'nacen Emitidas: el dinero aún no entró');
+      assert.equal(item.paidAt, null, 'sin fecha de pago');
+    }
+    assert.equal((await list('&status=paid')).total, 0, 'no aparecen entre las pagadas');
 
-    // The admin registers the money received outside the system.
+    // The admin registers the money received outside the system. Since v9 that
+    // is a RECEIPT (payment_submissions) which, once approved, settles the debt:
+    // the old `/external-payment` shortcut no longer exists. Inserted by SQL to
+    // skip the multipart upload, approved through the endpoint.
+    const total = debt.items.reduce((sum, i) => sum + Number(i.totalUsd), 0);
+    const { rows: receipt } = await pool.query<{ id: string }>(
+      `INSERT INTO payment_submissions (driver_id, amount_usd, source, status, purpose, note)
+       VALUES ($1, $2, 'admin', 'pending', 'debt', 'TEST saldo del alta') RETURNING id`,
+      [driverId, total.toFixed(2)],
+    );
     const settle = await app.inject({
       method: 'POST',
-      url: `/api/v1/drivers/${driverId}/external-payment`,
+      url: `/api/v1/payment-submissions/${receipt[0]!.id}/approve`,
       headers: auth(),
-      payload: { note: 'TEST saldo del alta' },
     });
-    assert.equal(settle.statusCode, 201, settle.body);
+    assert.equal(settle.statusCode, 200, settle.body);
 
     const paid = await list();
-    assert.equal(paid.total, 1, 'saldar el alta NO emite una factura nueva: reusa la de la deuda');
-    assert.equal(paid.items[0]!.id, debt.items[0]!.id, 'es la misma factura');
-    assert.equal(paid.items[0]!.status, 'paid', 'ahora se lee como Pagada');
-    assert.ok(paid.items[0]!.paidAt, 'con su fecha de pago');
-    assert.equal(
-      new Date(paid.items[0]!.issuedAt).getTime() <= new Date(paid.items[0]!.paidAt!).getTime(),
-      true,
-      'la fecha de pago nunca es anterior a la de emisión',
+    assert.equal(paid.total, 2, 'saldar el alta NO emite facturas nuevas: reusa las de la deuda');
+    assert.deepEqual(
+      paid.items.map((i) => i.id).sort(),
+      debt.items.map((i) => i.id).sort(),
+      'son las mismas facturas',
     );
-    assert.equal((await list('&status=paid')).total, 1, 'y filtra entre las pagadas');
+    for (const item of paid.items) {
+      assert.equal(item.status, 'paid', 'ahora se leen como Pagadas');
+      assert.ok(item.paidAt, 'con su fecha de pago');
+      assert.equal(
+        new Date(item.issuedAt).getTime() <= new Date(item.paidAt!).getTime(),
+        true,
+        'la fecha de pago nunca es anterior a la de emisión',
+      );
+    }
+    assert.equal((await list('&status=paid')).total, 2, 'y filtran entre las pagadas');
   } finally {
     if (driverId) await removeDriver(driverId);
   }

@@ -33,7 +33,7 @@ export type InvoiceListItem = Pick<
   /** Receipt that settled or generated this invoice (null for unpaid debt). */
   submissionId: string | null;
   submissionNumber: string | null;
-  /** Payment method — read from the RECEIPT now, not the invoice. */
+  /** Payment method: from the receipt, or from the invoice on a direct enrolment. */
   paymentMethodName: string | null;
   paymentReference: string | null;
   payerBank: string | null;
@@ -184,15 +184,22 @@ export class BillingRepository {
               ${INVOICE_CONCEPT_SQL} AS concept, ch.kind AS kind,
               ch.period_start AS "periodStart", ch.period_end AS "periodEnd",
               ps.id AS "submissionId", ps.submission_number::text AS "submissionNumber",
-              pm.name AS "paymentMethodName", ps.payment_reference AS "paymentReference",
-              ps.payer_bank AS "payerBank", ps.paid_on AS "paidOn",
-              ps.payer_phone AS "payerPhone", ps.payer_id AS "payerId",
-              ps.payer_account AS "payerAccount",
-              EXISTS (SELECT 1 FROM payment_submission_files f WHERE f.submission_id = ps.id) AS "hasProof"
+              -- Payment meta: the RECEIPT first (v9), falling back to the invoice's
+              -- own columns for a direct admin enrolment, which has no receipt.
+              COALESCE(pm.name, pmi.name) AS "paymentMethodName",
+              COALESCE(ps.payment_reference, i.payment_reference) AS "paymentReference",
+              COALESCE(ps.payer_bank, i.payer_bank) AS "payerBank",
+              COALESCE(ps.paid_on, i.paid_on) AS "paidOn",
+              COALESCE(ps.payer_phone, i.payer_phone) AS "payerPhone",
+              COALESCE(ps.payer_id, i.payer_id) AS "payerId",
+              COALESCE(ps.payer_account, i.payer_account) AS "payerAccount",
+              (EXISTS (SELECT 1 FROM payment_submission_files f WHERE f.submission_id = ps.id)
+               OR i.proof_url IS NOT NULL) AS "hasProof"
        ${fromSql}
        LEFT JOIN admins va ON va.id = i.voided_by
        LEFT JOIN payment_submissions ps ON ps.id = COALESCE(i.submission_id, ch.submission_id)
        LEFT JOIN payment_methods pm ON pm.id = ps.payment_method_id
+       LEFT JOIN payment_methods pmi ON pmi.id = i.payment_method_id
        ${whereSql}
        ORDER BY i.invoice_number DESC
        LIMIT $${values.length - 1} OFFSET $${values.length}`,
@@ -262,15 +269,22 @@ export class BillingRepository {
               ${INVOICE_CONCEPT_SQL} AS concept, ch.kind AS kind,
               ch.period_start AS "periodStart", ch.period_end AS "periodEnd",
               ps.id AS "submissionId", ps.submission_number::text AS "submissionNumber",
-              pm.name AS "paymentMethodName", ps.payment_reference AS "paymentReference",
-              ps.payer_bank AS "payerBank", ps.paid_on AS "paidOn",
-              ps.payer_phone AS "payerPhone", ps.payer_id AS "payerId",
-              ps.payer_account AS "payerAccount",
-              EXISTS (SELECT 1 FROM payment_submission_files f WHERE f.submission_id = ps.id) AS "hasProof"
+              -- Payment meta: the RECEIPT first (v9), falling back to the invoice's
+              -- own columns for a direct admin enrolment, which has no receipt.
+              COALESCE(pm.name, pmi.name) AS "paymentMethodName",
+              COALESCE(ps.payment_reference, i.payment_reference) AS "paymentReference",
+              COALESCE(ps.payer_bank, i.payer_bank) AS "payerBank",
+              COALESCE(ps.paid_on, i.paid_on) AS "paidOn",
+              COALESCE(ps.payer_phone, i.payer_phone) AS "payerPhone",
+              COALESCE(ps.payer_id, i.payer_id) AS "payerId",
+              COALESCE(ps.payer_account, i.payer_account) AS "payerAccount",
+              (EXISTS (SELECT 1 FROM payment_submission_files f WHERE f.submission_id = ps.id)
+               OR i.proof_url IS NOT NULL) AS "hasProof"
        FROM invoices i JOIN users u ON u.id = i.driver_id ${CHARGE_LATERAL}
        LEFT JOIN admins va ON va.id = i.voided_by
        LEFT JOIN payment_submissions ps ON ps.id = COALESCE(i.submission_id, ch.submission_id)
        LEFT JOIN payment_methods pm ON pm.id = ps.payment_method_id
+       LEFT JOIN payment_methods pmi ON pmi.id = i.payment_method_id
        WHERE i.id = $1`,
       [id],
     );

@@ -1004,3 +1004,40 @@ motor —correctamente, desde 2026-08-11— se niega a mover; y el test que exig
 pendiente», que afirmaba la regla revocada, ahora verifica la vigente (varios sí, dos sobre la misma
 factura no). **Quedan 8 rojos** sobre el enlace factura↔recibo, anteriores a este cambio y sin
 diagnosticar.
+
+## 2026-08-18 (noche) — 🐞 Dos bugs de producción que la suite roja tapaba
+
+> Al poner al día los 8 tests que quedaban rojos aparecieron **dos fallos reales
+> en código desplegado**. Ninguno era un problema de las pruebas: las pruebas
+> tenían razón y llevaban días gritando sin que nadie las oyera. Suite: de 19/30
+> a **29/30**.
+
+| Bug | Qué pasaba |
+|---|---|
+| **La multa por penalización NUNCA se pudo emitir.** `debt-scheduler` línea 268: `make_interval(weeks => $1)` fallaba con *«function make_interval(weeks => numeric) does not exist»* y **abortaba el tick completo** | El mismo parámetro `$1` (`penalty_weeks`) se usa antes en `p.price_usd * $1`, y esa multiplicación tipa el parámetro como **numeric** para toda la sentencia; `make_interval` solo acepta enteros. El chofer sí pasaba a `penalized` (paso 4) pero la multa (paso 5) reventaba, y con ella el resto del tick: los registros de auditoría de esa pasada no se escribían. Arreglo: `$1::int`, el mismo casteo explícito que ya usaba `billing.repository` |
+| **El método y la referencia de pago de un alta hecha por el admin no se veían en ninguna parte.** El listado y el detalle de facturas leían esos datos **solo desde el recibo** | Hay dos escritores: el flujo v9 (recibo) y `enrollment.setInvoicePaymentMeta`, que los estampa en las **columnas de la factura** cuando el admin inscribe directo, sin recibo. Al mudar la lectura al recibo (rediseño 2026-08-04) el segundo escritor quedó huérfano: el admin escribía la referencia y desaparecía de la vista. Arreglo: `COALESCE(recibo, factura)` en los dos queries, más `hasProof` que vuelve a mirar el `proof_url` heredado |
+
+**Tests puestos al día** (todos describían diseños que se cambiaron a propósito y
+nadie volvió a mirar): el adelanto emite una factura **por semana**, no una
+agrupada · un alta sin pago emite **una factura por concepto** (2, no 1) · una
+factura tiene **un solo cargo**, así que «pago parcial de sus cargos» ya no puede
+existir y se reemplazó por la derivación real (pendiente → Emitida, vencido →
+Vencida, pagado → Pagada con la fecha de su cargo) · el endpoint
+`/external-payment` **ya no existe**: saldar por fuera es un recibo aprobado · el
+recibo de un `enroll` debe crearse **por el repositorio**, que es quien genera sus
+cargos, no con un INSERT a mano.
+
+### ⚠️ Por qué la suite no puede llegar a 30/30 hoy
+
+El test que queda rojo **rota**: unas veces es «no cobra una semana ya cubierta»,
+otras «un cargo pendiente para este chofer», y a veces pasan las dos. Siempre por
+lo mismo: encuentra **un cargo de más**. Lo emite el scheduler de **producción**,
+que tickea sobre la misma base mientras las pruebas corren.
+
+Además, al arreglar el fixture (darle fecha de inicio de tarifa al chofer de
+prueba, sin la cual el motor lo ignora) esos choferes pasaron a ser **visibles
+para el motor de producción**. Es correcto para lo que la prueba quiere medir, y
+deja el problema a la vista: **las pruebas de integración de un scheduler no
+pueden compartir base con una instancia viva de ese mismo scheduler**. No se
+arregla aflojando aserciones de dinero; se arregla separando la base de dev. Hoy
+eso ya no es deuda estructural: es lo único que impide una suite verde.

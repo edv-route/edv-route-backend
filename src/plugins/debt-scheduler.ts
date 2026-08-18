@@ -265,7 +265,7 @@ export async function runDebtEngineTick(db: pg.Pool): Promise<DebtTickResult> {
            INSERT INTO subscription_payments
              (driver_subscription_id, invoice_id, period_start, period_end,
               amount_usd, status, charge_kind)
-           SELECT e.sub_id, ni.invoice_id, now(), now() + make_interval(weeks => $1),
+           SELECT e.sub_id, ni.invoice_id, now(), now() + make_interval(weeks => $1::int),
                   e.amount, 'pending', 'penalty'
            FROM eligible e JOIN new_invoices ni ON ni.driver_id = e.driver_id
            RETURNING id, driver_subscription_id
