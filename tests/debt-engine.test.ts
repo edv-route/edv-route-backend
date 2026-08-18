@@ -5,7 +5,11 @@ import pg from 'pg';
 import { runDebtEngineTick } from '../src/plugins/debt-scheduler.js';
 import { EnrollmentRepository } from '../src/modules/drivers/enrollment.repository.js';
 import { DriversRepository } from '../src/modules/drivers/drivers.repository.js';
-import { removeDriver as removeDriverFixture, restoreDebtEngineDefaults } from './helpers/db-fixtures.js';
+import {
+  removeDriver as removeDriverFixture,
+  restoreDebtEngineSettings,
+  snapshotDebtEngineSettings,
+} from './helpers/db-fixtures.js';
 
 /**
  * Integration tests for the debt & penalty engine (design v8). They run the
@@ -18,13 +22,17 @@ import { removeDriver as removeDriverFixture, restoreDebtEngineDefaults } from '
 let pool: pg.Pool;
 let repo: DriversRepository;
 
-before(() => {
+before(async () => {
   pool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
   repo = new DriversRepository(pool);
+  // The suite shares its database with the deployed backend: remember how the
+  // engine was configured so the after() hook restores THAT, not a guess.
+  await snapshotDebtEngineSettings(pool);
 });
 after(async () => {
-  // Safety net: a test that dies mid-way must NEVER leave the money engine ON.
-  await restoreDebtEngineDefaults(pool);
+  // Safety net: a test that dies mid-way must never leave the engine on a
+  // setting this suite chose — put back exactly what was there before.
+  await restoreDebtEngineSettings(pool);
   await pool.end();
 });
 
@@ -34,13 +42,23 @@ const setFlag = (on: boolean) =>
 const statusOf = async (driverId: string): Promise<string> =>
   (await pool.query<{ s: string }>('SELECT status::text AS s FROM drivers WHERE user_id = $1', [driverId])).rows[0]!.s;
 
-/** Creates an approved driver with an active WEEKLY subscription. */
+/**
+ * Creates an OPERATING driver with an active WEEKLY subscription: approved AND
+ * with the tariff start already set. The start marker matters — since
+ * 2026-08-11 the engine refuses to move a driver whose tariff has not started
+ * (his alta-debt week settles at approval, not by falling into arrears), so a
+ * driver without it is inert no matter what these tests do to him.
+ */
 async function makeDriver(): Promise<{ driverId: string; subId: string }> {
   const { rows: u } = await pool.query<{ id: string }>(
     `INSERT INTO users (first_name, last_name, full_name) VALUES ('TEST', 'DebtEngine', 'TEST DebtEngine') RETURNING id`,
   );
   const driverId = u[0]!.id;
-  await pool.query(`INSERT INTO drivers (user_id, source, status) VALUES ($1, 'admin', 'approved')`, [driverId]);
+  await pool.query(
+    `INSERT INTO drivers (user_id, source, status, tariff_start_set_at)
+     VALUES ($1, 'admin', 'approved', now())`,
+    [driverId],
+  );
   const { rows: p } = await pool.query<{ id: number }>(
     `SELECT id FROM subscription_plans WHERE billing_period = 'weekly' AND active ORDER BY id LIMIT 1`,
   );
@@ -402,7 +420,7 @@ test('ciclo v8 anclado: emite el lunes correcto (monto ok), idempotente, deriva 
     assert.equal(await debt(), '0', 'sin deuda tras saldar');
     assert.equal(await statusOf(driverId), 'approved', 'saldado = aprobado');
   } finally {
-    await restoreDebtEngineDefaults(pool);
+    await restoreDebtEngineSettings(pool);
     await removeDriver(driverId);
   }
 });
@@ -423,7 +441,7 @@ test('engine: does not bill a week already covered by paid coverage (no phantom 
     assert.equal(await countPendingWeeks(covered.subId), '0', 'una semana cubierta NO se cobra');
     assert.equal(await countPendingWeeks(bare.subId), '1', 'sin cobertura SÍ se cobra la próxima semana');
   } finally {
-    await restoreDebtEngineDefaults(pool);
+    await restoreDebtEngineSettings(pool);
     await removeDriver(covered.driverId);
     await removeDriver(bare.driverId);
   }

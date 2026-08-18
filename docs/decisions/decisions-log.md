@@ -971,3 +971,36 @@ semanal y validar el ciclo con reloj real.
 | **Componente `app-avatar` compartido en el panel** (foto + caída a iniciales, incluida la firma vencida) | Las iniciales estaban escritas a mano en cuatro sitios (lista de afiliados, detalle, lista de solicitudes, detalle de solicitud) |
 | **Un chofer con deuda —incluido el `penalized`— ENTRA a la app; lo que pierde es el trabajo** (nada de viajes ni beneficios; se irán limitando más funciones). El candado es `DriverStatus.canOperate` en cada función, nunca en la entrada | Decisión de Luis (2026-08-18). Cerrarle la app sería cerrarle la única pantalla donde puede **ver y pagar** lo que debe: quedaría penalizado sin manera de salir |
 | **Una sola definición de deuda en todo el sistema** (`debtChargePredicate`): había **seis copias**, y las de la lista de afiliados y el `/me/debt` de la app **no comprobaban la cobertura pagada** | Tras un adelanto de semanas (Forma A) la cobertura se corre hacia adelante; una semana marcada como adeudada que cae **dentro** de lo ya pagado hacía que la lista y la app cobraran **$10 de una deuda inexistente** mientras el detalle decía $0. El motor de deuda siempre aplicó la regla correcta; ahora todos usan la suya. Verificado: los importes no cambian con los datos actuales |
+
+## 2026-08-18 (tarde) — 🔒 La reserva de facturas pasa a ser una relación + incidente del motor
+
+> Decisión de Luis tras plantear la disyuntiva **varios pagos pendientes vs. uno solo**: se
+> **mantienen varios**. El argumento que decide no es la flexibilidad, es que con un solo pago
+> pendiente el chofer queda bloqueado hasta que un admin revise, y si la revisión tarda entra en mora
+> —y luego en penalización, que le quita el trabajo— **por la latencia de la oficina, no por la suya**.
+> Además el pago ya ocurrió en el banco: negarse a registrarlo no lo deshace, solo desactualiza el
+> sistema.
+
+| Decisión | Motivo |
+|---|---|
+| **Se mantienen varios pagos en revisión** por chofer | Ver arriba. Y no es una puerta abierta: como cada pago reserva las facturas que cubre, el techo natural es el número de facturas que debe |
+| **Qué facturas cubre un pago deja de ser un JSON y pasa a ser una tabla** (`payment_submission_invoices`, mig. `1752420000000`) con FK a `invoices` (RESTRICT) e índice único parcial: **una factura, un solo pago pendiente** | La lista vivía en `context->'invoiceIds'`: una clave foránea escondida en un blob, sin integridad referencial y —lo grave— **sin ninguna restricción que pudiera vigilar la invariante**. Al permitir varios pendientes (2026-08-12) la garantía quedó solo en código (lock consultivo + re-chequeo, correcto hoy), así que cualquier camino de inserción futuro cobraría dos veces la misma factura sin que nada chillara. El dinero no puede depender de que todos los llamadores futuros se acuerden |
+| **El estado del recibo se copia a la tabla por trigger** | Un índice parcial no puede mirar otra tabla. Con trigger la garantía se queda en la base: probado que rechaza el duplicado **incluso si el llamador miente** sobre el estado, y que aprobar/rechazar **libera la reserva sola** |
+| **Expandir/contraer**: la migración solo añade; el código escribe la tabla (fuente de verdad) y mantiene el JSON como espejo | Prod y dev comparten base y prod corre todavía la versión anterior, que lee el JSON. Borrarlo ahora rompería los pagos parciales en vivo. La migración de contracción va después de desplegar |
+
+### ⚠️ Incidente: la suite de tests apagó el motor de deuda de producción
+
+`tests/helpers/db-fixtures.ts` restauraba los ajustes del motor a valores **fijos** con el
+interruptor en **false**. Como `app_settings` es global y la suite corre contra la **misma base que
+producción**, bastaba con correr `npm test` para dejar el motor de cobro **apagado**: sin emisión
+semanal, sin mora, y en silencio. Ocurrió hoy a las 14:35 UTC y estuvo apagado ~45 minutos; se
+restauró a `true` (había emitido cargos reales el 14 y el 17). **Arreglo**: el helper ahora
+**fotografía** los ajustes antes de tocarlos y restaura *eso*, no una constante — restaurar un valor
+fijo no es restaurar, es sobrescribir.
+
+**Estado de la suite**: 22/30 en verde (venía de 19/30 **en `main`**, o sea rota en lo que está
+desplegado). Se arreglaron: el fixture creaba un chofer **sin fecha de inicio de tarifa**, al que el
+motor —correctamente, desde 2026-08-11— se niega a mover; y el test que exigía «un solo pago
+pendiente», que afirmaba la regla revocada, ahora verifica la vigente (varios sí, dos sobre la misma
+factura no). **Quedan 8 rojos** sobre el enlace factura↔recibo, anteriores a este cambio y sin
+diagnosticar.

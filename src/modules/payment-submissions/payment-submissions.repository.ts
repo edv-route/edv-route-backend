@@ -208,6 +208,20 @@ export class PaymentSubmissionsRepository {
   }
 
   /**
+   * The invoices ONE submission reserves, or null when it enumerates none (a
+   * whole-debt payment: it covers everything owed at approval time, so listing
+   * invoices would freeze a total that may still move).
+   */
+  async reservedFor(submissionId: string, executor: Executor = this.db): Promise<string[] | null> {
+    const { rows } = await executor.query<{ invoiceId: string }>(
+      `SELECT invoice_id::text AS "invoiceId" FROM payment_submission_invoices
+        WHERE submission_id = $1`,
+      [submissionId],
+    );
+    return rows.length > 0 ? rows.map((r) => r.invoiceId) : null;
+  }
+
+  /**
    * True when a PENDING `debt` submission covers the WHOLE debt (no specific
    * invoices in its context): such a payment implicitly reserves every debt
    * invoice, so no other payment may coexist with it (double-charge guard —
@@ -216,9 +230,10 @@ export class PaymentSubmissionsRepository {
    */
   async hasWholeDebtPending(driverId: string, executor: Executor = this.db): Promise<boolean> {
     const { rows } = await executor.query(
-      `SELECT 1 FROM payment_submissions
-        WHERE driver_id = $1 AND status = 'pending' AND purpose = 'debt'
-          AND (context->'invoiceIds' IS NULL OR jsonb_typeof(context->'invoiceIds') <> 'array')
+      `SELECT 1 FROM payment_submissions ps
+        WHERE ps.driver_id = $1 AND ps.status = 'pending' AND ps.purpose = 'debt'
+          AND NOT EXISTS (SELECT 1 FROM payment_submission_invoices psi
+                          WHERE psi.submission_id = ps.id)
         LIMIT 1`,
       [driverId],
     );
@@ -235,10 +250,10 @@ export class PaymentSubmissionsRepository {
   async reservedInvoiceIds(driverId: string, executor: Executor = this.db): Promise<string[]> {
     const { rows } = await executor.query<{ invoiceId: string }>(
       `SELECT DISTINCT inv AS "invoiceId" FROM (
-         SELECT jsonb_array_elements_text(ps.context->'invoiceIds') AS inv
-         FROM payment_submissions ps
-         WHERE ps.driver_id = $1 AND ps.status = 'pending'
-           AND jsonb_typeof(ps.context->'invoiceIds') = 'array'
+         SELECT psi.invoice_id::text AS inv
+         FROM payment_submission_invoices psi
+         JOIN payment_submissions ps ON ps.id = psi.submission_id
+         WHERE ps.driver_id = $1 AND psi.submission_status = 'pending'
          UNION
          SELECT mp.invoice_id::text FROM membership_payments mp
          JOIN payment_submissions ps ON ps.id = mp.submission_id
@@ -289,6 +304,20 @@ export class PaymentSubmissionsRepository {
         ],
       );
       const id = rows[0]!.id;
+      // The invoices a payment covers are a RELATION, not a JSON array: the
+      // partial unique index on this table is what makes "one pending payment
+      // per invoice" impossible to break, whatever code path inserts. The
+      // advisory lock above stays as the friendly early error; THIS is the
+      // guarantee.
+      if (targeted) {
+        for (const invoiceId of targeted) {
+          await client.query(
+            `INSERT INTO payment_submission_invoices (submission_id, invoice_id, submission_status)
+             VALUES ($1, $2, 'pending')`,
+            [id, invoiceId],
+          );
+        }
+      }
       // Billing redesign (2026-08-04): an ALTA receipt GENERATES its invoices/
       // charges (pending) right here, linked to it — so they carry their N° while
       // pending and a rejection leaves them owed. Approval settles them. Other
@@ -457,8 +486,7 @@ export class PaymentSubmissionsRepository {
     // only the selected invoices — show exactly those, not the driver's whole debt,
     // so the review screen matches the amount charged. Null = the whole debt.
     if (purpose === 'debt') {
-      const rawIds = (context as { invoiceIds?: unknown }).invoiceIds;
-      const invoiceIds = Array.isArray(rawIds) ? (rawIds as string[]) : null;
+      const invoiceIds = await this.reservedFor(submissionId);
       const { rows } = await this.db.query<SubmissionDetail['items'][number]>(
         `SELECT i.invoice_number::text AS "invoiceNumber", c.amount_usd::text AS "amountUsd",
                 c.label, c.period_start AS "periodStart", c.period_end AS "periodEnd"
@@ -589,7 +617,6 @@ export class PaymentSubmissionsRepository {
         // Partial payment: the receipt settles only the selected invoices (each in
         // full). `invoiceIds` in the context restricts them; absent = all debt.
         const ctx = sub.context as {
-          invoiceIds?: string[];
           advanceWeeks?: number;
           subscriptionId?: string;
           planPriceUsd?: number;
@@ -598,7 +625,7 @@ export class PaymentSubmissionsRepository {
           driverId: sub.driverId,
           registeredBy: adminId,
           submissionId: id,
-          invoiceIds: ctx.invoiceIds ?? null,
+          invoiceIds: await this.reservedFor(id, client),
         });
         if (!settle) return { ok: false, reason: 'no_debt' };
         settledCharges = settle.settledCharges;

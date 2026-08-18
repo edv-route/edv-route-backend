@@ -37,14 +37,36 @@ export async function removeDriver(pool: pg.Pool, driverId: string): Promise<voi
   }
 }
 
+/** Debt-engine settings as they were before a suite touched them. */
+const DEBT_ENGINE_KEYS = ['debt_engine_enabled', 'billing_day_of_week', 'billing_hour'] as const;
+let debtEngineSnapshot: { key: string; value: string }[] | null = null;
+
 /**
- * Debt-engine settings back to their seed values, master switch OFF. MUST run
- * in an `after()` hook of any suite that flips the switch: `app_settings` is
- * global, so a test that dies mid-way would otherwise leave the money engine
- * running for every process pointed at this database.
+ * Remembers the CURRENT debt-engine settings so they can be put back exactly as
+ * they were. Call it before flipping the switch.
+ *
+ * This exists because `app_settings` is global and this suite runs against the
+ * same database the deployed backend uses: on 2026-08-18 the restore helper
+ * hardcoded "master switch OFF", so simply running the tests turned OFF the
+ * production debt engine — no weekly charges, no arrears, silently. Restoring a
+ * hardcoded value is not restoring; it is overwriting.
  */
-export async function restoreDebtEngineDefaults(pool: pg.Pool): Promise<void> {
-  await pool.query(`UPDATE app_settings SET value = 'false'::jsonb WHERE key = 'debt_engine_enabled'`);
-  await pool.query(`UPDATE app_settings SET value = '5'::jsonb WHERE key = 'billing_day_of_week'`);
-  await pool.query(`UPDATE app_settings SET value = '18'::jsonb WHERE key = 'billing_hour'`);
+export async function snapshotDebtEngineSettings(pool: pg.Pool): Promise<void> {
+  const { rows } = await pool.query<{ key: string; value: string }>(
+    `SELECT key, value::text AS value FROM app_settings WHERE key = ANY($1)`,
+    [[...DEBT_ENGINE_KEYS]],
+  );
+  debtEngineSnapshot = rows;
+}
+
+/**
+ * Puts the debt-engine settings back to whatever `snapshotDebtEngineSettings`
+ * saw. MUST run in an `after()` hook of any suite that flips the switch. Without
+ * a snapshot it does nothing, which is safer than guessing.
+ */
+export async function restoreDebtEngineSettings(pool: pg.Pool): Promise<void> {
+  if (!debtEngineSnapshot) return;
+  for (const row of debtEngineSnapshot) {
+    await pool.query(`UPDATE app_settings SET value = $2::jsonb WHERE key = $1`, [row.key, row.value]);
+  }
 }

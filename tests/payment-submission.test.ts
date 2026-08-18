@@ -68,6 +68,14 @@ async function insertPending(driverId: string, amountUsd: string, methodId: numb
   return rows[0]!.id;
 }
 
+/** Reserves an invoice for a submission (what a partial payment records). */
+const reserve = (submissionId: string, invoiceId: string): Promise<unknown> =>
+  pool.query(
+    `INSERT INTO payment_submission_invoices (submission_id, invoice_id, submission_status)
+     VALUES ($1, $2, 'pending')`,
+    [submissionId, invoiceId],
+  );
+
 test('approve settles the debt and stamps the invoice', async () => {
   let driverId = '';
   let methodId = 0;
@@ -147,7 +155,14 @@ test('reject keeps the debt with a trace', async () => {
   }
 });
 
-test('a second pending submission is rejected (one per driver)', async () => {
+/**
+ * The rule changed on 2026-08-12: a driver MAY have several payments under
+ * review at once (he must be able to pay while the office reviews an earlier
+ * receipt; blocking him would put him in arrears through OUR review latency).
+ * What stays forbidden — and is now guaranteed by the database instead of by
+ * application code — is two pending payments reserving the SAME invoice.
+ */
+test('several pending payments are allowed; two on the same invoice are not', async () => {
   let driverId = '';
   let methodId = 0;
   try {
@@ -155,12 +170,28 @@ test('a second pending submission is rejected (one per driver)', async () => {
     const created = await newDriverWithDebt('V-99991003');
     driverId = created.driverId;
 
-    await insertPending(driverId, created.debt, methodId, 'REFV9ONE');
-    await assert.rejects(
-      () => insertPending(driverId, created.debt, methodId, 'REFV9TWO'),
-      /payment_submissions_one_pending_per_driver|duplicate key/,
-      'la BD impide un segundo envío pendiente',
+    const { rows: invoices } = await pool.query<{ id: string }>(
+      `SELECT id FROM invoices WHERE driver_id = $1 ORDER BY invoice_number`,
+      [driverId],
     );
+    assert.ok(invoices.length >= 1, 'el alta debe emitir al menos una factura');
+    const invoiceId = invoices[0]!.id;
+
+    const first = await insertPending(driverId, created.debt, methodId, 'REFV9ONE');
+    const second = await insertPending(driverId, created.debt, methodId, 'REFV9TWO');
+    assert.ok(second, 'varios pagos en revisión SÍ están permitidos desde 2026-08-12');
+
+    await reserve(first, invoiceId);
+    await assert.rejects(
+      () => reserve(second, invoiceId),
+      /one_pending_per_invoice|duplicate key/,
+      'la BD impide que dos pagos pendientes reserven la misma factura',
+    );
+
+    // Once the first one is resolved the invoice is free again: the reservation
+    // follows the payment's status by trigger, nobody has to remember to clear it.
+    await pool.query(`UPDATE payment_submissions SET status = 'rejected' WHERE id = $1`, [first]);
+    await reserve(second, invoiceId);
   } finally {
     if (driverId) await removeDriver(driverId);
     if (methodId) await app.inject({ method: 'DELETE', url: `/api/v1/payment-methods/${methodId}`, headers: auth() });

@@ -151,6 +151,10 @@ export class PaymentSubmissionsService {
         throw this.app.httpErrors.badRequest('Las facturas seleccionadas no tienen deuda por pagar');
       }
       amountUsd = total;
+      // The reservation itself is recorded as rows in payment_submission_invoices
+      // (see the repository). This JSON copy is ONLY a compatibility mirror for
+      // the build still running in production, which reads it; it goes away with
+      // the follow-up migration once this one is deployed.
       context = { invoiceIds: input.invoiceIds };
     } else {
       // Whole outstanding debt. Each concept has its own invoice now, so the amount

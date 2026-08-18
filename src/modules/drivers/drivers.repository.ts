@@ -375,7 +375,9 @@ export class DriversRepository {
             -- Invoices this pending payment covers (partial debt payment). Null when
             -- it covers the whole debt / is not a debt payment — profile treats null
             -- as "covers everything" (single band); a list splits covered vs. owed.
-            'invoiceIds', ps.context->'invoiceIds')
+            'invoiceIds', (SELECT json_agg(psi.invoice_id::text)
+                            FROM payment_submission_invoices psi
+                            WHERE psi.submission_id = ps.id))
           FROM payment_submissions ps
           WHERE ps.driver_id = d.user_id AND ps.status = 'pending'
           ORDER BY ps.created_at DESC LIMIT 1) AS "pendingSubmission",
@@ -384,14 +386,18 @@ export class DriversRepository {
          (SELECT COALESCE(json_agg(json_build_object(
             'id', ps.id, 'submissionNumber', ps.submission_number::text,
             'amountUsd', ps.amount_usd::text, 'purpose', ps.purpose,
-            'createdAt', ps.created_at, 'invoiceIds', ps.context->'invoiceIds',
-            -- N° of every invoice this payment covers (by receipt link or the debt
-            -- invoiceIds it targets), so the card names the exact factura.
+            'createdAt', ps.created_at,
+            'invoiceIds', (SELECT json_agg(psi.invoice_id::text)
+                           FROM payment_submission_invoices psi
+                           WHERE psi.submission_id = ps.id),
+            -- N° of every invoice this payment covers (by receipt link or by
+            -- the reservations it holds), so the card names the exact factura.
             'invoiceNumbers', (
               SELECT COALESCE(json_agg(i.invoice_number::text ORDER BY i.invoice_number), '[]'::json)
               FROM invoices i
               WHERE i.submission_id = ps.id
-                 OR i.id::text IN (SELECT jsonb_array_elements_text(ps.context->'invoiceIds'))))
+                 OR EXISTS (SELECT 1 FROM payment_submission_invoices psi
+                            WHERE psi.submission_id = ps.id AND psi.invoice_id = i.id)))
             ORDER BY ps.created_at DESC), '[]'::json)
           FROM payment_submissions ps
           WHERE ps.driver_id = d.user_id AND ps.status = 'pending') AS "pendingSubmissions",
@@ -401,10 +407,11 @@ export class DriversRepository {
          (SELECT count(*)::int FROM payment_submissions ps
           WHERE ps.driver_id = d.user_id AND ps.status = 'pending') AS "pendingCount",
          (SELECT COALESCE(array_agg(DISTINCT inv), '{}') FROM (
-            SELECT jsonb_array_elements_text(ps.context->'invoiceIds') AS inv
-            FROM payment_submissions ps
-            WHERE ps.driver_id = d.user_id AND ps.status = 'pending'
-              AND jsonb_typeof(ps.context->'invoiceIds') = 'array'
+            SELECT psi.invoice_id::text AS inv
+            FROM payment_submission_invoices psi
+            WHERE psi.submission_status = 'pending'
+              AND EXISTS (SELECT 1 FROM payment_submissions ps
+                          WHERE ps.id = psi.submission_id AND ps.driver_id = d.user_id)
             UNION
             SELECT mp.invoice_id::text FROM membership_payments mp
             JOIN payment_submissions ps ON ps.id = mp.submission_id

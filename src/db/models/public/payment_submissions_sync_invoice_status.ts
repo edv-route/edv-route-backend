@@ -1,0 +1,2 @@
+export interface payment_submissions_sync_invoice_status_params {
+}

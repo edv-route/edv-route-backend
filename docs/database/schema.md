@@ -374,6 +374,36 @@ pagado. Contrato: [proposals/pagos-aprobacion](../proposals/pagos-aprobacion/REA
 - Al **aprobar**: cargos vinculados → `paid`, se emite **una** factura y se le copia la metadata del pago. Al **rechazar**: los cargos se desvinculan y el envío queda con su `rejection_reason` (**nunca se borra**).
 - El **motor de deuda se congela** mientras haya un envío pendiente que cubre la deuda.
 
+### `payment_submission_invoices` — qué facturas cubre un pago
+
+| Columna | Tipo | Null | Default | Descripción |
+|---|---|---|---|---|
+| `submission_id` | uuid | no | — | FK → `payment_submissions.id` (CASCADE). PK junto a `invoice_id` |
+| `invoice_id` | uuid | no | — | FK → `invoices.id` (**RESTRICT**: una factura es dinero, no se borra) |
+| `submission_status` | payment_submission_status | no | — | **Copia** del estado del recibo, mantenida por trigger. Nunca se escribe a mano |
+| `created_at` | timestamptz | no | `now()` | — |
+
+- **Mig. `1752420000000` (2026-08-18)**: sustituye a `payment_submissions.context->'invoiceIds'`.
+  Aquella lista era una clave foránea escondida en un JSON: podía apuntar a una factura inexistente
+  y **ninguna restricción podía vigilarla**.
+- **La invariante que protege**: desde que se permiten varios pagos en revisión (2026-08-12), *una
+  factura la puede reservar como máximo UN pago pendiente*. La impone el índice único parcial
+  `payment_submission_invoices_one_pending_per_invoice ON (invoice_id) WHERE submission_status = 'pending'`.
+  Antes vivía solo en el código (lock consultivo + re-chequeo), así que cualquier camino de inserción
+  nuevo la saltaba sin ruido y cobraba dos veces la misma factura.
+- **Por qué se copia el estado**: un índice parcial no puede mirar otra tabla. Dos triggers lo
+  mantienen — uno lo copia del recibo al insertar (el llamador no puede mentir) y otro lo sigue
+  cuando el recibo cambia de estado, que es lo que **libera la reserva** al aprobar, rechazar o
+  revertir.
+- **Alcance**: cubre los pagos que **enumeran** sus facturas (pago parcial). Un recibo generador
+  (`enroll`/`advance`/`change_plan`) reserva a través de los cargos que crea, que ya llevan un
+  `submission_id` con FK real.
+- **Expandir/contraer**: prod y dev comparten base y prod aún corre la versión anterior, que lee el
+  JSON. La migración solo **añade**; el código nuevo escribe la tabla (fuente de verdad) y mantiene
+  el JSON como espejo de compatibilidad. Una migración posterior lo elimina tras desplegar.
+
+---
+
 ### `payment_submission_files` — imágenes del envío (1..5)
 
 | Columna | Tipo | Null | Default | Descripción |
