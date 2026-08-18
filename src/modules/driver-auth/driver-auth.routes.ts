@@ -2,6 +2,7 @@ import type { FastifyPluginAsync } from 'fastify';
 import { DriversRepository } from '../drivers/drivers.repository.js';
 import { EnrollmentRepository } from '../drivers/enrollment.repository.js';
 import { DriversService } from '../drivers/drivers.service.js';
+import { ApplicationsService } from '../drivers/applications.service.js';
 import { PaymentSubmissionsRepository } from '../payment-submissions/payment-submissions.repository.js';
 import {
   PaymentSubmissionsService,
@@ -72,6 +73,7 @@ const driverAuthRoutes: FastifyPluginAsync = async (app) => {
   const enrollment = new EnrollmentRepository(app.db);
   const driversRepository = new DriversRepository(app.db);
   const driversService = new DriversService(app, driversRepository, enrollment);
+  const applications = new ApplicationsService(app, enrollment, driversService);
   const paymentSubmissions = new PaymentSubmissionsService(
     app,
     new PaymentSubmissionsRepository(app.db, enrollment),
@@ -291,7 +293,7 @@ const driverAuthRoutes: FastifyPluginAsync = async (app) => {
     '/me/vehicles',
     { onRequest: [app.authenticateDriver], schema: { body: applicantVehicleBody } },
     async (req, reply) => {
-      const vehicle = await driversService.addApplicantVehicle(req.user.sub, req.body);
+      const vehicle = await applications.addApplicantVehicle(req.user.sub, req.body);
       return reply.code(201).send(vehicle);
     },
   );
@@ -302,7 +304,7 @@ const driverAuthRoutes: FastifyPluginAsync = async (app) => {
     '/me/documents',
     { onRequest: [app.authenticateDriver], schema: { body: applicantDocumentBody } },
     async (req, reply) => {
-      const doc = await driversService.addApplicantDocument(req.user.sub, req.body);
+      const doc = await applications.addApplicantDocument(req.user.sub, req.body);
       return reply.code(201).send(doc);
     },
   );

@@ -1,6 +1,7 @@
 import type { FastifyPluginAsync } from 'fastify';
 import { DriversRepository } from './drivers.repository.js';
 import { EnrollmentRepository } from './enrollment.repository.js';
+import { ApplicationsService } from './applications.service.js';
 import {
   DriversService,
   type CreateDriverInput,
@@ -42,11 +43,10 @@ const reviewBody = {
 } as const;
 
 const driversRoutes: FastifyPluginAsync = async (app) => {
-  const service = new DriversService(
-    app,
-    new DriversRepository(app.db),
-    new EnrollmentRepository(app.db),
-  );
+  const enrollment = new EnrollmentRepository(app.db);
+  const service = new DriversService(app, new DriversRepository(app.db), enrollment);
+  // The solicitud channel is its own service (different life stage, different rules).
+  const applications = new ApplicationsService(app, enrollment, service);
 
   app.addHook('onRequest', app.authenticate);
 
@@ -336,7 +336,7 @@ const driversRoutes: FastifyPluginAsync = async (app) => {
   app.post<{ Params: { id: string } }>(
     '/:id/approve-application',
     { schema: { params: idParam } },
-    async (req) => service.approveApplication(req.params.id, req.user.sub),
+    async (req) => applications.approveApplication(req.params.id, req.user.sub),
   );
 
   // Reject an app SOLICITUD: applicant -> rejected. Policy 2026-08-13: kept on file,
@@ -345,7 +345,7 @@ const driversRoutes: FastifyPluginAsync = async (app) => {
     '/:id/reject-application',
     { schema: { params: idParam } },
     async (req, reply) => {
-      await service.rejectApplication(req.params.id, req.user.sub);
+      await applications.rejectApplication(req.params.id, req.user.sub);
       return reply.code(200).send({ ok: true });
     },
   );
@@ -356,7 +356,7 @@ const driversRoutes: FastifyPluginAsync = async (app) => {
     '/:id/reopen-application',
     { schema: { params: idParam } },
     async (req, reply) => {
-      await service.reopenApplication(req.params.id, req.user.sub);
+      await applications.reopenApplication(req.params.id, req.user.sub);
       return reply.code(200).send({ ok: true });
     },
   );
