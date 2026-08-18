@@ -149,6 +149,60 @@ export const appDebtSchema = {
   },
 } as const;
 
+/**
+ * Self-service edit of the driver's own data. The whitelist is the schema: no
+ * names, no national id (identity verified by an admin), no status. Changing
+ * the password requires the current one.
+ */
+export const appSelfUpdateSchema = {
+  body: {
+    type: 'object',
+    additionalProperties: false,
+    minProperties: 1,
+    properties: {
+      phone: { type: 'string', maxLength: 30 },
+      email: { type: 'string', format: 'email', maxLength: 120 },
+      address: { type: 'string', maxLength: 250 },
+      password: { type: 'string', minLength: 6, maxLength: 72 },
+      currentPassword: { type: 'string', maxLength: 72 },
+    },
+  },
+  response: {
+    200: driverPublicSchema,
+  },
+} as const;
+
+/**
+ * Account standing for the driver's own profile. Every date is an ISO string;
+ * `upcoming` (charge already emitted) and `nextChargeAt` (when it will be
+ * emitted) never both carry a value.
+ */
+export const appAccountSchema = {
+  response: {
+    200: {
+      type: 'object',
+      properties: {
+        driverStatus: { type: 'string' },
+        reactivatesAt: { type: ['string', 'null'] },
+        paidUntil: { type: ['string', 'null'] },
+        upcoming: {
+          type: ['object', 'null'],
+          properties: {
+            amountUsd: { type: 'string' },
+            periodStart: { type: 'string' },
+            periodEnd: { type: 'string' },
+          },
+        },
+        nextChargeAt: { type: ['string', 'null'] },
+        weeksOwed: { type: 'integer' },
+        penaltyCount: { type: 'integer' },
+        capWeeks: { type: 'integer' },
+        planPriceUsd: { type: ['string', 'null'] },
+      },
+    },
+  },
+} as const;
+
 /** Active tariffs for the app's enrollment summary (the app uses the weekly one). */
 export const appPlansSchema = {
   response: {

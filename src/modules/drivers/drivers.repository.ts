@@ -3,6 +3,12 @@ import type Drivers from '../../db/models/public/Drivers.js';
 import type Users from '../../db/models/public/Users.js';
 import type { Camelize } from '../../db/case-types.js';
 import { withTransaction } from '../../db/tx.js';
+import {
+  debtChargePredicate,
+  SUBSCRIPTION_PRIORITY,
+  paidUntilSql,
+  upcomingChargeSql,
+} from './billing-sql.js';
 
 type DriverRow = Camelize<Drivers>;
 type UserRow = Camelize<Users>;
@@ -15,7 +21,7 @@ export interface DriverSubscriptionSummary {
 }
 
 /** List projection (multi-table) - anchored to the generated row models. */
-export type DriverListItem = Pick<UserRow, 'fullName' | 'email' | 'phone'> &
+export type DriverListItem = Pick<UserRow, 'fullName' | 'email' | 'phone' | 'photoUrl'> &
   Pick<DriverRow, 'userId' | 'nationalId' | 'status' | 'source' | 'registrationStep' | 'createdAt' | 'tariffStartSetAt'> & {
     subscription: DriverSubscriptionSummary | null;
     /** Outstanding debt (membership + owed tariff weeks), USD string ("0.00" if none). */
@@ -56,19 +62,9 @@ const LIST_COLUMNS = `
   d.user_id AS "userId", u.full_name AS "fullName", u.email, u.phone,
   d.national_id AS "nationalId", d.status, d.source,
   d.registration_step AS "registrationStep", d.created_at AS "createdAt",
-  d.tariff_start_set_at AS "tariffStartSetAt"
-`;
-
-/**
- * The driver's headline subscription is the one that rules TODAY: a pending
- * plan change adds a `scheduled` row alongside the active one, and the newest
- * row is not the current one (decision 2026-07-15).
- */
-const SUBSCRIPTION_PRIORITY = `
-  CASE ds.status
-    WHEN 'active' THEN 1 WHEN 'expired' THEN 2
-    WHEN 'pending_payment' THEN 3 ELSE 4
-  END
+  d.tariff_start_set_at AS "tariffStartSetAt",
+  -- Bucket PATH, not a link: the service signs it before it leaves the API.
+  u.photo_url AS "photoUrl"
 `;
 
 export class DriversRepository {
@@ -141,7 +137,7 @@ export class DriversRepository {
          (COALESCE((SELECT sum(sp.amount_usd) FROM subscription_payments sp
                     JOIN driver_subscriptions ds2 ON ds2.id = sp.driver_subscription_id
                     WHERE ds2.driver_id = d.user_id
-                      AND (sp.status = 'overdue' OR (sp.status = 'pending' AND sp.invoice_id IS NOT NULL))), 0)
+                      AND ${debtChargePredicate()}), 0)
           + COALESCE((SELECT sum(mp.amount_usd) FROM membership_payments mp
                       WHERE mp.driver_id = d.user_id AND mp.status = 'pending'), 0))::text AS "debtUsd",
          -- A payment awaiting admin review (v9): the alta is paid but not yet approved.
@@ -342,27 +338,10 @@ export class DriversRepository {
           -- above; and the first week, a pending row that carries an invoice_id).
           -- A pending week WITHOUT an invoice is the UPCOMING charge (amber), not debt.
           WHERE ds2.driver_id = d.user_id
-            AND ((sp.charge_kind::text = 'period' AND (
-                    (sp.status = 'overdue' AND sp.period_start >= COALESCE(
-                       (SELECT max(cov.period_end) FROM subscription_payments cov
-                        WHERE cov.driver_subscription_id = sp.driver_subscription_id
-                          AND cov.status = 'paid' AND cov.charge_kind::text = 'period'), sp.period_start))
-                    OR (sp.status = 'pending' AND sp.invoice_id IS NOT NULL)))
-                 OR (sp.charge_kind::text = 'penalty' AND sp.status IN ('pending', 'overdue')))) AS debt,
+            AND ${debtChargePredicate()}) AS debt,
          -- Próximo cobro (v8): the next weekly charge already emitted (Friday 18:00)
          -- but NOT yet due — the solvent driver's "advance pay" prompt. Null if none.
-         (SELECT json_build_object(
-            'amountUsd', sp.amount_usd::text,
-            'periodStart', sp.period_start, 'periodEnd', sp.period_end)
-          FROM subscription_payments sp
-          JOIN driver_subscriptions ds4 ON ds4.id = sp.driver_subscription_id
-          WHERE ds4.driver_id = d.user_id
-            AND sp.charge_kind::text = 'period' AND sp.status = 'pending'
-            AND sp.period_start >= COALESCE(
-              (SELECT max(cov.period_end) FROM subscription_payments cov
-               WHERE cov.driver_subscription_id = sp.driver_subscription_id
-                 AND cov.status = 'paid' AND cov.charge_kind::text = 'period'), sp.period_start)
-          ORDER BY sp.period_start LIMIT 1) AS upcoming,
+         ${upcomingChargeSql('d.user_id')} AS upcoming,
          (SELECT json_build_object(
             'id', ds.id, 'planId', ds.plan_id, 'planName', sp.name, 'status', ds.status,
             'billingPeriod', sp.billing_period, 'priceUsd', sp.price_usd::text,
@@ -371,9 +350,7 @@ export class DriversRepository {
             'currentPeriodEnd', ds.current_period_end,
             -- Paid-through: end of the LAST prepaid period (advances included),
             -- i.e. the date coverage actually runs out (not just the running one).
-            'paidUntil', (SELECT max(spp.period_end) FROM subscription_payments spp
-                          WHERE spp.driver_subscription_id = ds.id AND spp.status = 'paid'
-                            AND spp.charge_kind::text = 'period'),
+            'paidUntil', ${paidUntilSql('ds.id')},
             'paidPeriods', (SELECT count(*) FROM subscription_payments spp
                             WHERE spp.driver_subscription_id = ds.id AND spp.status = 'paid'))
           FROM driver_subscriptions ds JOIN subscription_plans sp ON sp.id = ds.plan_id

@@ -8,6 +8,7 @@ import {
   type UploadedFile,
 } from '../payment-submissions/payment-submissions.service.js';
 import type { CreateDriverInput, DocumentInput, VehicleInput } from '../drivers/drivers.service.js';
+import type { SelfProfileInput } from './driver-auth.service.js';
 import { vehicleFieldProps } from '../drivers/drivers.schemas.js';
 import { DocumentsRepository } from '../documents/documents.repository.js';
 import { DocumentsService } from '../documents/documents.service.js';
@@ -17,11 +18,13 @@ import { VehicleImagesService } from '../vehicles/vehicle-images.service.js';
 import { DriverAuthRepository } from './driver-auth.repository.js';
 import { DriverAuthService } from './driver-auth.service.js';
 import {
+  appAccountSchema,
   appDebtSchema,
   appMembershipSchema,
   appPaymentMethodsSchema,
   appPlansSchema,
   appRequirementsSchema,
+  appSelfUpdateSchema,
   appVehicleTypesSchema,
   driverLoginSchema,
   driverMeSchema,
@@ -67,7 +70,8 @@ const applicantDocumentBody = {
 /** Driver (mobile app) authentication: national_id + password. */
 const driverAuthRoutes: FastifyPluginAsync = async (app) => {
   const enrollment = new EnrollmentRepository(app.db);
-  const driversService = new DriversService(app, new DriversRepository(app.db), enrollment);
+  const driversRepository = new DriversRepository(app.db);
+  const driversService = new DriversService(app, driversRepository, enrollment);
   const paymentSubmissions = new PaymentSubmissionsService(
     app,
     new PaymentSubmissionsRepository(app.db, enrollment),
@@ -78,7 +82,12 @@ const driverAuthRoutes: FastifyPluginAsync = async (app) => {
     new SettingsRepository(app.db),
   );
   const vehicleImages = new VehicleImagesService(app, new VehicleImagesRepository(app.db));
-  const service = new DriverAuthService(app, new DriverAuthRepository(app.db), driversService);
+  const service = new DriverAuthService(
+    app,
+    new DriverAuthRepository(app.db),
+    driversService,
+    driversRepository,
+  );
 
   app.post<{ Body: DriverLoginBody }>('/login', { schema: driverLoginSchema }, async (req) =>
     service.login(req.body.nationalId, req.body.password),
@@ -219,6 +228,32 @@ const driverAuthRoutes: FastifyPluginAsync = async (app) => {
     async (req) => service.getProfile(req.user.sub),
   );
 
+  // Self-service edit: phone / email / address / password ONLY. Names and
+  // national id are the admin-verified identity and are not editable here.
+  app.patch<{ Body: SelfProfileInput }>(
+    '/me',
+    { onRequest: [app.authenticateDriver], schema: appSelfUpdateSchema },
+    async (req) => service.updateOwnProfile(req.user.sub, req.body),
+  );
+
+  // The driver replaces his OWN profile photo. Multipart, like every other
+  // upload: the file goes to the private bucket and only its path is stored.
+  app.post('/me/photo', { onRequest: [app.authenticateDriver] }, async (req) => {
+    const file = await req.file();
+    if (!file) throw app.httpErrors.badRequest('No se recibió ninguna imagen');
+    const buffer = await file.toBuffer().catch(() => {
+      throw app.httpErrors.badRequest('La imagen supera el máximo de 10 MB');
+    });
+    return service.replacePhoto(req.user.sub, { buffer, mimeType: file.mimetype });
+  });
+
+  // Address prefill for the edit form (the rest of the fields travel in /me).
+  app.get(
+    '/me/editable',
+    { onRequest: [app.authenticateDriver] },
+    async (req) => service.getEditableData(req.user.sub),
+  );
+
   // "Completa tu solicitud" — the applicant's document/vehicle checklist with
   // per-item review state (missing / en revisión / aprobado / rechazado + motivo).
   app.get(
@@ -240,6 +275,14 @@ const driverAuthRoutes: FastifyPluginAsync = async (app) => {
     '/me/debt',
     { onRequest: [app.authenticateDriver], schema: appDebtSchema },
     async (req) => service.getDebt(req.user.sub),
+  );
+
+  // Account standing for the profile: until when the tariff is covered, which
+  // charge comes next (or when it will be emitted) and how deep the arrears are.
+  app.get(
+    '/me/account',
+    { onRequest: [app.authenticateDriver], schema: appAccountSchema },
+    async (req) => service.getAccount(req.user.sub),
   );
 
   // Applicant adds a vehicle to his OWN solicitud (driverId from the token; born

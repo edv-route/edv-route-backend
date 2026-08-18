@@ -1,15 +1,39 @@
+import { randomUUID } from 'node:crypto';
 import argon2 from 'argon2';
+import { writeAudit } from '../audit-logs/audit-writer.js';
+import {
+  MAX_FILE_BYTES,
+  extensionFor,
+  isAllowedMimeType,
+  sniffMimeType,
+} from '../../storage/storage-provider.js';
 import type { FastifyInstance } from 'fastify';
 import { DriversService } from '../drivers/drivers.service.js';
+import type { DriversRepository } from '../drivers/drivers.repository.js';
 import type { CreateDriverInput } from '../drivers/drivers.service.js';
-import type { AppVehicleRow, DriverAuthRepository, DriverProfile } from './driver-auth.repository.js';
+import type {
+  AppUpcomingCharge,
+  AppVehicleRow,
+  DriverAuthRepository,
+  DriverProfile,
+} from './driver-auth.repository.js';
 
 // Verified against when the national id is unknown or has no app password, so
 // both paths cost the same time (prevents user enumeration via response timing).
 const DUMMY_HASH_PROMISE = argon2.hash('timing-equalizer-dummy-password');
 
+const UNIQUE_VIOLATION = '23505';
+
 /** Vehicle photo signed URLs are short-lived: enough to view, not to share. */
 const VEHICLE_IMAGE_TTL_SECONDS = 60;
+
+/**
+ * Avatars get a MUCH longer TTL than documents (1 h vs 60 s) on purpose: they
+ * are rendered in every list and the client caches them by URL, so a short TTL
+ * would mean re-downloading the same face on every scroll. A face is far less
+ * sensitive than an identity document, and the bucket stays private either way.
+ */
+const AVATAR_TTL_SECONDS = 3600;
 
 export interface DriverLoginResult {
   token: string;
@@ -44,11 +68,46 @@ export interface AppVehicle {
   images: AppVehicleImage[];
 }
 
+/**
+ * The driver's account standing, as his own profile consumes it. `upcoming` and
+ * `nextChargeAt` are mutually exclusive by construction: either the next weekly
+ * charge is already emitted (and payable in advance), or it is not, and then we
+ * know WHEN the engine will emit it.
+ */
+export interface AppAccount {
+  /** Authoritative standing: the drivers.status the debt engine maintains. */
+  driverStatus: string;
+  /** Penalized-but-settled: when the engine lets him operate again. */
+  reactivatesAt: string | null;
+  /** End of the last prepaid week: until when he is covered. Null if never paid. */
+  paidUntil: string | null;
+  upcoming: AppUpcomingCharge | null;
+  /** When the engine will EMIT the next weekly charge (weekly active plans only). */
+  nextChargeAt: string | null;
+  weeksOwed: number;
+  penaltyCount: number;
+  /** Weeks of arrears tolerated before penalizing (app_settings). */
+  capWeeks: number;
+  planPriceUsd: string | null;
+}
+
+/** What a driver may change about himself (see updateOwnProfile). */
+export interface SelfProfileInput {
+  phone?: string;
+  email?: string;
+  address?: string;
+  /** New password; requires `currentPassword` to prove ownership. */
+  password?: string;
+  currentPassword?: string;
+}
+
 export class DriverAuthService {
   constructor(
     private readonly app: FastifyInstance,
     private readonly drivers: DriverAuthRepository,
     private readonly driversService: DriversService,
+    /** Admin-channel repository: the account view reuses its billing helpers. */
+    private readonly driversRepository: DriversRepository,
   ) {}
 
   async login(nationalId: string, password: string): Promise<DriverLoginResult> {
@@ -72,7 +131,7 @@ export class DriverAuthService {
     // the app routes by `status` (in review / blocked / home). Failed-attempt
     // lockout is deferred — drivers have no lockout columns yet.
     const { passwordHash: _passwordHash, ...driver } = record;
-    return { token, driver };
+    return { token, driver: await this.withSignedPhoto(driver) };
   }
 
   async getProfile(userId: string): Promise<DriverProfile> {
@@ -80,7 +139,71 @@ export class DriverAuthService {
     if (!driver) {
       throw this.app.httpErrors.unauthorized('Sesión inválida');
     }
-    return driver;
+    return this.withSignedPhoto(driver);
+  }
+
+  /**
+   * Turns the stored bucket path into a signed URL before the profile leaves the
+   * API. `photo_url` holds a PATH, never a public link — a client that could
+   * read the bucket directly would defeat the private-bucket rule. A signing
+   * failure degrades to no photo (the UI falls back to initials) instead of
+   * breaking login.
+   */
+  private async withSignedPhoto<T extends { photoUrl: string | null }>(driver: T): Promise<T> {
+    const storage = this.app.storage;
+    if (!driver.photoUrl || !storage) return { ...driver, photoUrl: null };
+    const url = await storage
+      .getSignedUrl(driver.photoUrl, AVATAR_TTL_SECONDS)
+      .catch(() => null);
+    return { ...driver, photoUrl: url };
+  }
+
+  /**
+   * Replaces the driver's profile photo. Only real JPG/PNG pass (magic-number
+   * sniffed, never the declared type), the object lands under a random key in
+   * the private bucket, and the previous one is deleted so a driver cannot
+   * accumulate orphan files by re-uploading.
+   */
+  async replacePhoto(
+    userId: string,
+    file: { buffer: Buffer; mimeType: string },
+  ): Promise<{ photoUrl: string | null }> {
+    const { httpErrors } = this.app;
+    const storage = this.app.storage;
+    if (!storage) throw httpErrors.serviceUnavailable('El almacenamiento no está configurado');
+
+    if (file.buffer.length === 0) throw httpErrors.badRequest('La imagen está vacía');
+    if (file.buffer.length > MAX_FILE_BYTES) {
+      throw httpErrors.badRequest('La imagen supera el máximo de 10 MB');
+    }
+    const sniffed = sniffMimeType(file.buffer);
+    if (!sniffed || sniffed === 'application/pdf' || !isAllowedMimeType(sniffed)) {
+      throw httpErrors.badRequest('Formato no admitido: solo JPG o PNG');
+    }
+
+    const path = `${userId}/profile/${randomUUID()}.${extensionFor(sniffed)}`;
+    await storage.upload(path, file.buffer, sniffed);
+
+    let previous: string | null;
+    try {
+      previous = await this.drivers.replacePhotoPath(userId, path);
+    } catch (err) {
+      await storage.remove(path).catch(() => {});
+      throw err;
+    }
+    // Best effort: an orphan object costs storage, a failed request costs the
+    // driver his new photo. The new path is already committed.
+    if (previous && previous !== path) await storage.remove(previous).catch(() => {});
+
+    await writeAudit(this.app.db, {
+      actorUserId: userId,
+      eventType: 'driver.photo_updated',
+      entity: 'users',
+      entityId: userId,
+    });
+
+    const url = await storage.getSignedUrl(path, AVATAR_TTL_SECONDS).catch(() => null);
+    return { photoUrl: url };
   }
 
   /**
@@ -170,6 +293,97 @@ export class DriverAuthService {
     return this.drivers.getDebt(userId);
   }
 
+  /** Address prefill for the app's edit form (the rest already travels in /me). */
+  async getEditableData(userId: string): Promise<{ address: string | null }> {
+    const data = await this.drivers.findEditableData(userId);
+    if (!data) throw this.app.httpErrors.notFound('No se encontró tu perfil');
+    return data;
+  }
+
+  /**
+   * Self-service edit of the driver's OWN data. The whitelist is deliberately
+   * short — phone, email, address and password — because names and national id
+   * are the identity an admin verified against approved documents; letting the
+   * driver rewrite them would invalidate that review without anyone noticing.
+   * Changing the password re-authenticates first (OWASP): a stolen session must
+   * not be enough to lock the real owner out of his account.
+   */
+  async updateOwnProfile(userId: string, input: SelfProfileInput): Promise<DriverProfile> {
+    const { httpErrors } = this.app;
+    const changes: Parameters<DriverAuthRepository['updateOwnProfile']>[1] = {};
+
+    if (input.phone !== undefined) changes.phone = input.phone.trim() || null;
+    if (input.address !== undefined) changes.address = input.address.trim() || null;
+    if (input.email !== undefined) changes.email = input.email.trim() || null;
+
+    if (input.password !== undefined) {
+      if (!input.currentPassword) {
+        throw httpErrors.badRequest('Para cambiar la clave debes escribir la clave actual');
+      }
+      const hash = await this.drivers.findPasswordHash(userId);
+      const valid = hash ? await argon2.verify(hash, input.currentPassword).catch(() => false) : false;
+      if (!valid) throw httpErrors.unauthorized('La clave actual no es correcta');
+      changes.passwordHash = await argon2.hash(input.password, { type: argon2.argon2id });
+    }
+
+    if (Object.keys(changes).length === 0) {
+      throw httpErrors.badRequest('No enviaste ningún dato para actualizar');
+    }
+
+    try {
+      await this.drivers.updateOwnProfile(userId, changes);
+    } catch (err) {
+      if ((err as { code?: string }).code === UNIQUE_VIOLATION) {
+        throw httpErrors.conflict('Ese correo ya está registrado por otra persona');
+      }
+      throw err;
+    }
+
+    await writeAudit(this.app.db, {
+      actorUserId: userId,
+      eventType: 'driver.self_updated',
+      entity: 'users',
+      entityId: userId,
+      // The new values are NOT logged: an audit trail must not become a second
+      // copy of personal data. Which fields moved is enough to trace the change.
+      data: { fields: Object.keys(changes) },
+    });
+
+    const profile = await this.drivers.findProfileById(userId);
+    if (!profile) throw httpErrors.notFound('No se encontró tu perfil');
+    return this.withSignedPhoto(profile);
+  }
+
+  /**
+   * Account standing for the driver's own profile: coverage, next charge and
+   * arrears. Mirrors what the admin sees in the affiliate detail, so the app and
+   * the panel can never disagree about whether he is up to date.
+   */
+  async getAccount(userId: string): Promise<AppAccount> {
+    const row = await this.drivers.getAccount(userId);
+    if (!row) throw this.app.httpErrors.notFound('No se encontró tu cuenta');
+
+    // Only a WEEKLY and ACTIVE tariff has a scheduled emission: the same gate
+    // the panel applies (drivers.service.getDetail). Without it the profile
+    // would print a weekly cobro date to a driver whose plan is not weekly.
+    const nextChargeAt =
+      row.billingPeriod === 'weekly' && row.subscriptionStatus === 'active'
+        ? await this.driversRepository.weeklyNextChargeAt(userId)
+        : null;
+
+    return {
+      driverStatus: row.driverStatus,
+      reactivatesAt: toIsoDate(row.reactivatesAt),
+      paidUntil: toIsoDate(row.paidUntil),
+      upcoming: row.upcoming,
+      nextChargeAt,
+      weeksOwed: row.weeksOwed,
+      penaltyCount: row.penaltyCount,
+      capWeeks: row.capWeeks,
+      planPriceUsd: row.planPriceUsd,
+    };
+  }
+
   /**
    * Self-service registration from the app — STEP 1 ONLY (proposal:
    * docs/proposals/solicitudes-app). Creates the identity + driver as an
@@ -210,4 +424,9 @@ export class DriverAuthService {
       createdVehicles: result['createdVehicles'] as { id: string; documentIds: string[] }[],
     };
   }
+}
+
+/** pg hands timestamps back as Date; the app speaks ISO strings only. */
+function toIsoDate(value: Date | string | null): string | null {
+  return value === null ? null : new Date(value).toISOString();
 }

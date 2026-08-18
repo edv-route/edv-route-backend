@@ -1,4 +1,5 @@
 import type pg from 'pg';
+import { debtChargePredicate } from './billing-sql.js';
 import { withTransaction } from '../../db/tx.js';
 
 export interface EnrollmentInput {
@@ -822,7 +823,7 @@ export class EnrollmentRepository {
        FROM subscription_payments sp
        JOIN driver_subscriptions ds ON ds.id = sp.driver_subscription_id
        WHERE ds.driver_id = $1
-         AND (sp.status = 'overdue' OR (sp.status = 'pending' AND sp.invoice_id IS NOT NULL))
+         AND ${debtChargePredicate()}
          AND ($2::uuid[] IS NULL OR sp.invoice_id = ANY($2::uuid[]))
        FOR UPDATE OF sp`,
       [input.driverId, selected],

@@ -1,4 +1,10 @@
 import type pg from 'pg';
+import {
+  debtChargePredicate,
+  SUBSCRIPTION_PRIORITY,
+  paidUntilSql,
+  upcomingChargeSql,
+} from '../drivers/billing-sql.js';
 import type Drivers from '../../db/models/public/Drivers.js';
 import type Users from '../../db/models/public/Users.js';
 import type { Camelize } from '../../db/case-types.js';
@@ -53,6 +59,71 @@ export class DriverAuthRepository {
   /** Stamps the terms & conditions consent (accepted at payment time). */
   async markTermsAccepted(userId: string): Promise<void> {
     await this.db.query('UPDATE drivers SET accepted_terms_at = now() WHERE user_id = $1', [userId]);
+  }
+
+  /**
+   * Updates ONLY the fields a driver may change about himself. Names and
+   * national id are deliberately absent: they are the identity an admin already
+   * verified against approved documents, and a self-service edit would silently
+   * invalidate that review. Any field left `undefined` keeps its value.
+   */
+  async updateOwnProfile(
+    userId: string,
+    changes: { phone?: string | null; email?: string | null; address?: string | null; passwordHash?: string },
+  ): Promise<void> {
+    await this.db.query(
+      `UPDATE users SET
+         phone = CASE WHEN $2::boolean THEN $3 ELSE phone END,
+         email = CASE WHEN $4::boolean THEN $5 ELSE email END,
+         address = CASE WHEN $6::boolean THEN $7 ELSE address END,
+         password_hash = COALESCE($8, password_hash)
+       WHERE id = $1`,
+      [
+        userId,
+        changes.phone !== undefined,
+        changes.phone ?? null,
+        changes.email !== undefined,
+        changes.email ?? null,
+        changes.address !== undefined,
+        changes.address ?? null,
+        changes.passwordHash ?? null,
+      ],
+    );
+  }
+
+  /**
+   * Points the profile photo at a new bucket path and returns the OLD one, so
+   * the caller can delete the orphan object. The binary never touches the DB —
+   * only its reference (project rule 3).
+   */
+  async replacePhotoPath(userId: string, path: string): Promise<string | null> {
+    const { rows } = await this.db.query<{ previous: string | null }>(
+      `WITH previous AS (SELECT photo_url FROM users WHERE id = $1)
+       UPDATE users SET photo_url = $2
+       FROM previous
+       WHERE users.id = $1
+       RETURNING previous.photo_url AS previous`,
+      [userId, path],
+    );
+    return rows[0]?.previous ?? null;
+  }
+
+  /** Current password hash, to re-authenticate before a self-service change. */
+  async findPasswordHash(userId: string): Promise<string | null> {
+    const { rows } = await this.db.query<{ passwordHash: string | null }>(
+      'SELECT password_hash AS "passwordHash" FROM users WHERE id = $1',
+      [userId],
+    );
+    return rows[0]?.passwordHash ?? null;
+  }
+
+  /** The driver's own address (the app's edit form needs to prefill it). */
+  async findEditableData(userId: string): Promise<{ address: string | null } | null> {
+    const { rows } = await this.db.query<{ address: string | null }>(
+      'SELECT address FROM users WHERE id = $1',
+      [userId],
+    );
+    return rows[0] ?? null;
   }
 
   /** Active document requirements the app asks for during self-registration. */
@@ -165,7 +236,7 @@ export class DriverAuthRepository {
          FROM subscription_payments sp
          JOIN driver_subscriptions ds ON ds.id = sp.driver_subscription_id
          WHERE ds.driver_id = $1
-           AND (sp.status = 'overdue' OR (sp.status = 'pending' AND sp.invoice_id IS NOT NULL))`,
+           AND ${debtChargePredicate()}`,
       [driverId],
     );
     const items = rows.map((r) => ({ label: r.label, amountUsd: Number(r.amountUsd).toFixed(2) }));
@@ -175,6 +246,49 @@ export class DriverAuthRepository {
       [driverId],
     );
     return { totalUsd: total.toFixed(2), items, hasPendingPayment: pending.length > 0 };
+  }
+
+  /**
+   * The driver's ACCOUNT STANDING for his own profile: until when his tariff is
+   * paid, which charge comes next, how deep the arrears are, and — when he was
+   * penalized and has already settled — when the engine will let him operate
+   * again (`reactivatesAt`, written by debt-scheduler and until now never shown
+   * to anyone). Every money fact reuses the fragments the admin panel queries
+   * with, so both channels answer the same thing.
+   */
+  async getAccount(driverId: string): Promise<AppAccountRow | null> {
+    const { rows } = await this.db.query<AppAccountRow>(
+      `WITH sub AS (
+         SELECT ds.id, ds.status, p.billing_period, p.price_usd
+         FROM driver_subscriptions ds
+         JOIN subscription_plans p ON p.id = ds.plan_id
+         WHERE ds.driver_id = $1
+           AND ds.status IN ('active', 'scheduled', 'pending_payment', 'expired')
+         ORDER BY ${SUBSCRIPTION_PRIORITY}, ds.created_at DESC LIMIT 1
+       )
+       SELECT
+         d.status::text AS "driverStatus",
+         d.reactivates_at AS "reactivatesAt",
+         (SELECT status FROM sub) AS "subscriptionStatus",
+         (SELECT billing_period FROM sub) AS "billingPeriod",
+         (SELECT price_usd::text FROM sub) AS "planPriceUsd",
+         ${paidUntilSql('(SELECT id FROM sub)')} AS "paidUntil",
+         ${upcomingChargeSql('$1')} AS upcoming,
+         (SELECT count(*)::int FROM subscription_payments sp
+          JOIN driver_subscriptions ds2 ON ds2.id = sp.driver_subscription_id
+          WHERE ds2.driver_id = $1 AND sp.charge_kind::text = 'period'
+            AND ${debtChargePredicate()}) AS "weeksOwed",
+         (SELECT count(*)::int FROM subscription_payments sp
+          JOIN driver_subscriptions ds2 ON ds2.id = sp.driver_subscription_id
+          WHERE ds2.driver_id = $1 AND sp.charge_kind::text = 'penalty'
+            AND ${debtChargePredicate()}) AS "penaltyCount",
+         COALESCE((SELECT (value#>>'{}')::int FROM app_settings
+                   WHERE key = 'debt_cap_weeks'), 2) AS "capWeeks"
+       FROM drivers d
+       WHERE d.user_id = $1`,
+      [driverId],
+    );
+    return rows[0] ?? null;
   }
 
   /**
@@ -289,6 +403,27 @@ export interface ChecklistVehicle {
 export interface AppChecklist {
   driverDocuments: ChecklistItem[];
   vehicles: ChecklistVehicle[];
+}
+
+/** The next weekly charge already emitted but not yet due (pay-in-advance). */
+export interface AppUpcomingCharge {
+  amountUsd: string;
+  periodStart: string;
+  periodEnd: string;
+}
+
+/** Account standing as the repository returns it (dates still raw from pg). */
+export interface AppAccountRow {
+  driverStatus: string;
+  reactivatesAt: Date | string | null;
+  subscriptionStatus: string | null;
+  billingPeriod: string | null;
+  planPriceUsd: string | null;
+  paidUntil: Date | string | null;
+  upcoming: AppUpcomingCharge | null;
+  weeksOwed: number;
+  penaltyCount: number;
+  capWeeks: number;
 }
 
 /** The driver's alta/arrears debt for the app's deferred payment screen. */

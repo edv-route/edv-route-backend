@@ -19,6 +19,13 @@ export interface StorageProvider {
   upload(path: string, body: Buffer, contentType: string): Promise<StoredFile>;
   /** Time-limited URL: buckets are private, nothing is ever public. */
   getSignedUrl(path: string, expiresInSeconds: number): Promise<string>;
+  /**
+   * Signs MANY paths in one round trip, keyed by path. Signing avatars one by
+   * one costs an HTTP call per row of a list; this costs one per page. A path
+   * that cannot be signed is simply absent from the map (the caller falls back
+   * to initials): a single broken photo must not fail the whole listing.
+   */
+  getSignedUrls(paths: string[], expiresInSeconds: number): Promise<Map<string, string>>;
   remove(path: string): Promise<void>;
 }
 

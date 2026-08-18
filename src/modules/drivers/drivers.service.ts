@@ -9,6 +9,13 @@ const UNIQUE_VIOLATION = '23505';
 const FK_VIOLATION = '23503';
 const ADULT_AGE_YEARS = 18;
 
+/**
+ * Avatars are signed for an hour: they render in every row of every list and
+ * the browser caches them by URL, so a short-lived link would re-download the
+ * same faces on each page. Identity documents keep their 60 s TTL.
+ */
+const AVATAR_TTL_SECONDS = 3600;
+
 const PERIOD_INTERVALS: Record<string, string> = {
   daily: '1 day',
   weekly: '7 days',
@@ -107,7 +114,25 @@ export class DriversService {
     limit: number;
   }): Promise<DriverListResult> {
     const reminderDays = await this.getSetting('payment_reminder_days', 3);
-    return this.drivers.list({ ...opts, reminderDays: Number(reminderDays) });
+    const result = await this.drivers.list({ ...opts, reminderDays: Number(reminderDays) });
+    result.items = await this.signAvatars(result.items);
+    return result;
+  }
+
+  /**
+   * Resolves every stored photo path of a page into a signed URL with a SINGLE
+   * round trip to the bucket. Signing row by row would cost one HTTP call per
+   * affiliate listed. A path that cannot be signed becomes null and the UI falls
+   * back to initials — one broken photo must not fail the listing.
+   */
+  private async signAvatars<T extends { photoUrl: string | null }>(items: T[]): Promise<T[]> {
+    const storage = this.app.storage;
+    const paths = items.map((i) => i.photoUrl).filter((p): p is string => Boolean(p));
+    if (!storage || paths.length === 0) {
+      return items.map((i) => ({ ...i, photoUrl: null }));
+    }
+    const signed = await storage.getSignedUrls(paths, AVATAR_TTL_SECONDS).catch(() => new Map());
+    return items.map((i) => ({ ...i, photoUrl: (i.photoUrl && signed.get(i.photoUrl)) || null }));
   }
 
   async getDetail(driverId: string): Promise<Record<string, unknown>> {
@@ -119,7 +144,9 @@ export class DriversService {
     if (subscription && subscription['billingPeriod'] === 'weekly' && subscription['status'] === 'active') {
       subscription['nextChargeAt'] = await this.drivers.weeklyNextChargeAt(driverId);
     }
-    return detail;
+    // photo_url stores a bucket path; the panel must receive a signed URL.
+    const [withPhoto] = await this.signAvatars([detail as { photoUrl: string | null }]);
+    return { ...detail, photoUrl: withPhoto?.photoUrl ?? null };
   }
 
   /** Wizard step 1 (admin origin: only names block; the rest validates if given). */

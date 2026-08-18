@@ -45,7 +45,20 @@ por `status` (revisión / bloqueado / home). Lockout por intentos: diferido (no 
 | POST | `/driver-auth/payment-submissions` | Envío de pago del chofer (guard `authenticateDriver`, multipart). `driverId` del token. **Un `applicant` no puede pagar (409)**; exige `acceptedTerms=true` (sella `accepted_terms_at`). `purpose` = `enroll` (membresía + `periods` semanas) o `debt`. En `debt`, `periods` (≥1) permite **adelantar semanas del alta** (Forma A): paga la deuda base (membresía + 1 semana) + `periods−1` semanas extra; las extra se crean **pagadas al aprobar** el recibo (un rechazo no deja deuda fantasma) y se anclan con la base al «Establecer inicio». `advance`/`change_plan` son solo-admin (400). Nunca auto-aprueba; queda `pending` |
 | POST | `/driver-auth/documents/:id/file` | Adjunta archivo a un documento **propio** (guard `authenticateDriver`; 404 si es de otro chofer) |
 | GET | `/driver-auth/documents/:id/file` | URL firmada (60 s) para **previsualizar** el archivo de un documento **propio** (guard `authenticateDriver`; 404 si es de otro chofer o no tiene archivo). `{ url, expiresIn }`. El tipo (imagen/PDF) se infiere por la extensión de la `url` |
+| GET | `/driver-auth/me/account` | **Estado de cuenta** del chofer para su perfil (guard `authenticateDriver`): `{ driverStatus, reactivatesAt, paidUntil, upcoming:{ amountUsd, periodStart, periodEnd }|null, nextChargeAt, weeksOwed, penaltyCount, capWeeks, planPriceUsd }`. `driverStatus` es la columna real que mantiene el motor de deuda (`approved`/`overdue`/`penalized`/`paused`). `upcoming` (cobro **ya emitido**, adelantable) y `nextChargeAt` (cuándo lo **emitirá** el motor, solo plan semanal activo) son **excluyentes**. `reactivatesAt` = penalizado que ya pagó y espera su reactivación. Reutiliza los fragmentos SQL de `drivers/billing-sql.ts` que consume el panel |
+| PATCH | `/driver-auth/me` | **Edición de sus propios datos** (guard `authenticateDriver`). Lista blanca: `phone`, `email`, `address`, `password`. **Nombres y cédula NO se editan aquí** (identidad verificada por un admin contra documentos aprobados). Cambiar la clave exige `currentPassword` (401 si no coincide); email duplicado → 409. Devuelve el perfil actualizado. Audita `driver.self_updated` **sin** copiar los valores nuevos |
+| GET | `/driver-auth/me/editable` | Campos del formulario de edición que no viajan en `/me` (hoy `{ address }`) |
+| POST | `/driver-auth/me/photo` | **Foto de perfil** (guard `authenticateDriver`, multipart). Solo JPG/PNG **reales** (magic number; un PDF o un .png de mentira → 400), máx. 10 MB. Sube al bucket **privado** bajo `{userId}/profile/{uuid}.ext`, guarda el **path** en `users.photo_url` y **borra la foto anterior**. Devuelve `{ photoUrl }` ya firmado |
 | POST | `/driver-auth/vehicles/:vehicleId/images` | Sube foto a un vehículo **propio** (guard `authenticateDriver`; valida propiedad) |
+
+**Foto de perfil y avatares.** `users.photo_url` guarda el **path del bucket**, nunca un enlace:
+el binario jamás toca la BD y el bucket sigue privado. Toda salida la firma la API — `/driver-auth/me`
+y el login la firman una a una; el **detalle** y las **listas** del panel (afiliados y solicitudes) la
+firman **en lote** (`StorageProvider.getSignedUrls`, un POST para toda la página en vez de uno por
+fila). El TTL del avatar es de **1 hora**, no de 60 s como los documentos: sale en cada fila de cada
+lista y el cliente la cachea por URL, así que un TTL corto obligaría a redescargar las mismas caras en
+cada scroll (una cara es mucho menos sensible que una cédula, y el bucket sigue privado). Una firma
+que falla se degrada a `null` y la UI cae a las iniciales: una foto rota no puede tumbar la lista.
 
 **Auto-registro y limpieza.** El registro es abierto (la barrera de calidad es la aprobación del
 admin, no la entrada). El alta reutiliza el único camino de dinero (`DriversService.register` con

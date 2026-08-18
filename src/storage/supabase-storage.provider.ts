@@ -45,6 +45,34 @@ export class SupabaseStorageProvider implements StorageProvider {
     return `${this.baseUrl}${signedURL.replace(/^\/storage\/v1/, '')}`;
   }
 
+  /**
+   * Batch signing (Supabase createSignedUrls): one POST for every path. Returns
+   * only what could be signed, so a missing object degrades to "no photo"
+   * instead of breaking the listing that asked for it.
+   */
+  async getSignedUrls(paths: string[], expiresInSeconds: number): Promise<Map<string, string>> {
+    const signed = new Map<string, string>();
+    if (paths.length === 0) return signed;
+
+    const response = await fetch(`${this.baseUrl}/object/sign/${this.bucket}`, {
+      method: 'POST',
+      headers: { ...this.headers, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ expiresIn: expiresInSeconds, paths }),
+    });
+    if (!response.ok) throw new Error(await this.errorText(response, 'firmar las URLs'));
+
+    const items = (await response.json()) as {
+      path: string | null;
+      signedURL: string | null;
+      error: string | null;
+    }[];
+    for (const item of items) {
+      if (item.error || !item.path || !item.signedURL) continue;
+      signed.set(item.path, `${this.baseUrl}${item.signedURL.replace(/^\/storage\/v1/, '')}`);
+    }
+    return signed;
+  }
+
   async remove(path: string): Promise<void> {
     const response = await fetch(`${this.baseUrl}/object/${this.bucket}/${encodeURI(path)}`, {
       method: 'DELETE',

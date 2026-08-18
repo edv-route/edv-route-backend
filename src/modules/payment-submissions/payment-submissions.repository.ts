@@ -1,4 +1,5 @@
 import type pg from 'pg';
+import { debtChargePredicate } from '../drivers/billing-sql.js';
 import { withTransaction } from '../../db/tx.js';
 import type { EnrollmentRepository } from '../drivers/enrollment.repository.js';
 
@@ -166,7 +167,7 @@ export class PaymentSubmissionsRepository {
          SELECT sum(sp.amount_usd) FROM subscription_payments sp
          JOIN driver_subscriptions ds ON ds.id = sp.driver_subscription_id
          WHERE ds.driver_id = $1
-           AND (sp.status = 'overdue' OR (sp.status = 'pending' AND sp.invoice_id IS NOT NULL))
+           AND ${debtChargePredicate()}
        ), 0) + COALESCE((
          SELECT sum(amount_usd) FROM membership_payments
          WHERE driver_id = $1 AND status = 'pending'
@@ -181,16 +182,17 @@ export class PaymentSubmissionsRepository {
     const { rows } = await this.db.query<{ total: string }>(
       `SELECT COALESCE(sum(c.amount_usd), 0)::text AS total
        FROM (
-         SELECT mp.invoice_id, mp.amount_usd, mp.status::text AS status
-           FROM membership_payments mp WHERE mp.driver_id = $1
+         SELECT mp.invoice_id, mp.amount_usd
+           FROM membership_payments mp
+           WHERE mp.driver_id = $1 AND mp.status = 'pending'
          UNION ALL
-         SELECT sp.invoice_id, sp.amount_usd, sp.status::text
+         SELECT sp.invoice_id, sp.amount_usd
            FROM subscription_payments sp
            JOIN driver_subscriptions ds ON ds.id = sp.driver_subscription_id
            WHERE ds.driver_id = $1
+             AND ${debtChargePredicate()}
        ) c
-       WHERE c.invoice_id = ANY($2::uuid[])
-         AND (c.status = 'overdue' OR (c.status = 'pending' AND c.invoice_id IS NOT NULL))`,
+       WHERE c.invoice_id = ANY($2::uuid[])`,
       [driverId, invoiceIds],
     );
     return Number(rows[0]?.total ?? 0).toFixed(2);
@@ -472,7 +474,7 @@ export class PaymentSubmissionsRepository {
              FROM subscription_payments sp
              JOIN driver_subscriptions ds ON ds.id = sp.driver_subscription_id
              WHERE ds.driver_id = $1
-               AND (sp.status = 'overdue' OR (sp.status = 'pending' AND sp.invoice_id IS NOT NULL))
+               AND ${debtChargePredicate()}
          ) c
          LEFT JOIN invoices i ON i.id = c.invoice_id
          WHERE ($2::uuid[] IS NULL OR c.invoice_id = ANY($2::uuid[]))
