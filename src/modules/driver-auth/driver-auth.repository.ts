@@ -251,6 +251,11 @@ export class DriverAuthRepository {
     const { rows: vehicles } = await this.db.query<ChecklistVehicle>(
       `SELECT v.id, v.brand, v.model, v.plate,
               v.approval_status AS "approvalStatus", v.rejection_reason AS "rejectionReason",
+              -- Which one he works with travels WITH the checklist: the vehicle
+              -- list used to ask a second endpoint for it, and when that call
+              -- failed the screen silently showed nothing in use — and offered
+              -- "use this one" on the vehicle already in use.
+              (v.id = d.current_vehicle_id) AS "isPrimary",
               COALESCE((
                 SELECT json_agg(json_build_object(
                   'requirementId', r.id, 'requirementName', r.name, 'isRequired', r.is_required,
@@ -260,7 +265,9 @@ export class DriverAuthRepository {
                 FROM requirements r
                 LEFT JOIN documents doc ON doc.requirement_id = r.id AND doc.vehicle_id = v.id
                 WHERE r.applies_to = 'vehicle' AND r.active), '[]'::json) AS documents
-         FROM vehicles v WHERE v.driver_id = $1 ORDER BY v.created_at`,
+         FROM vehicles v
+         JOIN drivers d ON d.user_id = v.driver_id
+        WHERE v.driver_id = $1 ORDER BY v.created_at`,
       [driverId],
     );
     return { driverDocuments, vehicles };
@@ -447,6 +454,8 @@ export interface ChecklistVehicle {
   plate: string | null;
   approvalStatus: 'pending' | 'approved' | 'rejected';
   rejectionReason: string | null;
+  /** The one he is operating with; only one of his can hold it. */
+  isPrimary: boolean;
   documents: ChecklistItem[];
 }
 
