@@ -78,8 +78,14 @@ export class DocumentsService {
     // Path derived server-side: the client never chooses where it lands.
     const path = `${document.driverId}/${documentId}.${extensionFor(sniffed)}`;
     await storage.upload(path, file.buffer, sniffed);
-    // App/driver channel (ownerUserId set): re-open review on the replaced file.
-    await this.documents.setFileUrl(documentId, path, ownerUserId !== null);
+    // Who replaced it decides the verdict: the driver re-opens the review, the
+    // admin (the authority) leaves it approved — he is correcting his own load.
+    await this.documents.setFileUrl(
+      documentId,
+      path,
+      ownerUserId !== null ? 'reopen' : 'approve',
+      adminId,
+    );
 
     await writeAudit(this.app.db, {
       actorAdminId: adminId,

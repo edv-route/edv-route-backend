@@ -1061,3 +1061,25 @@ node-pg-migrate revirtió limpio. Se reformuló uniendo directo al vehículo, ya
 la subconsulta de conteo garantiza que hay exactamente uno. Es el mismo tipo de
 fallo que la multa de penalización (`make_interval(weeks => numeric)`): funciones
 de Postgres que no aceptan el tipo que se les pasa, y que solo se ven al ejecutar.
+
+## 2026-08-18 — ✅ Aprobación de documentos y vehículos, por canal
+
+> Regla de Luis: **el admin es la autoridad**. Lo que registra él ya está
+> verificado; lo que llega desde la app se revisa a mano.
+
+| Regla | Dónde |
+|---|---|
+| Vehículo o documento registrado **por el admin** nace `approved` | Ya era así (`drivers.service.addVehicle` / `addDocument`) |
+| Vehículo o documento que llega **desde la app** nace `pending` | Ya era así (`applications.service.addApplicant*`) |
+| **Reemplazar un archivo**: si lo reemplaza el **chofer** vuelve a `pending` (puerta anti-fraude: no puede cambiar un archivo ya aprobado por otro); si lo reemplaza el **admin** queda `approved` y él consta como revisor | **Nuevo.** `setFileUrl` pasa de un booleano a un modo explícito (`reopen`/`approve`). El admin reemplaza porque cargó el archivo equivocado; obligarlo a aprobar su propia corrección es un paso que no decide nada |
+| El veredicto **solo se ofrece mientras está pendiente** y **rechazar exige motivo** | Ya regía en el detalle de solicitud; ahora vale igual en el detalle del afiliado y en la página del vehículo |
+
+**Panel:** el veredicto existía solo en el detalle de **solicitud**. Ahora también
+en el **detalle del afiliado** (sus documentos) y en la **página del vehículo** (el
+vehículo y sus documentos), con el motivo del rechazo visible. Las rutas del
+backend ya existían: era interfaz que faltaba.
+
+Al añadirlo, `driver-detail.ts` volvió a pasar de 1000 líneas y la lógica quedó
+duplicada en tres pantallas, así que se extrajo a `ReviewPromptService` +
+`<app-reject-prompt>`: una sola implementación con las dos reglas dentro, y el
+archivo bajó a 978.

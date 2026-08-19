@@ -60,14 +60,24 @@ export class DocumentsRepository {
   }
 
   /**
-   * Links (or replaces) the stored file. `resetApproval` re-opens the review:
-   * replacing the file invalidates any prior verdict, so an approved/rejected
-   * document goes back to `pending` (and its rejection reason/reviewer clear).
-   * Used for the app/driver channel — the anti-fraud gate of solicitudes-app,
-   * where an applicant must not be able to swap an approved file for another.
+   * Links (or replaces) the stored file. WHO replaces it decides the verdict,
+   * because the two channels mean opposite things:
+   *
+   * - `reopen` (app/driver): replacing invalidates any prior verdict, so the
+   *   document goes back to `pending`. This is the anti-fraud gate of
+   *   solicitudes-app — an applicant must not swap an approved file for another.
+   * - `approve` (admin): the admin IS the authority. He replaces a file because
+   *   he loaded the wrong one, and having to approve his own correction
+   *   afterwards is a step that decides nothing (decisión de Luis, 2026-08-18).
    */
-  async setFileUrl(id: string, fileUrl: string, resetApproval = false): Promise<void> {
-    if (resetApproval) {
+  async setFileUrl(
+    id: string,
+    fileUrl: string,
+    mode: 'reopen' | 'approve',
+    /** Admin who replaced it; recorded as the reviewer when the mode approves. */
+    reviewedBy: string | null = null,
+  ): Promise<void> {
+    if (mode === 'reopen') {
       await this.db.query(
         `UPDATE documents
             SET file_url = $2, approval_status = 'pending',
@@ -77,7 +87,13 @@ export class DocumentsRepository {
       );
       return;
     }
-    await this.db.query('UPDATE documents SET file_url = $2 WHERE id = $1', [id, fileUrl]);
+    await this.db.query(
+      `UPDATE documents
+          SET file_url = $2, approval_status = 'approved',
+              rejection_reason = NULL, reviewed_by = $3, reviewed_at = now()
+        WHERE id = $1`,
+      [id, fileUrl, reviewedBy],
+    );
   }
 
   /**
