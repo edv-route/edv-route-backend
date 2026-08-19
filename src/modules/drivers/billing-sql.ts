@@ -29,6 +29,11 @@ export const SUBSCRIPTION_PRIORITY = `
  * alta debt), or a penalty awaiting payment. A pending week WITHOUT an invoice is
  * the UPCOMING charge, not debt.
  *
+ * A pending charge counts only once its week has started. The split used to hang
+ * on "pending WITHOUT an invoice = upcoming", which never happens: the engine
+ * issues an invoice with every weekly charge, so every week it emitted looked
+ * like debt from the moment it was created — days before the driver owed it.
+ *
  * The coverage check is the part that used to be missing in half the codebase:
  * after an advance payment (Forma A) the paid coverage moves forward, and a week
  * left marked overdue INSIDE that range is already paid — charging for it again
@@ -43,7 +48,12 @@ export const debtChargePredicate = (alias = 'sp'): string => `
          (SELECT max(cov.period_end) FROM subscription_payments cov
           WHERE cov.driver_subscription_id = ${alias}.driver_subscription_id
             AND cov.status = 'paid' AND cov.charge_kind::text = 'period'), ${alias}.period_start))
-      OR (${alias}.status = 'pending' AND ${alias}.invoice_id IS NOT NULL)))
+      OR (${alias}.status = 'pending' AND ${alias}.invoice_id IS NOT NULL
+          -- ...and its week ALREADY STARTED. A charge issued in advance (the
+          -- engine emits Friday for the Monday after) is not owed yet: it is the
+          -- UPCOMING charge. A NULL period is the alta debt, not yet anchored to
+          -- a date, and that IS owed (decisión de Luis, 2026-08-19).
+          AND (${alias}.period_start IS NULL OR ${alias}.period_start <= now()))))
    OR (${alias}.charge_kind::text = 'penalty' AND ${alias}.status IN ('pending', 'overdue')))
 `;
 

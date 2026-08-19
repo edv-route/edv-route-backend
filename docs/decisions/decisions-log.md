@@ -1084,3 +1084,39 @@ Al añadirlo, `driver-detail.ts` volvió a pasar de 1000 líneas y la lógica qu
 duplicada en tres pantallas, así que se extrajo a `ReviewPromptService` +
 `<app-reject-prompt>`: una sola implementación con las dos reglas dentro, y el
 archivo bajó a 978.
+
+## 2026-08-19 — 🧾 Una semana emitida no es deuda hasta que empieza
+
+> Luis vio a un afiliado **solvente** con una tarjeta roja de «Deuda pendiente».
+> No era la redacción: estaba mal clasificado.
+
+**El fallo.** El criterio que separaba deuda de próximo cobro era, textualmente,
+«una semana pendiente **sin factura** es el próximo cobro, no deuda». Pero el
+motor **crea una factura con cada semana que emite** (`debt-scheduler`, paso 1),
+así que esa condición no se cumple nunca: **toda semana emitida contaba como
+deuda desde el momento de crearse**, días antes de que el chofer la debiera.
+
+Se veía así el 19/08 (miércoles):
+
+| Afiliado | Realidad | Mostraba |
+|---|---|---|
+| V-26963147 | Semana en curso PAGADA; la del 24→31 emitida | «Deuda $10» estando solvente |
+| V-22198958 | 1 semana vencida + la del 24→31 emitida | «Deuda $20» cuando debía $10 |
+
+**La regla nueva** (`debtChargePredicate`), que es lo que el diseño quería decir:
+
+| Cargo pendiente | ¿Deuda? |
+|---|---|
+| Sin fecha de período (deuda del alta, aún sin anclar) | **Sí** |
+| Su semana ya empezó | **Sí** |
+| Su semana empieza en el futuro (emitida el viernes para el lunes) | **No** — es el próximo cobro |
+
+**Consecuencia asumida** (decisión de Luis): pagar «toda la deuda» ya **no**
+incluye la semana siguiente. Adelantarla es una acción aparte y deliberada, que
+ya existe. Quien antes pagaba todo y quedaba cubierto ahora debe adelantar a
+propósito o caerá en mora el lunes.
+
+En el panel, la semana emitida se muestra **aparte y sin sumarse** al total, para
+que el admin la vea venir sin confundirla con un atraso. Verificado tras el
+cambio: V-26963147 $0 (antes $10), V-22198958 $10 (antes $20), los dos del alta
+sin cambio ($190), y panel y app diciendo lo mismo en los cuatro.
