@@ -1186,3 +1186,24 @@ salida era «Registrar pago», que da por hecho que ya te pagó.
 | **No es automático al revertir** — el admin lo decide | Solo él sabe si el dinero rebotó o si el recibo fue un error; adivinarlo sería peor que preguntarlo |
 | `enrollDebtOnClient` **reutiliza** la suscripción `scheduled` en vez de crear otra | Hay índice único de una sola `scheduled` por chofer: crear la segunda reventaba. Los registros nuevos no tienen ninguna, así que ahí nada cambia |
 | El botón vive en la tarjeta de **Estado**, junto al aviso de que falta la membresía | El aviso ya nombra el problema; la acción que lo resuelve va pegada a él |
+
+## 2026-08-19 — Quien debe, paga: el estado no puede cerrarle la puerta
+
+Probando en el teléfono lo anterior salió el fallo de verdad: la app enrutaba
+**solo por `status`**, así que un afiliado `pending` caía en «Solicitud en
+revisión» y **no tenía forma de pagar**, aunque debiera $190 y sus facturas
+estuvieran emitidas. El backend nunca lo impidió — su única puerta cerrada es
+para `applicant` (`assertPayableAndAcceptTerms`) — y se comprobó en vivo: un
+`pending` envía su pago y el backend responde **201**.
+
+No era un caso raro del recibo revertido: **todo registro por panel sin pago**
+deja al afiliado exactamente así. Había dos en la base viviéndolo.
+
+| Decisión | Motivo |
+|---|---|
+| Un `pending` entra a la **pantalla de pago**, no al aviso de revisión | Si debe, tiene que poder pagar; el estado dice de quién es el turno, no si se le cobra |
+| La pantalla decide con la **deuda**, no con el estado: `altaScreenState()` | La deuda es el hecho; el estado es contexto. Y si no debe nada, esa misma pantalla muestra el aviso de revisión |
+| La regla vive **fuera del widget**, en una función pura con 8 pruebas | Era una cadena de `if` dentro de un `build`, imposible de probar, y ya se había desincronizado del `initState`, que tenía su propia copia |
+
+**Orden de la regla** (importa): un pago ya enviado gana sobre la deuda (no se
+paga dos veces) y la deuda gana sobre todo lo demás.
