@@ -1120,3 +1120,44 @@ En el panel, la semana emitida se muestra **aparte y sin sumarse** al total, par
 que el admin la vea venir sin confundirla con un atraso. Verificado tras el
 cambio: V-26963147 $0 (antes $10), V-22198958 $10 (antes $20), los dos del alta
 sin cambio ($190), y panel y app diciendo lo mismo en los cuatro.
+
+## 2026-08-19 — El chofer se entera de que le rechazaron el pago
+
+**Hallazgo del smoke E2E en vivo** (el que cerró el pendiente del adelanto de
+semanas, Forma A). Al rechazar un pago desde el panel, la app del chofer
+**volvía a mostrar la pantalla de pago como si nunca hubiera enviado nada**: sin
+aviso, sin monto y sin motivo. El dato estaba bien guardado y el panel lo pintaba
+perfecto (`rejectedSubmission` en `GET /drivers/:id`), pero al canal de la app
+nunca se le devolvió: `GET /driver-auth/me/debt` respondía solo `totalUsd`,
+`items` y `hasPendingPayment`.
+
+Consecuencia real: el chofer no podía saber que lo rechazaron ni por qué, y nada
+le impedía reenviar exactamente el mismo comprobante una y otra vez, mientras la
+oficina daba por hecho que ya le había respondido.
+
+| Decisión | Motivo |
+|---|---|
+| `GET /driver-auth/me/debt` devuelve **`rejected`** (`amountUsd`, `reason`, `reviewedAt`) | El chofer tiene que poder corregir; el motivo que escribe el admin es la instrucción |
+| Cuenta **solo el último envío** — mismo criterio que el panel | Enviar un pago nuevo apaga el aviso **solo**, sin código ni estado extra que mantener |
+| La tarjeta va **encima** del desglose en la pantalla de pago | Es lo primero que necesita leer quien viene a reintentar; debajo del monto pasa desapercibida |
+| Se declara en el **schema de respuesta** | Fastify serializa contra el schema: un campo no declarado se borra en silencio |
+
+**Nota de alcance:** esto es la primera pieza del bloque de avisos, y es
+deliberadamente **independiente de las notificaciones push**. Un push avisa en el
+momento, pero si el chofer lo desliza o su teléfono no los recibe (Huawei sin
+Google Play Services, permiso denegado), al abrir la app tiene que encontrar la
+información igual. El aviso dentro de la app es el suelo; el push es el aviso.
+
+## 2026-08-19 — Un botón bloqueado tiene que parecer bloqueado
+
+Mismo smoke: el botón de aprobar un vehículo con documentos sin resolver **sí**
+estaba deshabilitado (y el backend lo rechaza con 409), pero pintado con el color
+de acción al 50% de opacidad **sigue leyéndose como disponible**, y el motivo
+vivía en un `title`: un tooltip que exige ratón y un segundo de paciencia, y que
+en pantalla táctil no existe.
+
+**Regla:** cuando una acción está bloqueada por una precondición del negocio, el
+botón se pinta **gris** (no su color al 50%) y el motivo se muestra **a la vista**
+—junto al botón o en una franja bajo él—, nunca solo en un `title`. Aplicado a
+los cuatro botones con precondición: aprobar vehículo, aprobar afiliado, aprobar
+solicitud y aprobar documento sin archivo.

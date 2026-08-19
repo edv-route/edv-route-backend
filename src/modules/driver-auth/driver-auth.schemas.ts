@@ -144,6 +144,16 @@ export const appDebtSchema = {
           },
         },
         hasPendingPayment: { type: 'boolean' },
+        // Declared here or the serializer would strip it: the driver only learns
+        // his payment was turned down through this field.
+        rejected: {
+          type: ['object', 'null'],
+          properties: {
+            amountUsd: { type: 'string' },
+            reason: { type: ['string', 'null'] },
+            reviewedAt: { type: 'string' },
+          },
+        },
       },
     },
   },

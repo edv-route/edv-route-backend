@@ -295,11 +295,33 @@ export class DriverAuthRepository {
     );
     const items = rows.map((r) => ({ label: r.label, amountUsd: Number(r.amountUsd).toFixed(2) }));
     const total = items.reduce((sum, i) => sum + Number(i.amountUsd), 0);
-    const { rows: pending } = await this.db.query(
-      `SELECT 1 FROM payment_submissions WHERE driver_id = $1 AND status = 'pending' LIMIT 1`,
+    // The driver must learn HERE that his payment was turned down and why: until
+    // now only the admin panel knew, so a rejected driver saw the payment screen
+    // again with no explanation and kept resending the same proof. Same criterion
+    // the panel uses (drivers.repository `rejectedSubmission`): only the LATEST
+    // submission counts, so sending a new one clears the notice by itself.
+    const { rows: state } = await this.db.query<{
+      hasPending: boolean;
+      rejected: AppDebtRejection | null;
+    }>(
+      `SELECT
+         EXISTS (SELECT 1 FROM payment_submissions
+                  WHERE driver_id = $1 AND status = 'pending') AS "hasPending",
+         (SELECT CASE WHEN ps.status = 'rejected'
+                   THEN json_build_object('amountUsd', ps.amount_usd::text,
+                          'reason', ps.rejection_reason, 'reviewedAt', ps.reviewed_at)
+                   ELSE NULL END
+            FROM payment_submissions ps
+           WHERE ps.driver_id = $1
+           ORDER BY ps.created_at DESC LIMIT 1) AS rejected`,
       [driverId],
     );
-    return { totalUsd: total.toFixed(2), items, hasPendingPayment: pending.length > 0 };
+    return {
+      totalUsd: total.toFixed(2),
+      items,
+      hasPendingPayment: state[0]?.hasPending ?? false,
+      rejected: state[0]?.rejected ?? null,
+    };
   }
 
   /**
@@ -486,6 +508,15 @@ export interface AppAccountRow {
   capWeeks: number;
 }
 
+/** His LAST submission was turned down: what the app tells him, and why. */
+export interface AppDebtRejection {
+  /** Amount of the rejected submission, USD string. */
+  amountUsd: string;
+  /** Reason the admin typed. Null only for rejections predating the field. */
+  reason: string | null;
+  reviewedAt: string;
+}
+
 /** The driver's alta/arrears debt for the app's deferred payment screen. */
 export interface AppDebt {
   /** Total owed, USD string (numeric column serialized as string). */
@@ -494,4 +525,6 @@ export interface AppDebt {
   items: { label: string; amountUsd: string }[];
   /** A payment for this driver is already awaiting admin review. */
   hasPendingPayment: boolean;
+  /** His latest submission was rejected; null once he sends a new one. */
+  rejected: AppDebtRejection | null;
 }
