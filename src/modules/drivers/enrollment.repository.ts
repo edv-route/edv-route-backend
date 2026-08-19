@@ -252,12 +252,32 @@ export class EnrollmentRepository {
       [input.driverId, input.membershipId, membershipInvoice.id, input.membershipPriceUsd, input.registeredBy],
     );
 
-    const { rows: subRows } = await client.query<{ id: string }>(
-      `INSERT INTO driver_subscriptions (driver_id, plan_id, status)
-       VALUES ($1, $2, 'scheduled') RETURNING id`,
-      [input.driverId, input.planId],
+    // A driver who LOST his alta (a reverted receipt) keeps his `scheduled`
+    // subscription with no charges left: reuse it. Inserting a second one would
+    // break "one active tariff per driver, plus at most one scheduled" — and the
+    // fresh registrations that also call this have none, so nothing changes there.
+    const { rows: existing } = await client.query<{ id: string }>(
+      `SELECT id FROM driver_subscriptions
+        WHERE driver_id = $1 AND status = 'scheduled'
+        ORDER BY created_at DESC LIMIT 1`,
+      [input.driverId],
     );
-    const subscriptionId = subRows[0]!.id;
+    let subscriptionId: string;
+    if (existing[0]) {
+      subscriptionId = existing[0].id;
+      // The new alta may buy a different tariff than the reverted one did.
+      await client.query(`UPDATE driver_subscriptions SET plan_id = $2 WHERE id = $1`, [
+        subscriptionId,
+        input.planId,
+      ]);
+    } else {
+      const { rows: subRows } = await client.query<{ id: string }>(
+        `INSERT INTO driver_subscriptions (driver_id, plan_id, status)
+         VALUES ($1, $2, 'scheduled') RETURNING id`,
+        [input.driverId, input.planId],
+      );
+      subscriptionId = subRows[0]!.id;
+    }
 
     // First tariff week owed (pending, no paid_at), its OWN invoice. When the debt
     // engine anchors weekly, the week is the one the alta BUYS: the next Monday (or

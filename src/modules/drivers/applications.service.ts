@@ -193,6 +193,77 @@ export class ApplicationsService {
   }
 
   /**
+   * Re-issues the ALTA DEBT of an affiliate who lost it (2026-08-19).
+   *
+   * Reversing an alta receipt voids the invoices it had GENERATED and refunds
+   * their charges, so the driver falls back to `pending` owing NOTHING. That is
+   * right when the payment should never have been registered, and wrong when the
+   * payment BOUNCED: there the driver still owes, and until now the business had
+   * no way to claim it — no live invoice, and the app never even shows him a
+   * payment screen while he is `pending`. This puts the debt back so he can pay
+   * it himself, and it is the same debt a panel registration without payment
+   * emits (one invoice per concept: membership + first week, no dates yet).
+   *
+   * Deliberately NOT automatic on reversal: only the admin knows whether the
+   * money bounced or the receipt was a mistake.
+   */
+  async regenerateAltaDebt(driverId: string, adminId: string): Promise<Record<string, unknown>> {
+    const detail = await this.drivers.getDetail(driverId);
+    const status = detail['status'];
+    if (status !== 'pending' && status !== 'approved') {
+      throw this.app.httpErrors.conflict(
+        'Solo se le puede volver a emitir el alta a un afiliado pendiente o aprobado',
+      );
+    }
+    // A live membership row (anything but `refunded`) means he either owes the
+    // alta already or paid it — re-issuing would double-charge him. The partial
+    // unique index says the same thing at the database level.
+    const { rows: live } = await this.app.db.query<{ status: string }>(
+      `SELECT status FROM membership_payments
+        WHERE driver_id = $1 AND status <> 'refunded' LIMIT 1`,
+      [driverId],
+    );
+    if (live[0]) {
+      throw this.app.httpErrors.conflict(
+        live[0].status === 'paid'
+          ? 'Este afiliado ya pagó su membresía'
+          : 'Este afiliado ya tiene la deuda del alta emitida',
+      );
+    }
+
+    const { rows: mRows } = await this.app.db.query<{ id: number; priceUsd: string }>(
+      'SELECT id, price_usd AS "priceUsd" FROM memberships WHERE active',
+    );
+    const membership = mRows[0];
+    const { rows: pRows } = await this.app.db.query<{ id: number; priceUsd: string }>(
+      `SELECT id, price_usd AS "priceUsd" FROM subscription_plans
+        WHERE active AND billing_period = 'weekly' ORDER BY id LIMIT 1`,
+    );
+    const plan = pRows[0];
+    if (!membership || !plan) {
+      throw this.app.httpErrors.conflict(
+        'No hay membresía o tarifa semanal vigente para emitir la deuda del alta',
+      );
+    }
+
+    const { invoiceNumbers } = await withTransaction(this.app.db, async (client) =>
+      this.enrollment.enrollDebtOnClient(client, {
+        driverId,
+        membershipId: membership.id,
+        membershipPriceUsd: Number(membership.priceUsd),
+        planId: plan.id,
+        planPriceUsd: Number(plan.priceUsd),
+        registeredBy: adminId,
+      }),
+    );
+    await this.audit(adminId, 'driver.alta_debt_regenerated', 'drivers', driverId, {
+      invoiceNumbers,
+      totalUsd: (Number(membership.priceUsd) + Number(plan.priceUsd)).toFixed(2),
+    });
+    return this.drivers.getDetail(driverId);
+  }
+
+  /**
    * Completeness gate for approving a solicitud: at least one vehicle, every
    * vehicle approved, no document left pending/rejected, and every required
    * requirement (driver + per-vehicle) satisfied by an APPROVED document.

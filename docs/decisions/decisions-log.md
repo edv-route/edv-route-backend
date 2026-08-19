@@ -1161,3 +1161,28 @@ botón se pinta **gris** (no su color al 50%) y el motivo se muestra **a la vist
 —junto al botón o en una franja bajo él—, nunca solo en un `title`. Aplicado a
 los cuatro botones con precondición: aprobar vehículo, aprobar afiliado, aprobar
 solicitud y aprobar documento sin archivo.
+
+## 2026-08-19 — Revertir un recibo no debería perdonar la deuda
+
+Al revertir el recibo de alta de un afiliado (V-23654789), el panel dejó de
+mostrarle deuda. **No era un fallo**: `reverseReceipt` anula las facturas que ese
+recibo **generó** y reembolsa sus cargos, así que no queda deuda — queda vacío, y
+el chofer vuelve a `pending`. La pantalla decía la verdad.
+
+El problema es que **revertir tiene dos motivos y el sistema los trataba igual**:
+
+| Motivo | Qué debe pasar |
+|---|---|
+| El recibo nunca debió registrarse (error de captura, afiliado equivocado) | El chofer no queda debiendo. Es lo que ya hacía |
+| **El pago rebotó** (transferencia devuelta, comprobante falso) | **El chofer SIGUE debiendo** — y el negocio se lo estaba perdonando sin querer |
+
+Y el afiliado quedaba en un callejón: `pending` sin deuda no puede pagar desde la
+app (un `pending` ni siquiera llega a la pantalla de pago) y en el panel la única
+salida era «Registrar pago», que da por hecho que ya te pagó.
+
+| Decisión | Motivo |
+|---|---|
+| **`POST /drivers/:id/alta-debt`**: vuelve a emitir la deuda del alta | Devuelve al negocio la factura con la que reclamar, y al chofer la pantalla donde pagar |
+| **No es automático al revertir** — el admin lo decide | Solo él sabe si el dinero rebotó o si el recibo fue un error; adivinarlo sería peor que preguntarlo |
+| `enrollDebtOnClient` **reutiliza** la suscripción `scheduled` en vez de crear otra | Hay índice único de una sola `scheduled` por chofer: crear la segunda reventaba. Los registros nuevos no tienen ninguna, así que ahí nada cambia |
+| El botón vive en la tarjeta de **Estado**, junto al aviso de que falta la membresía | El aviso ya nombra el problema; la acción que lo resuelve va pegada a él |

@@ -361,6 +361,15 @@ const driversRoutes: FastifyPluginAsync = async (app) => {
     },
   );
 
+  // Re-issue the ALTA DEBT of an affiliate who lost it when his receipt was
+  // reverted (a bounced payment: he still owes). 409 if he already owes it or
+  // already paid it.
+  app.post<{ Params: { id: string } }>(
+    '/:id/alta-debt',
+    { schema: { params: idParam } },
+    async (req) => applications.regenerateAltaDebt(req.params.id, req.user.sub),
+  );
+
   app.post<{ Params: { id: string } }>(
     '/:id/reject',
     { schema: { params: idParam } },
