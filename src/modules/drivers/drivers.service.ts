@@ -534,6 +534,27 @@ export class DriversService {
     if (!approve && !trimmed) {
       throw this.app.httpErrors.badRequest('Debe indicar el motivo del rechazo');
     }
+
+    // A vehicle is approved by approving its PAPERS: while one of its documents
+    // is pending or rejected there is nothing verified to approve (decisión de
+    // Luis, 2026-08-18). The panel disables the button, and this makes the rule
+    // real — a direct call cannot skip it.
+    if (approve) {
+      const { rows: unresolved } = await this.app.db.query<{ name: string; status: string }>(
+        `SELECT r.name, doc.approval_status AS status
+           FROM documents doc
+           JOIN requirements r ON r.id = doc.requirement_id
+          WHERE doc.vehicle_id = $1 AND doc.approval_status <> 'approved'
+          ORDER BY r.name`,
+        [vehicleId],
+      );
+      if (unresolved.length > 0) {
+        const names = unresolved.map((d) => d.name).join(', ');
+        throw this.app.httpErrors.conflict(
+          `Primero resuelve los documentos del vehículo: ${names}`,
+        );
+      }
+    }
     const { rowCount } = await this.app.db.query(
       `UPDATE vehicles
           SET approval_status = $3, rejection_reason = $4, updated_at = now()

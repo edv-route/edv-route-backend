@@ -1073,6 +1073,7 @@ de Postgres que no aceptan el tipo que se les pasa, y que solo se ven al ejecuta
 | Vehículo o documento que llega **desde la app** nace `pending` | Ya era así (`applications.service.addApplicant*`) |
 | **Reemplazar un archivo**: si lo reemplaza el **chofer** vuelve a `pending` (puerta anti-fraude: no puede cambiar un archivo ya aprobado por otro); si lo reemplaza el **admin** queda `approved` y él consta como revisor | **Nuevo.** `setFileUrl` pasa de un booleano a un modo explícito (`reopen`/`approve`). El admin reemplaza porque cargó el archivo equivocado; obligarlo a aprobar su propia corrección es un paso que no decide nada |
 | El veredicto **solo se ofrece mientras está pendiente** y **rechazar exige motivo** | Ya regía en el detalle de solicitud; ahora vale igual en el detalle del afiliado y en la página del vehículo |
+| **Un vehículo no se aprueba hasta que TODOS sus documentos estén aprobados** | Un vehículo se aprueba aprobando sus papeles: mientras uno esté pendiente o rechazado no hay nada verificado que aprobar. El botón se deshabilita diciendo cuántos faltan, y el backend lo rechaza con **409** nombrando los documentos — la regla no vive solo en la pantalla |
 
 **Panel:** el veredicto existía solo en el detalle de **solicitud**. Ahora también
 en el **detalle del afiliado** (sus documentos) y en la **página del vehículo** (el
