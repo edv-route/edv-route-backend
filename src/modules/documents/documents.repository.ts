@@ -4,6 +4,19 @@ import type { Camelize } from '../../db/case-types.js';
 
 type DocumentRow = Camelize<Documents>;
 
+/**
+ * Who owns a document and what state it is in — what the upload gate needs:
+ * ownership, whether a file is already there, and (for a VEHICLE document)
+ * whether it was rejected, the only case where the driver may replace it.
+ */
+export interface DocumentOwner {
+  id: string;
+  driverId: string;
+  fileUrl: string | null;
+  vehicleId: string | null;
+  approvalStatus: 'pending' | 'approved' | 'rejected';
+}
+
 /** Cross-cutting projection: every document resolves to its owning driver. */
 export type DocumentListItem = Pick<
   DocumentRow,
@@ -45,12 +58,11 @@ export class DocumentsRepository {
   constructor(private readonly db: pg.Pool) {}
 
   /** Owner resolution for file operations (drivers own vehicles' documents). */
-  async findOwner(
-    id: string,
-  ): Promise<{ id: string; driverId: string; fileUrl: string | null } | null> {
-    const { rows } = await this.db.query<{ id: string; driverId: string; fileUrl: string | null }>(
+  async findOwner(id: string): Promise<DocumentOwner | null> {
+    const { rows } = await this.db.query<DocumentOwner>(
       `SELECT doc.id, COALESCE(doc.driver_id, v.driver_id) AS "driverId",
-              doc.file_url AS "fileUrl"
+              doc.file_url AS "fileUrl", doc.vehicle_id AS "vehicleId",
+              doc.approval_status AS "approvalStatus"
        FROM documents doc
        LEFT JOIN vehicles v ON v.id = doc.vehicle_id
        WHERE doc.id = $1`,

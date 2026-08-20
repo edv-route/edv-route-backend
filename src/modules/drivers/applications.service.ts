@@ -22,6 +22,15 @@ export interface SubmittedFile {
   mimeType: string;
 }
 
+/** A validated document, already uploaded, waiting for its row. */
+interface PreparedDocument {
+  id: string;
+  requirementId: number;
+  file: SubmittedFile;
+  mimeType: AllowedMimeType;
+  path: string;
+}
+
 /** A whole vehicle as the app sends it: data + one photo + one file per requirement. */
 export interface VehicleSubmission {
   vehicle: VehicleInput;
@@ -101,63 +110,13 @@ export class ApplicationsService {
     input: VehicleSubmission,
   ): Promise<{ id: string; documents: number }> {
     await this.drivers.assertDriverExists(driverId);
-    const storage = this.requireStorage();
-
-    // Every ACTIVE vehicle requirement must come with its file: an incomplete
-    // vehicle is exactly what this endpoint exists to stop.
-    const { rows: requirements } = await this.app.db.query<{ id: number; name: string }>(
-      `SELECT id, name FROM requirements
-        WHERE active AND applies_to = 'vehicle' ORDER BY id`,
-    );
-    const missing = requirements.filter((r) => !input.documents.has(r.id));
-    if (missing.length > 0) {
-      throw this.app.httpErrors.badRequest(
-        `Faltan documentos del vehículo: ${missing.map((r) => r.name).join(', ')}`,
-      );
-    }
-    const unknown = [...input.documents.keys()].filter(
-      (id) => !requirements.some((r) => r.id === id),
-    );
-    if (unknown.length > 0) {
-      throw this.app.httpErrors.badRequest('Un documento no corresponde a este vehículo');
-    }
-
-    // The photo is REQUIRED here (decisión de Luis): the admin must have
-    // something to compare against the papers. A PDF is a document, not a photo.
-    const photoType = this.assertFile(input.photo, 'La foto del vehículo');
-    if (photoType === 'application/pdf') {
-      throw this.app.httpErrors.badRequest('La foto del vehículo debe ser JPG o PNG');
-    }
-    const docTypes = new Map<number, AllowedMimeType>();
-    for (const [requirementId, file] of input.documents) {
-      const name = requirements.find((r) => r.id === requirementId)?.name ?? 'El documento';
-      docTypes.set(requirementId, this.assertFile(file, name));
-    }
-
-    // Ids are minted here so every storage key is final before the transaction
-    // opens; the paths keep the shape the other flows already use.
     const vehicleId = randomUUID();
-    const photoPath = `${driverId}/vehicles/${vehicleId}/${randomUUID()}.${extensionFor(photoType)}`;
-    const docs = [...input.documents].map(([requirementId, file]) => {
-      const id = randomUUID();
-      const mimeType = docTypes.get(requirementId)!;
-      return {
-        id,
-        requirementId,
-        file,
-        mimeType,
-        path: `${driverId}/${id}.${extensionFor(mimeType)}`,
-      };
-    });
-
-    const uploaded: string[] = [];
+    const { photoPath, docs, uploaded } = await this.prepareVehicleFiles(
+      driverId,
+      vehicleId,
+      input,
+    );
     try {
-      await storage.upload(photoPath, input.photo.buffer, photoType);
-      uploaded.push(photoPath);
-      for (const doc of docs) {
-        await storage.upload(doc.path, doc.file.buffer, doc.mimeType);
-        uploaded.push(doc.path);
-      }
       await withTransaction(this.app.db, async (client) => {
         await client.query(
           `INSERT INTO vehicles
@@ -190,21 +149,7 @@ export class ApplicationsService {
         }
       });
     } catch (err) {
-      // The rows never landed, so the objects are litter: drop them best-effort.
-      await Promise.all(
-        uploaded.map((path) =>
-          storage.remove(path).catch((e: unknown) => {
-            this.app.log.warn({ err: e, path }, 'failed to clean up an orphan upload');
-          }),
-        ),
-      );
-      if ((err as { code?: string }).code === UNIQUE_VIOLATION) {
-        throw this.app.httpErrors.conflict('Ya existe un vehículo con esa placa');
-      }
-      if ((err as { code?: string }).code === FK_VIOLATION) {
-        throw this.app.httpErrors.badRequest('Tipo de vehículo no válido');
-      }
-      throw err;
+      throw await this.discardUploads(uploaded, err);
     }
 
     await this.audit(
@@ -216,6 +161,218 @@ export class ApplicationsService {
       driverId,
     );
     return { id: vehicleId, documents: docs.length };
+  }
+
+  /**
+   * Sends a REJECTED vehicle back for review with everything corrected.
+   *
+   * A rejection is usually a mistyped plate or an unreadable photo (decisión de
+   * Luis): making him load the vehicle again from zero, with its three papers,
+   * punishes him for one field. So a rejected vehicle becomes editable as a
+   * whole, and this replaces data, photo and papers in one transaction and puts
+   * it back to `pending`. Only a REJECTED one — anything else is the very lock
+   * this flow exists to enforce.
+   */
+  async resubmitVehicle(
+    driverId: string,
+    vehicleId: string,
+    input: VehicleSubmission,
+  ): Promise<{ id: string; documents: number }> {
+    await this.drivers.assertDriverExists(driverId);
+    const { rows: current } = await this.app.db.query<{ approvalStatus: string }>(
+      `SELECT approval_status AS "approvalStatus" FROM vehicles
+        WHERE id = $1 AND driver_id = $2`,
+      [vehicleId, driverId],
+    );
+    // 404, never 403: it must not reveal another driver's vehicle.
+    if (!current[0]) throw this.app.httpErrors.notFound('Vehículo no encontrado');
+    if (current[0].approvalStatus !== 'rejected') {
+      throw this.app.httpErrors.conflict(
+        current[0].approvalStatus === 'approved'
+          ? 'Este vehículo ya fue aprobado; no puedes reemplazarlo'
+          : 'Este vehículo está en revisión: espera el veredicto',
+      );
+    }
+
+    const { photoPath, docs, uploaded } = await this.prepareVehicleFiles(
+      driverId,
+      vehicleId,
+      input,
+    );
+    // Replaced files, gathered inside the transaction and dropped only after it
+    // commits: deleting them earlier would leave the driver with nothing to show
+    // if the write failed.
+    const replaced: string[] = [];
+    try {
+      await withTransaction(this.app.db, async (client) => {
+        const { rowCount } = await client.query(
+          `UPDATE vehicles
+              SET vehicle_type_id = $3, brand = $4, model = $5, year = $6, color = $7,
+                  plate = $8, approval_status = 'pending', rejection_reason = NULL,
+                  updated_at = now()
+            WHERE id = $1 AND driver_id = $2 AND approval_status = 'rejected'`,
+          [
+            vehicleId,
+            driverId,
+            input.vehicle.vehicleTypeId ?? null,
+            input.vehicle.brand ?? null,
+            input.vehicle.model ?? null,
+            input.vehicle.year ?? null,
+            input.vehicle.color ?? null,
+            input.vehicle.plate?.trim().toUpperCase() || null,
+          ],
+        );
+        // Someone reviewed it between the check and the write.
+        if (!rowCount) throw this.app.httpErrors.conflict('El vehículo ya no está rechazado');
+
+        const { rows: oldImages } = await client.query<{ fileUrl: string }>(
+          `DELETE FROM vehicle_images WHERE vehicle_id = $1 RETURNING file_url AS "fileUrl"`,
+          [vehicleId],
+        );
+        replaced.push(...oldImages.map((i) => i.fileUrl));
+        await client.query(
+          `INSERT INTO vehicle_images (vehicle_id, file_url, position, uploaded_by)
+           VALUES ($1, $2, 1, NULL)`,
+          [vehicleId, photoPath],
+        );
+
+        // Read the superseded paths BEFORE overwriting them: inside RETURNING the
+        // column already holds the new value, so they have to be taken first or
+        // the old objects stay in the bucket forever.
+        const { rows: oldDocs } = await client.query<{ fileUrl: string }>(
+          `SELECT file_url AS "fileUrl" FROM documents
+            WHERE vehicle_id = $1 AND file_url IS NOT NULL`,
+          [vehicleId],
+        );
+        replaced.push(...oldDocs.map((d) => d.fileUrl));
+
+        for (const doc of docs) {
+          // Reuse the existing row per requirement so its history stays put; a
+          // requirement added since the rejection simply gets a new one.
+          const { rows: prev } = await client.query<{ id: string }>(
+            `UPDATE documents
+                SET file_url = $3, approval_status = 'pending', rejection_reason = NULL,
+                    reviewed_by = NULL, reviewed_at = NULL, updated_at = now()
+              WHERE vehicle_id = $1 AND requirement_id = $2
+              RETURNING id`,
+            [vehicleId, doc.requirementId, doc.path],
+          );
+          if (prev.length === 0) {
+            await client.query(
+              `INSERT INTO documents
+                 (id, requirement_id, driver_id, vehicle_id, file_url, approval_status, uploaded_by)
+               VALUES ($1, $2, NULL, $3, $4, 'pending', NULL)`,
+              [doc.id, doc.requirementId, vehicleId, doc.path],
+            );
+          }
+        }
+      });
+    } catch (err) {
+      throw await this.discardUploads(uploaded, err);
+    }
+
+    // The write is safe now, so the superseded files can go.
+    await this.discardUploads(replaced.filter((p) => p !== photoPath));
+    await this.audit(
+      null,
+      'vehicle.resubmitted_for_review',
+      'vehicles',
+      vehicleId,
+      { driverId, plate: input.vehicle.plate ?? null, documents: docs.length },
+      driverId,
+    );
+    return { id: vehicleId, documents: docs.length };
+  }
+
+  /**
+   * Validates a whole submission and puts its files in the bucket, returning the
+   * final paths. Nothing is written to the database here: an orphan object is
+   * harmless and gets cleaned up, half a vehicle is not.
+   */
+  private async prepareVehicleFiles(
+    driverId: string,
+    vehicleId: string,
+    input: VehicleSubmission,
+  ): Promise<{ photoPath: string; docs: PreparedDocument[]; uploaded: string[] }> {
+    const storage = this.requireStorage();
+
+    // Every ACTIVE vehicle requirement must come with its file: an incomplete
+    // vehicle is exactly what this flow exists to stop. Read from the table, so
+    // a requirement added tomorrow is demanded without touching this code.
+    const { rows: requirements } = await this.app.db.query<{ id: number; name: string }>(
+      `SELECT id, name FROM requirements
+        WHERE active AND applies_to = 'vehicle' ORDER BY id`,
+    );
+    const missing = requirements.filter((r) => !input.documents.has(r.id));
+    if (missing.length > 0) {
+      throw this.app.httpErrors.badRequest(
+        `Faltan documentos del vehículo: ${missing.map((r) => r.name).join(', ')}`,
+      );
+    }
+    const unknown = [...input.documents.keys()].filter(
+      (id) => !requirements.some((r) => r.id === id),
+    );
+    if (unknown.length > 0) {
+      throw this.app.httpErrors.badRequest('Un documento no corresponde a este vehículo');
+    }
+
+    // The photo is REQUIRED (decisión de Luis): the admin must have something to
+    // compare against the papers. A PDF is a document, not a photo.
+    const photoType = this.assertFile(input.photo, 'La foto del vehículo');
+    if (photoType === 'application/pdf') {
+      throw this.app.httpErrors.badRequest('La foto del vehículo debe ser JPG o PNG');
+    }
+    const docTypes = new Map<number, AllowedMimeType>();
+    for (const [requirementId, file] of input.documents) {
+      const name = requirements.find((r) => r.id === requirementId)?.name ?? 'El documento';
+      docTypes.set(requirementId, this.assertFile(file, name));
+    }
+
+    // Keys are final before anything is written; the paths keep the shape the
+    // other flows already use.
+    const photoPath = `${driverId}/vehicles/${vehicleId}/${randomUUID()}.${extensionFor(photoType)}`;
+    const docs: PreparedDocument[] = [...input.documents].map(([requirementId, file]) => {
+      const id = randomUUID();
+      const mimeType = docTypes.get(requirementId)!;
+      return { id, requirementId, file, mimeType, path: `${driverId}/${id}.${extensionFor(mimeType)}` };
+    });
+
+    const uploaded: string[] = [];
+    try {
+      await storage.upload(photoPath, input.photo.buffer, photoType);
+      uploaded.push(photoPath);
+      for (const doc of docs) {
+        await storage.upload(doc.path, doc.file.buffer, doc.mimeType);
+        uploaded.push(doc.path);
+      }
+    } catch (err) {
+      throw await this.discardUploads(uploaded, err);
+    }
+    return { photoPath, docs, uploaded };
+  }
+
+  /**
+   * Drops stored objects best-effort. With [err] it also maps the database's
+   * complaint to the right HTTP error and returns it to be thrown.
+   */
+  private async discardUploads(paths: string[], err?: unknown): Promise<unknown> {
+    const storage = this.app.storage;
+    if (storage) {
+      await Promise.all(
+        paths.map((path) =>
+          storage.remove(path).catch((e: unknown) => {
+            this.app.log.warn({ err: e, path }, 'failed to clean up a superseded upload');
+          }),
+        ),
+      );
+    }
+    if ((err as { code?: string })?.code === UNIQUE_VIOLATION) {
+      return this.app.httpErrors.conflict('Ya existe un vehículo con esa placa');
+    }
+    if ((err as { code?: string })?.code === FK_VIOLATION) {
+      return this.app.httpErrors.badRequest('Tipo de vehículo no válido');
+    }
+    return err;
   }
 
   /** Shared file gate: not empty, within the size cap, and a real PDF/JPG/PNG. */

@@ -12,6 +12,7 @@ import type {
   DocumentsRepository,
   DocumentListFilters,
   DocumentListResult,
+  DocumentOwner,
 } from './documents.repository.js';
 
 /** Signed URLs are short-lived: enough to open the file, not to share it. */
@@ -57,6 +58,18 @@ export class DocumentsService {
     // passes no owner and skips this check.
     if (ownerUserId && document.driverId !== ownerUserId) {
       throw this.app.httpErrors.notFound('Documento no encontrado');
+    }
+    // Once a VEHICLE goes to review the driver stops being able to touch its
+    // papers — that is the whole point of sending it complete (2026-08-20). The
+    // only way back in is a rejection, which is what tells him what to fix.
+    // Personal documents keep the old rule (he may still replace his own licence
+    // while it is under review); the admin, as the authority, is never blocked.
+    if (ownerUserId && document.vehicleId && document.approvalStatus !== 'rejected') {
+      throw this.app.httpErrors.conflict(
+        document.approvalStatus === 'approved'
+          ? 'Este documento ya fue aprobado y no se puede reemplazar'
+          : 'Este documento está en revisión: solo podrás reemplazarlo si te lo rechazan',
+      );
     }
 
     if (file.buffer.length === 0) throw this.app.httpErrors.badRequest('El archivo está vacío');
@@ -181,9 +194,7 @@ export class DocumentsService {
     return this.app.storage;
   }
 
-  private async requireDocument(
-    id: string,
-  ): Promise<{ id: string; driverId: string; fileUrl: string | null }> {
+  private async requireDocument(id: string): Promise<DocumentOwner> {
     const document = await this.documents.findOwner(id);
     if (!document) throw this.app.httpErrors.notFound('Documento no encontrado');
     return document;

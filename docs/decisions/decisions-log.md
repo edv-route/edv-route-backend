@@ -1260,3 +1260,20 @@ después ya no podrá editarlo. **El servidor nunca ve un vehículo a medias.**
 Los endpoints antiguos (`POST /me/vehicles`, `/me/documents`, `/vehicles/:id/images`)
 **se quedan** mientras haya APK instalados que los usen; se retiran cuando la app
 nueva esté desplegada.
+
+## 2026-08-20 — Fase 2: los candados del vehículo (y su salida)
+
+Con el envío completo ya en pie, las reglas que lo sostienen. Sin ellas el flujo
+nuevo sería una recomendación: el backend seguía aceptando que el chofer
+reemplazara cualquier documento suyo mientras no estuviera aprobado, **incluido
+uno en revisión**, que es justo la puerta que este cambio cierra.
+
+| Decisión | Motivo |
+|---|---|
+| Un documento **de vehículo** solo se reemplaza si está **`rejected`** (409 si no) | Enviado el vehículo, sus papeles quedan cerrados. El rechazo es la única llave, y trae el motivo que dice qué corregir |
+| Los documentos **personales** no cambian | Su flujo es otro (nacen sin archivo y se suben sueltos); tocarlo rompería el checklist del registro. Si más adelante se quiere el mismo candado, es una línea |
+| El **admin** nunca se bloquea | Es la autoridad; corrige su propia carga |
+| **`POST /me/vehicles/:id/resubmit`** para el rechazado | Un candado sin salida es un bug: sin esto, un vehículo rechazado dejaba al chofer encerrado — el mismo error que ya cometimos con el `pending` sin deuda |
+| Los archivos sustituidos se borran **después** del commit | Borrarlos antes dejaría al chofer sin nada que mostrar si la escritura falla |
+| Las rutas viejas se leen **antes** de sobrescribirlas | Dentro de `RETURNING` la columna ya trae el valor nuevo: leerla ahí habría dejado los archivos viejos en el bucket para siempre (encontrado al revisar, antes de desplegar) |
+| El límite de fotos cuenta **cuántas hay**, no busca hueco libre | Con vehículos de 3 fotos heredadas, buscar el primer hueco dejaría reemplazar una borrada y volver a 3. Las heredadas se conservan; simplemente no admiten otra |

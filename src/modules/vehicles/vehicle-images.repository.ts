@@ -5,7 +5,16 @@ export interface VehicleImageRow {
   position: number;
 }
 
-/** Vehicle photos (max 3). The binary lives in the private bucket; here only the reference. */
+/**
+ * Photos allowed per vehicle. Dropped from 3 to ONE on 2026-08-20 (decisión de
+ * Luis, app and panel alike): the driver sends one picture with his vehicle and
+ * that is what the admin compares against the papers. Vehicles photographed
+ * under the old limit KEEP their photos — nothing is deleted — they just cannot
+ * take another one.
+ */
+export const MAX_IMAGES = 1;
+
+/** Vehicle photos (see MAX_IMAGES). The binary lives in the private bucket; here only the reference. */
 export class VehicleImagesRepository {
   constructor(private readonly db: pg.Pool) {}
 
@@ -29,8 +38,13 @@ export class VehicleImagesRepository {
   /** First free slot in 1..3, or null when the vehicle already has three. */
   async nextPosition(vehicleId: string): Promise<number | null> {
     const rows = await this.listByVehicle(vehicleId);
+    // COUNT, not "first free slot": a vehicle photographed back when three were
+    // allowed keeps its three (they are never deleted behind the user's back),
+    // and simply cannot take another. Checking for a free slot would let one
+    // deleted photo be replaced by a new one and land back at three.
+    if (rows.length >= MAX_IMAGES) return null;
     const used = new Set(rows.map((r) => r.position));
-    for (let p = 1; p <= 3; p++) if (!used.has(p)) return p;
+    for (let p = 1; p <= MAX_IMAGES; p++) if (!used.has(p)) return p;
     return null;
   }
 

@@ -8,14 +8,13 @@ import {
   sniffMimeType,
   type StorageProvider,
 } from '../../storage/storage-provider.js';
-import type { VehicleImagesRepository } from './vehicle-images.repository.js';
+import { MAX_IMAGES, type VehicleImagesRepository } from './vehicle-images.repository.js';
 
 const SIGNED_URL_TTL_SECONDS = 60;
-const MAX_IMAGES = 3;
 const UNIQUE_VIOLATION = '23505';
 
 /**
- * Vehicle photos custody (max 3 per vehicle). Only images (JPG/PNG) — a PDF is
+ * Vehicle photos custody (MAX_IMAGES per vehicle). Only images (JPG/PNG) — a PDF is
  * a document, not a photo. Same storage rules as documents: private bucket,
  * content validated by magic number, path derived server-side, read via 60s
  * signed URL.
@@ -47,7 +46,9 @@ export class VehicleImagesService {
 
     const position = await this.images.nextPosition(vehicleId);
     if (position === null) {
-      throw this.app.httpErrors.conflict(`Máximo ${MAX_IMAGES} fotos por vehículo`);
+      throw this.app.httpErrors.conflict(MAX_IMAGES === 1
+        ? 'Solo se admite una foto por vehículo'
+        : `Máximo ${MAX_IMAGES} fotos por vehículo`);
     }
 
     // Upload under a random key, then record it; clean the orphan on a race.

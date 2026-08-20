@@ -1,8 +1,9 @@
-import type { FastifyPluginAsync } from 'fastify';
+import type { FastifyInstance, FastifyPluginAsync, FastifyRequest } from 'fastify';
 import { DriversRepository } from '../drivers/drivers.repository.js';
 import { EnrollmentRepository } from '../drivers/enrollment.repository.js';
 import { DriversService } from '../drivers/drivers.service.js';
 import { ApplicationsService } from '../drivers/applications.service.js';
+import type { VehicleSubmission } from '../drivers/applications.service.js';
 import { PaymentSubmissionsRepository } from '../payment-submissions/payment-submissions.repository.js';
 import {
   PaymentSubmissionsService,
@@ -325,53 +326,23 @@ const driverAuthRoutes: FastifyPluginAsync = async (app) => {
   // Multipart shape: text fields for the data, `photo` for the picture, and one
   // file field per document named `document_<requirementId>`.
   app.post('/me/vehicles/submit', { onRequest: [app.authenticateDriver] }, async (req, reply) => {
-    const fields: Record<string, string> = {};
-    const documents = new Map<number, { buffer: Buffer; mimeType: string }>();
-    let photo: { buffer: Buffer; mimeType: string } | null = null;
-    for await (const part of req.parts()) {
-      if (part.type !== 'file') {
-        fields[part.fieldname] = String(part.value);
-        continue;
-      }
-      const buffer = await part.toBuffer().catch(() => {
-        throw app.httpErrors.badRequest('Un archivo supera el máximo de 10 MB');
-      });
-      if (part.fieldname === 'photo') {
-        photo = { buffer, mimeType: part.mimetype };
-        continue;
-      }
-      const match = /^document_(\d+)$/.exec(part.fieldname);
-      if (!match) throw app.httpErrors.badRequest(`Campo de archivo desconocido: ${part.fieldname}`);
-      const requirementId = Number(match[1]);
-      if (documents.has(requirementId)) {
-        throw app.httpErrors.badRequest('Un requerimiento trae más de un archivo');
-      }
-      documents.set(requirementId, { buffer, mimeType: part.mimetype });
-    }
-    if (!photo) throw app.httpErrors.badRequest('Falta la foto del vehículo');
-
-    const rawYear = fields['year'] ? Number(fields['year']) : null;
-    if (rawYear !== null && !Number.isInteger(rawYear)) {
-      throw app.httpErrors.badRequest('El año no es válido');
-    }
-    const rawType = fields['vehicleTypeId'] ? Number(fields['vehicleTypeId']) : null;
-    if (rawType !== null && !Number.isInteger(rawType)) {
-      throw app.httpErrors.badRequest('El tipo de vehículo no es válido');
-    }
-    const result = await applications.submitVehicleForReview(req.user.sub, {
-      vehicle: {
-        vehicleTypeId: rawType,
-        brand: fields['brand'] ?? null,
-        model: fields['model'] ?? null,
-        year: rawYear,
-        color: fields['color'] ?? null,
-        plate: fields['plate'] ?? null,
-      },
-      photo,
-      documents,
-    });
-    return reply.code(201).send(result);
+    const submission = await readVehicleSubmission(app, req);
+    return reply.code(201).send(await applications.submitVehicleForReview(req.user.sub, submission));
   });
+
+  // A REJECTED vehicle, corrected and sent back: same payload, replaces data,
+  // photo and papers, and returns to `pending`. Only works while it is rejected —
+  // that is the way back in, and without it the lock above would be a dead end.
+  app.post<{ Params: { vehicleId: string } }>(
+    '/me/vehicles/:vehicleId/resubmit',
+    { onRequest: [app.authenticateDriver], schema: { params: vehicleIdParam } },
+    async (req) =>
+      applications.resubmitVehicle(
+        req.user.sub,
+        req.params.vehicleId,
+        await readVehicleSubmission(app, req),
+      ),
+  );
 
   // Applicant adds a document (metadata) to his OWN solicitud (born pending). The
   // file is attached afterwards via /documents/:id/file.
@@ -408,5 +379,63 @@ const driverAuthRoutes: FastifyPluginAsync = async (app) => {
     service.listActivePlans(),
   );
 };
+
+/**
+ * Reads a whole vehicle out of a multipart request: text fields for the data,
+ * `photo` for the picture, and one file field per document named
+ * `document_<requirementId>`. Shared by the first submission and the resubmission
+ * of a rejected one — they carry exactly the same payload, and letting the two
+ * drift apart is how one of them ends up accepting something the other rejects.
+ */
+async function readVehicleSubmission(
+  app: FastifyInstance,
+  req: FastifyRequest,
+): Promise<VehicleSubmission> {
+  const fields: Record<string, string> = {};
+  const documents = new Map<number, { buffer: Buffer; mimeType: string }>();
+  let photo: { buffer: Buffer; mimeType: string } | null = null;
+  for await (const part of req.parts()) {
+    if (part.type !== 'file') {
+      fields[part.fieldname] = String(part.value);
+      continue;
+    }
+    const buffer = await part.toBuffer().catch(() => {
+      throw app.httpErrors.badRequest('Un archivo supera el máximo de 10 MB');
+    });
+    if (part.fieldname === 'photo') {
+      photo = { buffer, mimeType: part.mimetype };
+      continue;
+    }
+    const match = /^document_(\d+)$/.exec(part.fieldname);
+    if (!match) throw app.httpErrors.badRequest(`Campo de archivo desconocido: ${part.fieldname}`);
+    const requirementId = Number(match[1]);
+    if (documents.has(requirementId)) {
+      throw app.httpErrors.badRequest('Un requerimiento trae más de un archivo');
+    }
+    documents.set(requirementId, { buffer, mimeType: part.mimetype });
+  }
+  if (!photo) throw app.httpErrors.badRequest('Falta la foto del vehículo');
+
+  const rawYear = fields['year'] ? Number(fields['year']) : null;
+  if (rawYear !== null && !Number.isInteger(rawYear)) {
+    throw app.httpErrors.badRequest('El año no es válido');
+  }
+  const rawType = fields['vehicleTypeId'] ? Number(fields['vehicleTypeId']) : null;
+  if (rawType !== null && !Number.isInteger(rawType)) {
+    throw app.httpErrors.badRequest('El tipo de vehículo no es válido');
+  }
+  return {
+    vehicle: {
+      vehicleTypeId: rawType,
+      brand: fields['brand'] ?? null,
+      model: fields['model'] ?? null,
+      year: rawYear,
+      color: fields['color'] ?? null,
+      plate: fields['plate'] ?? null,
+    },
+    photo,
+    documents,
+  };
+}
 
 export default driverAuthRoutes;
