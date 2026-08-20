@@ -1277,3 +1277,20 @@ uno en revisión**, que es justo la puerta que este cambio cierra.
 | Los archivos sustituidos se borran **después** del commit | Borrarlos antes dejaría al chofer sin nada que mostrar si la escritura falla |
 | Las rutas viejas se leen **antes** de sobrescribirlas | Dentro de `RETURNING` la columna ya trae el valor nuevo: leerla ahí habría dejado los archivos viejos en el bucket para siempre (encontrado al revisar, antes de desplegar) |
 | El límite de fotos cuenta **cuántas hay**, no busca hueco libre | Con vehículos de 3 fotos heredadas, buscar el primer hueco dejaría reemplazar una borrada y volver a 3. Las heredadas se conservan; simplemente no admiten otra |
+
+## 2026-08-20 — Fase 4: una sola foto también en el panel
+
+Cierra el cambio de flujo del vehículo. El límite estaba escrito **tres veces**
+en el panel (`vehicle-form`, `vehicle-draft-modal` y el detalle del vehículo),
+que es exactamente cómo un límite acaba diciendo 3 en una pantalla y 1 en otra.
+Ahora vive en `core/models/vehicle-photos.ts` y los tres lo leen de ahí.
+
+Encontrado al bajarlo: el detalle calculaba los huecos libres como
+`maxPhotos - images.length`, que en un vehículo con las **3 fotos heredadas** da
+**-2**, y `slice(0, -2)` no descarta archivos, los conserva. Habría dejado subir
+fotos justo en los vehículos que ya estaban por encima del límite. Corregido con
+un piso en cero.
+
+Los vehículos que ya tienen 2 o 3 fotos **las conservan y se siguen viendo
+todas**; simplemente no admiten otra. El contador dice «3» en vez de «3/1»,
+porque un contador que se lee como roto hace dudar del resto de la pantalla.
