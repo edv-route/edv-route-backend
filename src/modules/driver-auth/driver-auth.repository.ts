@@ -345,6 +345,13 @@ export class DriverAuthRepository {
        SELECT
          d.status::text AS "driverStatus",
          d.reactivates_at AS "reactivatesAt",
+         -- WHEN he starts working, for a driver whose tariff is programmed and
+         -- has not begun (2026-08-20). The admin sets the start ("el próximo
+         -- lunes") and until now the app said nothing about it: the driver only
+         -- got "tu cuenta no está habilitada, contacta a la oficina" when he
+         -- tried to go active — a dead end for something that already has a date.
+         (SELECT current_period_start FROM driver_subscriptions ds3
+           WHERE ds3.id = (SELECT id FROM sub) AND ds3.status = 'scheduled') AS "tariffStartsAt",
          (SELECT status FROM sub) AS "subscriptionStatus",
          (SELECT billing_period FROM sub) AS "billingPeriod",
          (SELECT price_usd::text FROM sub) AS "planPriceUsd",
@@ -498,6 +505,8 @@ export interface AppUpcomingCharge {
 export interface AppAccountRow {
   driverStatus: string;
   reactivatesAt: Date | string | null;
+  /** His tariff is programmed and starts on this date; null once it is running. */
+  tariffStartsAt: Date | string | null;
   subscriptionStatus: string | null;
   billingPeriod: string | null;
   planPriceUsd: string | null;

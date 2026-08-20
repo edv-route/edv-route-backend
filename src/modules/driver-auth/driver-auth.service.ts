@@ -88,6 +88,12 @@ export interface AppAccount {
   driverStatus: string;
   /** Penalized-but-settled: when the engine lets him operate again. */
   reactivatesAt: string | null;
+  /**
+   * His start is PROGRAMMED for this date and hasn't arrived yet. Null once the
+   * tariff is running. Without it the app could only tell him he was not enabled,
+   * never that he already has a date.
+   */
+  tariffStartsAt: string | null;
   /** End of the last prepaid week: until when he is covered. Null if never paid. */
   paidUntil: string | null;
   upcoming: AppUpcomingCharge | null;
@@ -347,11 +353,7 @@ export class DriverAuthService {
     if (!status) throw httpErrors.notFound('No se encontró tu perfil');
 
     if (available && !CAN_OPERATE_STATUSES.includes(status)) {
-      throw httpErrors.conflict(
-        status === 'penalized'
-          ? 'No puedes ponerte activo mientras estés penalizado. Paga lo que debes para volver a operar.'
-          : 'Tu cuenta no está habilitada para trabajar. Contacta a la oficina.',
-      );
+      throw httpErrors.conflict(await this.cannotGoActiveReason(userId, status));
     }
 
     const isAvailable = await this.drivers.setAvailability(userId, available);
@@ -365,6 +367,40 @@ export class DriverAuthService {
       data: { isAvailable },
     });
     return { isAvailable };
+  }
+
+  /**
+   * Why he cannot go active, said in a way he can act on (2026-08-20).
+   *
+   * It used to answer "tu cuenta no está habilitada para trabajar, contacta a la
+   * oficina" to everyone, which is a dead end — and plainly wrong for the most
+   * common case: a driver whose start the admin already PROGRAMMED. He is not
+   * blocked, he is early, and there is a date to tell him.
+   */
+  private async cannotGoActiveReason(userId: string, status: string): Promise<string> {
+    if (status === 'penalized') {
+      return 'No puedes ponerte activo mientras estés penalizado. Paga lo que debes para volver a operar.';
+    }
+    if (status === 'paused') {
+      return 'Tu cuenta está en pausa. Contacta a la oficina para reanudarla.';
+    }
+    if (status === 'scheduled') {
+      const { rows } = await this.app.db.query<{ startsOn: string | null }>(
+        `SELECT to_char(ds.current_period_start AT TIME ZONE
+                  COALESCE((SELECT value #>> '{}' FROM app_settings WHERE key = 'business_timezone'),
+                           'America/Caracas'),
+                'DD/MM/YYYY') AS "startsOn"
+           FROM driver_subscriptions ds
+          WHERE ds.driver_id = $1 AND ds.status = 'scheduled'
+          ORDER BY ds.created_at DESC LIMIT 1`,
+        [userId],
+      );
+      const startsOn = rows[0]?.startsOn;
+      return startsOn
+        ? `Tu tarifa arranca el ${startsOn}. Ese día podrás ponerte activo.`
+        : 'Tu inicio ya está programado. Podrás ponerte activo cuando arranque tu tarifa.';
+    }
+    return 'Tu cuenta no está habilitada para trabajar. Contacta a la oficina.';
   }
 
   /** Address prefill for the app's edit form (the rest already travels in /me). */
@@ -448,6 +484,7 @@ export class DriverAuthService {
     return {
       driverStatus: row.driverStatus,
       reactivatesAt: toIsoDate(row.reactivatesAt),
+      tariffStartsAt: toIsoDate(row.tariffStartsAt),
       paidUntil: toIsoDate(row.paidUntil),
       upcoming: row.upcoming,
       nextChargeAt,

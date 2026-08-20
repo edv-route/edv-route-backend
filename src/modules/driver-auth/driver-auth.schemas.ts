@@ -210,6 +210,9 @@ export const appAccountSchema = {
       properties: {
         driverStatus: { type: 'string' },
         reactivatesAt: { type: ['string', 'null'] },
+        // Declared or the serializer drops it: it is how the app learns WHEN he
+        // starts, instead of only that he cannot work yet.
+        tariffStartsAt: { type: ['string', 'null'] },
         paidUntil: { type: ['string', 'null'] },
         upcoming: {
           type: ['object', 'null'],

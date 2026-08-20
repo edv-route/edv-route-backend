@@ -1294,3 +1294,18 @@ un piso en cero.
 Los vehículos que ya tienen 2 o 3 fotos **las conservan y se siguen viendo
 todas**; simplemente no admiten otra. El contador dice «3» en vez de «3/1»,
 porque un contador que se lee como roto hace dudar del resto de la pantalla.
+
+## 2026-08-20 — El chofer aprobado tiene que saber CUÁNDO empieza
+
+El admin aprueba y programa el inicio para el próximo lunes. El chofer abría la
+app y **no veía nada de eso**: su Inicio se veía normal, y la única señal que
+podía obtener era intentar ponerse activo y recibir «Tu cuenta no está habilitada
+para trabajar. Contacta a la oficina» — un callejón, y encima falso: no está
+inhabilitado, está **temprano**, y la fecha ya existe en la base.
+
+| Decisión | Motivo |
+|---|---|
+| `GET /me/account` devuelve **`tariffStartsAt`** | El dato ya vivía en `driver_subscriptions.current_period_start`; solo faltaba dárselo al canal de la app |
+| El **409** de `/me/availability` dice la fecha | Un mensaje que manda a llamar a la oficina para algo que el sistema ya sabe es una llamada de teléfono desperdiciada |
+| Aviso en el **Inicio**, con día de la semana y cuenta atrás | Es donde aterriza; el inicio siempre cae en lunes y así es como el chofer lo recuerda («el lunes 24 de agosto · faltan 4 días») |
+| El mensaje distingue penalizado / en pausa / programado | Los tres compartían la misma frase genérica, y cada uno se corrige de forma distinta |
