@@ -227,6 +227,9 @@ export const appAccountSchema = {
         penaltyCount: { type: 'integer' },
         capWeeks: { type: 'integer' },
         planPriceUsd: { type: ['string', 'null'] },
+        // The bell's badge. Declared or the serializer drops it in silence — the
+        // same trap that already ate `rejected` and `tariffStartsAt`.
+        unreadNotifications: { type: 'integer' },
       },
     },
   },

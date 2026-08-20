@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import argon2 from 'argon2';
 import { writeAudit } from '../audit-logs/audit-writer.js';
+import { NotificationsRepository } from '../notifications/notifications.repository.js';
 import {
   MAX_FILE_BYTES,
   extensionFor,
@@ -104,6 +105,14 @@ export interface AppAccount {
   /** Weeks of arrears tolerated before penalizing (app_settings). */
   capWeeks: number;
   planPriceUsd: string | null;
+  /**
+   * Unread notices for the bell. It travels HERE, inside a call the app already
+   * makes on every screen, and never in a request of its own: a second call that
+   * fails without a signal leaves the badge showing a stale number while the
+   * rest of the screen is fresh (that is exactly how the "vehículo en uso" bug
+   * behaved).
+   */
+  unreadNotifications: number;
 }
 
 /** What a driver may change about himself (see updateOwnProfile). */
@@ -123,6 +132,8 @@ export class DriverAuthService {
     private readonly driversService: DriversService,
     /** Admin-channel repository: the account view reuses its billing helpers. */
     private readonly driversRepository: DriversRepository,
+    /** Only for the unread badge that rides inside the account standing. */
+    private readonly notifications: NotificationsRepository,
   ) {}
 
   async login(nationalId: string, password: string): Promise<DriverLoginResult> {
@@ -492,6 +503,7 @@ export class DriverAuthService {
       penaltyCount: row.penaltyCount,
       capWeeks: row.capWeeks,
       planPriceUsd: row.planPriceUsd,
+      unreadNotifications: await this.notifications.unreadCount(userId),
     };
   }
 

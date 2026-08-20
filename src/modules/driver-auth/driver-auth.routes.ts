@@ -17,6 +17,7 @@ import { DocumentsService } from '../documents/documents.service.js';
 import { SettingsRepository } from '../settings/settings.repository.js';
 import { VehicleImagesRepository } from '../vehicles/vehicle-images.repository.js';
 import { VehicleImagesService } from '../vehicles/vehicle-images.service.js';
+import { NotificationsRepository } from '../notifications/notifications.repository.js';
 import { DriverAuthRepository } from './driver-auth.repository.js';
 import { DriverAuthService } from './driver-auth.service.js';
 import {
@@ -91,6 +92,7 @@ const driverAuthRoutes: FastifyPluginAsync = async (app) => {
     new DriverAuthRepository(app.db),
     driversService,
     driversRepository,
+    new NotificationsRepository(app.db),
   );
 
   app.post<{ Body: DriverLoginBody }>('/login', { schema: driverLoginSchema }, async (req) =>

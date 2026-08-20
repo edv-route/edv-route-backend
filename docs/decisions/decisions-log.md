@@ -1375,3 +1375,23 @@ Los 15 casos de v1 enganchados a los hechos que los provocan. Ningún endpoint n
 
 **Pendiente que esto deja abierto (Fase 2)**: la bandeja debe listar solo los avisos cuyo
 `deliver_after` ya pasó — un recordatorio programado para el domingo no es algo que haya ocurrido.
+
+## 2026-08-20 — Sistema de avisos, Fases 2 y 3: bandeja y campana
+
+Endpoints del canal de la app, la pantalla de avisos y la campana en el header. Con esto el
+sistema **funciona entero sin push**: solo falta Firebase (Fase 4), que es puro transporte.
+
+| Decisión | Motivo |
+|---|---|
+| La bandeja lista **solo** los avisos con `deliver_after` ya pasado | No es un detalle de entrega colándose en la lectura: es lo que la bandeja SIGNIFICA. Un recordatorio programado para el domingo no ha ocurrido, y mostrarlo hoy le enseña un aviso sobre una semana que no ha empezado, fechado como si sí |
+| Paginación por **keyset** (`before=<id>`), no OFFSET | Llegan avisos mientras hace scroll; el OFFSET le movería la ventana debajo, repitiendo o saltándose filas. Además evita un `count(*)` sobre una tabla que solo crece: se pide una fila de más y eso responde «¿hay más?» |
+| Marcar leído es **idempotente** y **no mueve** `read_at` la segunda vez | Abrir dos veces el mismo aviso no puede ser un error que la app tenga que manejar. Y cuándo lo leyó es un hecho, no la última vez que lo abrió |
+| El filtro por usuario va **dentro del WHERE**, no comprobado después | Un id ajeno simplemente no coincide: responde 204 igual y no revela si el aviso existe |
+| `read-all` solo marca lo que **podía ver** | No se puede dar por leído algo que aún no se le ha mostrado |
+| El contador viaja **dentro de `/me/account`** | La app ya pide esa llamada en cada pantalla. Un dato de segunda llamada que falla sin señal deja la campana mintiendo mientras el resto de la pantalla está fresco — fue exactamente el bug del «vehículo en uso» |
+| **El shell es el dueño del contador** y también del estado de cuenta | Las dos pestañas pintan un header desde ahí; dos cargas independientes mostraban dos campanas distintas. De paso el Inicio dejó de pedir su propio `GET /me/account` (eran dos al arrancar) |
+| La pantalla **devuelve el contador al cerrarse** (`pop`) | Refrescar la cuenta al volver sería una segunda ida al servidor por un número que la pantalla que acaba de cerrar ya conocía |
+| Abrir un aviso lo marca leído; **primero local, luego el servidor** | Leer no es algo que el chofer deba HACER: un botón «marcar como leído» es un toque extra para contarle a la app lo que acaba de ver. Y hacerle esperar el viaje de red para ver que deja de estar en negrita es la app dudando de lo que él acaba de hacer |
+| La campana en el **header**, no en la isla flotante | La isla navega entre lugares donde uno *está*; los avisos se consultan y se cierran. Además la isla gasta uno de los ~3 cupos que hacen falta para Viajes. Ventaja concreta: en el header el **dorado está libre** (en la isla ya significa «pestaña activa»), así que el indicador se lee sin ambigüedad |
+| El tile «Notificaciones — próximamente» del Inicio se **borra** | Anunciar como futuro algo que el chofer ya ve dos centímetros más arriba es peor que no tener el tile |
+| La app **nunca compone texto**: pinta `title`/`body` tal como llegan | Si el teléfono redacta, la bandeja y el push empiezan a decir cosas distintas y corregir una palabra exige publicar un APK. Del `type` solo se deriva el **icono y su color** |
