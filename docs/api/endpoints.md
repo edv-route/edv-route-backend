@@ -67,8 +67,13 @@ admin, no la entrada). El alta reutiliza el único camino de dinero (`DriversSer
 `source='app'`: `registered_by`/`uploaded_by` = `null`, actor en `audit_logs.actor_user_id`). Las
 subidas y el pago del chofer usan su token y validan propiedad (el recurso es suyo). Un job diario
 (`applicant-cleanup-scheduler`) purga a los **7 días** los `pending` **sin pago vivo** (sin envío
-`pending`/`approved`) y los `rejected`, borrando filas en cascada + archivos del bucket; **apagado
-por defecto** (dry-run) hasta encender `applicant_cleanup_enabled`.
+`pending`/`approved`) y **sin ninguna factura**, borrando filas en cascada + archivos del bucket;
+**apagado por defecto** (dry-run) hasta encender `applicant_cleanup_enabled`. Los `rejected` **se
+conservan** (política 2026-08-13). La condición de las facturas se añadió el **2026-08-19**: un
+registro por panel sin pago, o una deuda de alta re-emitida tras revertir un recibo, dejan a un
+`pending` sin pago vivo pero **con facturas emitidas y dinero por cobrar**; purgarlo borraría
+documentos de dinero (regla 7). El borrado en cascada además **se niega** a correr si el chofer
+tiene facturas, por si el criterio de selección vuelve a quedarse corto.
 
 ## Administradores
 

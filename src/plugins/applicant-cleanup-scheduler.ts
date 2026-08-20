@@ -52,7 +52,15 @@ async function findExpiredApplicants(db: pg.Pool): Promise<string[]> {
              AND NOT EXISTS (
                SELECT 1 FROM payment_submissions ps
                 WHERE ps.driver_id = d.user_id
-                  AND ps.status IN ('pending', 'approved')))
+                  AND ps.status IN ('pending', 'approved'))
+             -- Never a driver with invoices (regla 7: money documents are voided
+             -- with a trace, never deleted). "No live payment" used to mean an
+             -- abandoned alta owing nothing; since a panel registration without
+             -- payment — and a re-issued alta debt after a reverted receipt — it
+             -- can also mean someone who OWES and has not paid yet. Purging him
+             -- would delete emitted invoices and wipe the debt.
+             AND NOT EXISTS (
+               SELECT 1 FROM invoices i WHERE i.driver_id = d.user_id))
          OR (d.status = 'applicant'
              AND d.created_at < now() - make_interval(days => $1)
              AND NOT EXISTS (SELECT 1 FROM documents doc WHERE doc.driver_id = d.user_id)
@@ -89,6 +97,19 @@ async function deleteDriverCascade(db: pg.Pool, driverId: string): Promise<void>
   const client = await db.connect();
   try {
     await client.query('BEGIN');
+    // Last line of defence, INSIDE the transaction: whatever the selection rule
+    // says today or after some future edit, this delete refuses to carry money
+    // away. An invoice — even a voided one — is a document that is kept, so its
+    // mere existence disqualifies the driver from being purged.
+    const { rows: money } = await client.query<{ invoices: string }>(
+      `SELECT count(*)::text AS invoices FROM invoices WHERE driver_id = $1`,
+      [driverId],
+    );
+    if (money[0] && money[0].invoices !== '0') {
+      throw new Error(
+        `applicant-cleanup refused to purge ${driverId}: has ${money[0].invoices} invoice(s)`,
+      );
+    }
     await client.query(`SELECT id FROM driver_subscriptions WHERE driver_id = $1 FOR UPDATE`, [driverId]);
     await client.query(`DELETE FROM payment_submissions WHERE driver_id = $1`, [driverId]);
     await client.query(

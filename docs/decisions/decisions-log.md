@@ -729,7 +729,7 @@ semanal y validar el ciclo con reloj real.
 | **Rutas del chofer bajo el prefijo `/driver-auth`** (pago, documento, foto), no un prefijo `/driver` aparte | Todas las rutas de la app ya viven en `/driver-auth`; mantenerlas juntas es más coherente que un segundo plugin para tres rutas |
 | **Propiedad del recurso**: el pago toma el `driverId` del **token** (no de la URL); el documento valida `document.driverId === token` (404 si es de otro); la foto reutiliza `vehicleBelongsToDriver` | Un chofer solo puede tocar lo suyo; el 404 no revela la existencia de recursos ajenos |
 | **Compartir los JSON Schema** de registro en `drivers/drivers.schemas.ts` (admin + app) | Una sola fuente de verdad del contrato del formulario; de paso aligera `drivers.routes.ts` |
-| **Limpieza de solicitantes** (`applicant-cleanup-scheduler`, diario + boot): purga a los **7 días** los `pending` **sin pago vivo** (sin envío `pending`/`approved`) y los `rejected`; conserva `pending` con envío pendiente y `approved`. Borra filas en cascada + archivos del bucket. **Dry-run por defecto** (`applicant_cleanup_enabled`, apagado) | Limpia la basura sin frenar el registro. `registration_step` NO sirve (el register transaccional lo deja null aunque falten archivos/pago), por eso el criterio es "tiene un pago vivo". El flag apagado evita borrados en producción hasta verificar |
+| **Limpieza de solicitantes** (`applicant-cleanup-scheduler`, diario + boot): purga a los **7 días** los `pending` **sin pago vivo** (sin envío `pending`/`approved`) y los `rejected`; conserva `pending` con envío pendiente y `approved`. Borra filas en cascada + archivos del bucket. **Dry-run por defecto** (`applicant_cleanup_enabled`, apagado). ⚠️ **Corregido el 2026-08-19**: además exige **no tener ninguna factura** (ni emitida ni anulada) — ver la entrada de esa fecha | Limpia la basura sin frenar el registro. `registration_step` NO sirve (el register transaccional lo deja null aunque falten archivos/pago), por eso el criterio es "tiene un pago vivo". El flag apagado evita borrados en producción hasta verificar |
 
 ## 2026-08-04 — 🧾 Rediseño de facturación: 1 recibo de pago cubre N facturas (revierte "1 factura por cobro")
 
@@ -1207,3 +1207,29 @@ deja al afiliado exactamente así. Había dos en la base viviéndolo.
 
 **Orden de la regla** (importa): un pago ya enviado gana sobre la deuda (no se
 paga dos veces) y la deuda gana sobre todo lo demás.
+
+## 2026-08-19 — La limpieza de solicitantes no puede llevarse dinero
+
+Apareció en el log del backend, en **dry-run**: el limpiador tenía marcado para
+purgar a un afiliado (`V-23654789`) al que acabábamos de **volver a emitirle la
+deuda del alta** — $190 en dos facturas recién emitidas. Con
+`applicant_cleanup_enabled` encendido lo habría borrado, y el borrado en cascada
+incluye `DELETE FROM invoices`: se habría llevado las facturas y la deuda con él.
+Choca de frente con la **regla 7** (un documento de dinero se anula con rastro,
+nunca se borra).
+
+El criterio no estaba mal escrito, **se quedó viejo**. «`pending`, vencido el
+plazo y sin pago vivo» describía un alta abandonada que no debía nada. Ya no:
+un **registro por panel sin pago** y una **deuda de alta re-emitida tras revertir
+un recibo** dejan exactamente esa firma — pero con facturas emitidas y dinero por
+cobrar. Le habría tocado a más gente: basta con rechazarle el pago a cualquier
+`pending` para que entre en la lista con sus facturas a cuestas.
+
+| Decisión | Motivo |
+|---|---|
+| Tener **cualquier factura** (emitida **o anulada**) excluye al chofer de la purga | Una anulada también es un documento que se conserva. El criterio de selección deja de adivinar si hay dinero: si hay factura, no se toca |
+| El borrado en cascada **se niega** si el chofer tiene facturas, dentro de su transacción | Defensa en profundidad: el criterio de selección puede volver a quedarse viejo; el borrado no debe depender de que alguien lo recuerde |
+| 3 pruebas nuevas en `tests/applicant-cleanup.test.ts` | Fijan las tres respuestas: sin facturas es candidato, con factura emitida no, con factura anulada tampoco |
+
+**Verificado sobre la base real**: con la regla anterior el limpiador señalaba a
+1 afiliado; con la nueva, **cero**.
