@@ -1233,3 +1233,30 @@ cobrar. Le habría tocado a más gente: basta con rechazarle el pago a cualquier
 
 **Verificado sobre la base real**: con la regla anterior el limpiador señalaba a
 1 afiliado; con la nueva, **cero**.
+
+## 2026-08-20 — El vehículo se arma en el teléfono, no en el servidor
+
+**Cambio de flujo pedido por Luis.** Hasta ahora la app construía el vehículo en
+el servidor a pedazos: crear el vehículo (ya queda en la BD) → subir una foto →
+crear un documento → adjuntarle el archivo… Ocho llamadas encadenadas donde
+cualquier fallo de red dejaba **medio vehículo** guardado y metía un registro
+incompleto en la cola de revisión del admin.
+
+Ahora el vehículo se arma como **borrador local en el teléfono**, editable campo
+a campo (datos, foto y documentos) mientras el afiliado quiera. Solo cuando está
+completo se habilita **«Enviar a revisión»**, con un modal que avisa de que
+después ya no podrá editarlo. **El servidor nunca ve un vehículo a medias.**
+
+| Decisión | Motivo |
+|---|---|
+| **Un endpoint transaccional** (`POST /driver-auth/me/vehicles/submit`) en vez de encadenar los ocho de hoy | Encadenarlos desde la app deja el mismo problema: un fallo a mitad vuelve a dejar medio vehículo en el servidor |
+| Los archivos suben al bucket **antes** de la transacción | Un objeto huérfano es inofensivo y se limpia; una fila a medias, no. Mismo patrón que los pagos |
+| **Una sola foto** por vehículo, y **obligatoria** desde la app | El admin necesita con qué comparar los papeles; hoy es opcional y hay vehículos aprobados sin ninguna imagen. Las que ya tienen 2 o 3 se **conservan**; el límite rige de aquí en adelante, también en el panel |
+| Tras enviar, el **chofer** no edita nada… salvo lo **rechazado** | Es el candado anti-fraude que ya existía para los documentos, ahora también para el vehículo |
+| Un **vehículo rechazado vuelve a ser editable** entero y se reenvía | El caso real es una placa mal escrita o una foto ilegible; obligar a cargarlo todo de nuevo castiga al afiliado por un error de un campo |
+| Los vehículos que registra el **admin** nacen `approved` y se editan **siempre** | Él es la autoridad y suele cargarlo con la persona delante; el candado es para el canal de la app |
+| Un **solo borrador** a la vez | No hay razón para llenar dos vehículos a medias, y evita una lista de borradores que habría que explicar |
+
+Los endpoints antiguos (`POST /me/vehicles`, `/me/documents`, `/vehicles/:id/images`)
+**se quedan** mientras haya APK instalados que los usen; se retiran cuando la app
+nueva esté desplegada.

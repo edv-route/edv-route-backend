@@ -316,6 +316,63 @@ const driverAuthRoutes: FastifyPluginAsync = async (app) => {
     },
   );
 
+  // Sends a COMPLETE vehicle for review in one shot: data + photo + one file per
+  // active vehicle requirement, all in a single transaction (2026-08-20). The app
+  // holds the draft locally and only calls this when the driver confirms, so the
+  // server never sees a half-built vehicle. The piecemeal routes above stay for
+  // the APKs already installed; they go once the new app is out.
+  //
+  // Multipart shape: text fields for the data, `photo` for the picture, and one
+  // file field per document named `document_<requirementId>`.
+  app.post('/me/vehicles/submit', { onRequest: [app.authenticateDriver] }, async (req, reply) => {
+    const fields: Record<string, string> = {};
+    const documents = new Map<number, { buffer: Buffer; mimeType: string }>();
+    let photo: { buffer: Buffer; mimeType: string } | null = null;
+    for await (const part of req.parts()) {
+      if (part.type !== 'file') {
+        fields[part.fieldname] = String(part.value);
+        continue;
+      }
+      const buffer = await part.toBuffer().catch(() => {
+        throw app.httpErrors.badRequest('Un archivo supera el máximo de 10 MB');
+      });
+      if (part.fieldname === 'photo') {
+        photo = { buffer, mimeType: part.mimetype };
+        continue;
+      }
+      const match = /^document_(\d+)$/.exec(part.fieldname);
+      if (!match) throw app.httpErrors.badRequest(`Campo de archivo desconocido: ${part.fieldname}`);
+      const requirementId = Number(match[1]);
+      if (documents.has(requirementId)) {
+        throw app.httpErrors.badRequest('Un requerimiento trae más de un archivo');
+      }
+      documents.set(requirementId, { buffer, mimeType: part.mimetype });
+    }
+    if (!photo) throw app.httpErrors.badRequest('Falta la foto del vehículo');
+
+    const rawYear = fields['year'] ? Number(fields['year']) : null;
+    if (rawYear !== null && !Number.isInteger(rawYear)) {
+      throw app.httpErrors.badRequest('El año no es válido');
+    }
+    const rawType = fields['vehicleTypeId'] ? Number(fields['vehicleTypeId']) : null;
+    if (rawType !== null && !Number.isInteger(rawType)) {
+      throw app.httpErrors.badRequest('El tipo de vehículo no es válido');
+    }
+    const result = await applications.submitVehicleForReview(req.user.sub, {
+      vehicle: {
+        vehicleTypeId: rawType,
+        brand: fields['brand'] ?? null,
+        model: fields['model'] ?? null,
+        year: rawYear,
+        color: fields['color'] ?? null,
+        plate: fields['plate'] ?? null,
+      },
+      photo,
+      documents,
+    });
+    return reply.code(201).send(result);
+  });
+
   // Applicant adds a document (metadata) to his OWN solicitud (born pending). The
   // file is attached afterwards via /documents/:id/file.
   app.post<{ Body: DocumentInput }>(

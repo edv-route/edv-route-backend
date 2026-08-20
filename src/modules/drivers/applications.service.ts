@@ -1,11 +1,34 @@
+import { randomUUID } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import { withTransaction } from '../../db/tx.js';
 import { writeAudit } from '../audit-logs/audit-writer.js';
+import {
+  extensionFor,
+  isAllowedMimeType,
+  MAX_FILE_BYTES,
+  sniffMimeType,
+  type AllowedMimeType,
+  type StorageProvider,
+} from '../../storage/storage-provider.js';
 import type { EnrollmentRepository } from './enrollment.repository.js';
 import type { DriversService, DocumentInput, VehicleInput } from './drivers.service.js';
 
 const UNIQUE_VIOLATION = '23505';
 const FK_VIOLATION = '23503';
+
+/** One uploaded part of a vehicle submission. */
+export interface SubmittedFile {
+  buffer: Buffer;
+  mimeType: string;
+}
+
+/** A whole vehicle as the app sends it: data + one photo + one file per requirement. */
+export interface VehicleSubmission {
+  vehicle: VehicleInput;
+  photo: SubmittedFile;
+  /** Keyed by requirement id — every ACTIVE vehicle requirement must be present. */
+  documents: Map<number, SubmittedFile>;
+}
 
 /**
  * The SOLICITUD channel (proposal: solicitudes-app): everything about a driver
@@ -55,6 +78,168 @@ export class ApplicationsService {
       }
       throw err;
     }
+  }
+
+  /**
+   * App channel: sends a COMPLETE vehicle for review in ONE transaction — data,
+   * its photo and one file per active vehicle requirement (2026-08-20).
+   *
+   * Until now the app built the vehicle on the server piece by piece (create it,
+   * upload a photo, create a document, attach its file...): eight round trips
+   * where any failure left half a vehicle behind and put an incomplete record in
+   * the admin's review queue. The app now keeps a LOCAL draft, editable until the
+   * driver decides, and the server only ever sees whole vehicles.
+   *
+   * Everything is validated BEFORE anything is written, files land in the bucket
+   * first (an orphan object is harmless; a half-inserted vehicle is not), and the
+   * rows go in together. Born `pending`: what comes from the app is reviewed by
+   * an admin, unlike a vehicle the admin registers himself, which is born
+   * approved (decisión de Luis).
+   */
+  async submitVehicleForReview(
+    driverId: string,
+    input: VehicleSubmission,
+  ): Promise<{ id: string; documents: number }> {
+    await this.drivers.assertDriverExists(driverId);
+    const storage = this.requireStorage();
+
+    // Every ACTIVE vehicle requirement must come with its file: an incomplete
+    // vehicle is exactly what this endpoint exists to stop.
+    const { rows: requirements } = await this.app.db.query<{ id: number; name: string }>(
+      `SELECT id, name FROM requirements
+        WHERE active AND applies_to = 'vehicle' ORDER BY id`,
+    );
+    const missing = requirements.filter((r) => !input.documents.has(r.id));
+    if (missing.length > 0) {
+      throw this.app.httpErrors.badRequest(
+        `Faltan documentos del vehículo: ${missing.map((r) => r.name).join(', ')}`,
+      );
+    }
+    const unknown = [...input.documents.keys()].filter(
+      (id) => !requirements.some((r) => r.id === id),
+    );
+    if (unknown.length > 0) {
+      throw this.app.httpErrors.badRequest('Un documento no corresponde a este vehículo');
+    }
+
+    // The photo is REQUIRED here (decisión de Luis): the admin must have
+    // something to compare against the papers. A PDF is a document, not a photo.
+    const photoType = this.assertFile(input.photo, 'La foto del vehículo');
+    if (photoType === 'application/pdf') {
+      throw this.app.httpErrors.badRequest('La foto del vehículo debe ser JPG o PNG');
+    }
+    const docTypes = new Map<number, AllowedMimeType>();
+    for (const [requirementId, file] of input.documents) {
+      const name = requirements.find((r) => r.id === requirementId)?.name ?? 'El documento';
+      docTypes.set(requirementId, this.assertFile(file, name));
+    }
+
+    // Ids are minted here so every storage key is final before the transaction
+    // opens; the paths keep the shape the other flows already use.
+    const vehicleId = randomUUID();
+    const photoPath = `${driverId}/vehicles/${vehicleId}/${randomUUID()}.${extensionFor(photoType)}`;
+    const docs = [...input.documents].map(([requirementId, file]) => {
+      const id = randomUUID();
+      const mimeType = docTypes.get(requirementId)!;
+      return {
+        id,
+        requirementId,
+        file,
+        mimeType,
+        path: `${driverId}/${id}.${extensionFor(mimeType)}`,
+      };
+    });
+
+    const uploaded: string[] = [];
+    try {
+      await storage.upload(photoPath, input.photo.buffer, photoType);
+      uploaded.push(photoPath);
+      for (const doc of docs) {
+        await storage.upload(doc.path, doc.file.buffer, doc.mimeType);
+        uploaded.push(doc.path);
+      }
+      await withTransaction(this.app.db, async (client) => {
+        await client.query(
+          `INSERT INTO vehicles
+             (id, driver_id, vehicle_type_id, brand, model, year, color, plate,
+              approval_status, registered_by)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'pending', NULL)`,
+          [
+            vehicleId,
+            driverId,
+            input.vehicle.vehicleTypeId ?? null,
+            input.vehicle.brand ?? null,
+            input.vehicle.model ?? null,
+            input.vehicle.year ?? null,
+            input.vehicle.color ?? null,
+            input.vehicle.plate?.trim().toUpperCase() || null,
+          ],
+        );
+        await client.query(
+          `INSERT INTO vehicle_images (vehicle_id, file_url, position, uploaded_by)
+           VALUES ($1, $2, 1, NULL)`,
+          [vehicleId, photoPath],
+        );
+        for (const doc of docs) {
+          await client.query(
+            `INSERT INTO documents
+               (id, requirement_id, driver_id, vehicle_id, file_url, approval_status, uploaded_by)
+             VALUES ($1, $2, NULL, $3, $4, 'pending', NULL)`,
+            [doc.id, doc.requirementId, vehicleId, doc.path],
+          );
+        }
+      });
+    } catch (err) {
+      // The rows never landed, so the objects are litter: drop them best-effort.
+      await Promise.all(
+        uploaded.map((path) =>
+          storage.remove(path).catch((e: unknown) => {
+            this.app.log.warn({ err: e, path }, 'failed to clean up an orphan upload');
+          }),
+        ),
+      );
+      if ((err as { code?: string }).code === UNIQUE_VIOLATION) {
+        throw this.app.httpErrors.conflict('Ya existe un vehículo con esa placa');
+      }
+      if ((err as { code?: string }).code === FK_VIOLATION) {
+        throw this.app.httpErrors.badRequest('Tipo de vehículo no válido');
+      }
+      throw err;
+    }
+
+    await this.audit(
+      null,
+      'vehicle.submitted_for_review',
+      'vehicles',
+      vehicleId,
+      { driverId, plate: input.vehicle.plate ?? null, documents: docs.length },
+      driverId,
+    );
+    return { id: vehicleId, documents: docs.length };
+  }
+
+  /** Shared file gate: not empty, within the size cap, and a real PDF/JPG/PNG. */
+  private assertFile(file: SubmittedFile, label: string): AllowedMimeType {
+    if (file.buffer.length === 0) throw this.app.httpErrors.badRequest(`${label} está vacío`);
+    if (file.buffer.length > MAX_FILE_BYTES) {
+      throw this.app.httpErrors.badRequest(`${label} supera el máximo de 10 MB`);
+    }
+    // By CONTENT, never by the declared type: a .jpg holding something else is
+    // the oldest upload trick there is.
+    const sniffed = sniffMimeType(file.buffer);
+    if (!sniffed || !isAllowedMimeType(sniffed)) {
+      throw this.app.httpErrors.badRequest(`${label}: formato no admitido (solo PDF, JPG o PNG)`);
+    }
+    return sniffed;
+  }
+
+  private requireStorage(): StorageProvider {
+    if (!this.app.storage) {
+      throw this.app.httpErrors.serviceUnavailable(
+        'El almacenamiento de archivos no está configurado en este entorno',
+      );
+    }
+    return this.app.storage;
   }
 
   /**
