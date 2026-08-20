@@ -15,6 +15,8 @@ export interface DocumentOwner {
   fileUrl: string | null;
   vehicleId: string | null;
   approvalStatus: 'pending' | 'approved' | 'rejected';
+  /** The requirement's name ("Licencia de conducir"), as the notice names it. */
+  requirementName: string;
 }
 
 /** Cross-cutting projection: every document resolves to its owning driver. */
@@ -62,8 +64,9 @@ export class DocumentsRepository {
     const { rows } = await this.db.query<DocumentOwner>(
       `SELECT doc.id, COALESCE(doc.driver_id, v.driver_id) AS "driverId",
               doc.file_url AS "fileUrl", doc.vehicle_id AS "vehicleId",
-              doc.approval_status AS "approvalStatus"
+              doc.approval_status AS "approvalStatus", r.name AS "requirementName"
        FROM documents doc
+       JOIN requirements r ON r.id = doc.requirement_id
        LEFT JOIN vehicles v ON v.id = doc.vehicle_id
        WHERE doc.id = $1`,
       [id],
@@ -117,8 +120,10 @@ export class DocumentsRepository {
     approvalStatus: 'approved' | 'rejected',
     rejectionReason: string | null,
     reviewedBy: string,
+    /** Transaction client when the verdict must carry its notice atomically. */
+    executor: Pick<pg.Pool, 'query'> = this.db,
   ): Promise<void> {
-    await this.db.query(
+    await executor.query(
       `UPDATE documents
           SET approval_status = $2, rejection_reason = $3, reviewed_by = $4, reviewed_at = now()
         WHERE id = $1`,

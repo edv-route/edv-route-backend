@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import { withTransaction } from '../../db/tx.js';
+import { notify } from '../notifications/notification-writer.js';
 import { writeAudit } from '../audit-logs/audit-writer.js';
 import {
   extensionFor,
@@ -489,6 +490,9 @@ export class ApplicationsService {
           planPriceUsd: Number(plan.priceUsd),
           registeredBy: adminId,
         });
+        // In the same transaction as the approval and its alta debt: if the
+        // enrolment fails, the applicant is not told he was approved.
+        await notify(client, driverId, { type: 'application_approved' });
       });
     } catch (err) {
       // The base-debt unique indexes (membership/subscription) turn a race that
@@ -514,7 +518,10 @@ export class ApplicationsService {
     if (detail['status'] !== 'applicant') {
       throw this.app.httpErrors.conflict('Solo se puede rechazar una solicitud en revisión');
     }
-    await this.app.db.query(`UPDATE drivers SET status = 'rejected' WHERE user_id = $1`, [driverId]);
+    await withTransaction(this.app.db, async (client) => {
+      await client.query(`UPDATE drivers SET status = 'rejected' WHERE user_id = $1`, [driverId]);
+      await notify(client, driverId, { type: 'application_rejected' });
+    });
     await this.audit(adminId, 'application.rejected', 'drivers', driverId, {});
   }
 

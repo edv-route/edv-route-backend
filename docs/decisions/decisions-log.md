@@ -1350,3 +1350,28 @@ Primer bloque construido del sistema de notificaciones (alcance y orden en el §
 
 **Fuera de esta fase, a propósito**: enganchar los ~10 puntos donde nacen los avisos (Fase 1b).
 Toca servicios de dinero ya probados y no debe mezclarse con la creación de las tablas.
+
+## 2026-08-20 — Sistema de avisos, Fase 1b: dónde nacen los avisos
+
+Los 15 casos de v1 enganchados a los hechos que los provocan. Ningún endpoint nuevo todavía
+(eso es la Fase 2): esto solo llena el buzón.
+
+| Decisión | Motivo |
+|---|---|
+| **Un catálogo de mensajes** (`notification-messages.ts`): los servicios dicen QUÉ pasó, el catálogo cómo se lee | Sin la separación, el mismo hecho se redacta de tres formas en tres módulos y nadie puede revisar de un vistazo el tono que recibe el afiliado. El `MessageInput` es una unión discriminada: no se puede añadir un caso sin su redacción |
+| `reject` de un pago pasa a ser **transaccional** solo para llevar su aviso | Es EL aviso que justifica todo el sistema. Sin él, el afiliado volvía a la pantalla de pago como si no hubiera enviado nada y reenviaba el mismo comprobante mientras la oficina lo daba por respondido |
+| `reviewVehicle` pasa a ser **transaccional** (veredicto + poner en uso + aviso) | Decirle «tu vehículo fue aprobado y ya puedes trabajar con él» y luego fallar al ponerlo en uso lo deja mirando un mensaje sobre el que no puede actuar |
+| `payment_received` **solo** cuando el pago lo reporta él desde la app | Si lo registra el panel, tiene al empleado delante: el acuse es la persona. Y el aviso de aprobación llega igual |
+| El **recordatorio se programa al emitir el cobro** (`deliver_after` = domingo 4pm) y **se borra al aprobar el pago** | Programarlo en el mismo paso evita un segundo trabajo que rederive quién debe qué. Borrarlo es lo que impide recordarle que pague lo que acaba de pagar — y ese ruido es exactamente lo que hace que la gente silencie los avisos, incluidos los que importan |
+| Un recordatorio **ya enviado no se borra** | Sería reescribirle el historial de la bandeja |
+| Mora y penalización se entregan a las **7:00 am** del huso de negocio, no a las 00:05 | Una mala noticia a las doce y cinco de la noche despierta a alguien por algo que no puede resolver hasta que abra la oficina |
+| Los avisos de estado salen de `moved` (el cambio de estado del CHOFER), no de las filas de cargo | Lo que necesita oír es qué le pasó a ÉL — está en mora, no puede trabajar, ya puede volver — no que una fila cambió de estado |
+| El motor devuelve también el **estado anterior** (`old_status` desde el snapshot pre-UPDATE) | «Cuenta reactivada» solo es cierto viniendo de `penalized`. Un moroso que pagó nunca estuvo fuera de la calle, y decirle que «ya puede trabajar otra vez» no tiene sentido |
+| `debt_overdue` **sin importe** | El motor sabe cuántas semanas se deben, no un total. Multiplicar semanas por el precio de hoy mentiría en silencio el día que cambie la versión de la tarifa |
+| La multa del aviso de penalización es **opcional** | Se puede cruzar el tope con una multa anterior sin pagar, y no se multa dos veces; pero igual hay que decirle que no puede trabajar |
+| En el **motor** el aviso se escribe tras cada paso, sobre el pool (no dentro de la transacción) | El tick es una secuencia de sentencias independientes ya confirmadas, igual que su bitácora. Envolver el motor entero en una transacción para ganar atomicidad de un mensaje mantendría bloqueadas filas de dinero durante todo el pase |
+| `startTariff` avisa **después** de `enrollment.approve`, releyendo la fecha | Pasarle un cliente a `approve` para cargar un mensaje amplía el radio de impacto sobre código de dinero a cambio de poco: nada de esto es reversible de una forma que deje el aviso huérfano, y el afiliado ya ve la fecha en su Inicio al abrir la app |
+| `application_rejected` **sin motivo** | Rechazar una solicitud hoy no pide ninguno (el panel no manda el campo), e inventarlo sería poner palabras en boca del admin |
+
+**Pendiente que esto deja abierto (Fase 2)**: la bandeja debe listar solo los avisos cuyo
+`deliver_after` ya pasó — un recordatorio programado para el domingo no es algo que haya ocurrido.

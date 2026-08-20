@@ -2,6 +2,7 @@ import argon2 from 'argon2';
 import type { FastifyInstance } from 'fastify';
 import { withTransaction } from '../../db/tx.js';
 import { writeAudit } from '../audit-logs/audit-writer.js';
+import { notify } from '../notifications/notification-writer.js';
 import type { DriversRepository, DriverListResult } from './drivers.repository.js';
 import type { EnrollmentRepository, RejectionResult } from './enrollment.repository.js';
 
@@ -555,28 +556,45 @@ export class DriversService {
         );
       }
     }
-    const { rowCount } = await this.app.db.query(
-      `UPDATE vehicles
-          SET approval_status = $3, rejection_reason = $4, updated_at = now()
-        WHERE id = $1 AND driver_id = $2`,
-      [vehicleId, driverId, approve ? 'approved' : 'rejected', approve ? null : trimmed],
-    );
-    if (rowCount === 0) throw this.app.httpErrors.notFound('Vehículo no encontrado');
-
-    // WHICH vehicle he works with is HIS decision, not the admin's — except when
-    // there is nothing to decide. Approving his only approved vehicle, with none
-    // in use, simply puts it in use; from the second one onwards the choice is
-    // his and this never touches it again (decision de Luis, 2026-08-18).
-    if (approve) {
-      await this.app.db.query(
-        `UPDATE drivers d SET current_vehicle_id = $2
-          WHERE d.user_id = $1
-            AND d.current_vehicle_id IS NULL
-            AND (SELECT count(*) FROM vehicles v
-                  WHERE v.driver_id = $1 AND v.approval_status = 'approved') = 1`,
-        [driverId, vehicleId],
+    // The verdict, the "put it in use" side effect and the notice go together:
+    // telling the affiliate his vehicle was approved and then failing to put it
+    // in use leaves him staring at a message he cannot act on.
+    await withTransaction(this.app.db, async (client) => {
+      const { rows } = await client.query<{ plate: string | null }>(
+        `UPDATE vehicles
+            SET approval_status = $3, rejection_reason = $4, updated_at = now()
+          WHERE id = $1 AND driver_id = $2
+          RETURNING plate`,
+        [vehicleId, driverId, approve ? 'approved' : 'rejected', approve ? null : trimmed],
       );
-    }
+      const vehicle = rows[0];
+      if (!vehicle) throw this.app.httpErrors.notFound('Vehículo no encontrado');
+
+      // WHICH vehicle he works with is HIS decision, not the admin's — except when
+      // there is nothing to decide. Approving his only approved vehicle, with none
+      // in use, simply puts it in use; from the second one onwards the choice is
+      // his and this never touches it again (decision de Luis, 2026-08-18).
+      if (approve) {
+        await client.query(
+          `UPDATE drivers d SET current_vehicle_id = $2
+            WHERE d.user_id = $1
+              AND d.current_vehicle_id IS NULL
+              AND (SELECT count(*) FROM vehicles v
+                    WHERE v.driver_id = $1 AND v.approval_status = 'approved') = 1`,
+          [driverId, vehicleId],
+        );
+      }
+
+      const plate = vehicle.plate ?? 'sin placa';
+      await notify(
+        client,
+        driverId,
+        approve
+          ? { type: 'vehicle_approved', plate }
+          : { type: 'vehicle_rejected', plate, reason: trimmed! },
+        { payload: { vehicleId, ...(approve ? {} : { reason: trimmed }) } },
+      );
+    });
 
     await this.audit(adminId, approve ? 'vehicle.approved' : 'vehicle.rejected', 'drivers', driverId, {
       vehicleId,
@@ -778,6 +796,27 @@ export class DriversService {
       anchorWeekly,
       startMode === 'next_monday',
     );
+    // NOT inside the anchoring transaction, and deliberately so: `enrollment.approve`
+    // owns its own unit of work over money rows, and threading a client through it
+    // to carry a notice would widen a blast radius for little gain. Nothing here is
+    // reversible in a way that could strand the notice, and if the process dies in
+    // between the affiliate still sees the start date on his Inicio when he opens
+    // the app. Read it back the same way /me/account does.
+    const { rows: startRows } = await this.app.db.query<{ startsAt: Date | null }>(
+      `SELECT current_period_start AS "startsAt" FROM driver_subscriptions
+        WHERE driver_id = $1 AND status IN ('active', 'scheduled')
+        ORDER BY created_at DESC LIMIT 1`,
+      [driverId],
+    );
+    const startsOn = startRows[0]?.startsAt;
+    if (startsOn) {
+      await notify(
+        this.app.db,
+        driverId,
+        { type: 'tariff_starting', startsOn },
+        { payload: { startsAt: startsOn.toISOString(), startMode } },
+      );
+    }
     await this.audit(adminId, 'driver.tariff_started', 'drivers', driverId, { startMode });
   }
 

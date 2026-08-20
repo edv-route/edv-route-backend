@@ -1,6 +1,7 @@
 import fp from 'fastify-plugin';
 import type pg from 'pg';
 import { writeAudit } from '../modules/audit-logs/audit-writer.js';
+import { notifyMany, type NotifyManyEntry } from '../modules/notifications/notification-writer.js';
 
 const TICK_MS = 60_000;
 
@@ -45,6 +46,119 @@ async function loadConfig(db: pg.Pool): Promise<EngineConfig> {
   };
 }
 
+interface TickOutcome {
+  issued: { driverId: string; amountUsd: string; periodStart: Date }[];
+  moved: { driverId: string; status: string; oldStatus: string; weeks: number }[];
+  penalties: { driverId: string; amountUsd: string }[];
+}
+
+/**
+ * Sunday 4pm in the business timezone, derived from the week that starts on
+ * Monday at 00:00. Arithmetic on the instant, not on the calendar: Venezuela has
+ * no DST, so subtracting 8 hours from Monday 00:00 Caracas lands on Sunday 16:00
+ * Caracas, and it stays right even if the server's own clock is UTC.
+ */
+const REMINDER_HOURS_BEFORE = 8;
+
+/**
+ * Turns what the tick just DID into what the affiliate is told.
+ *
+ * Written right after each step, on the pool - NOT inside the money statements.
+ * That is a real difference with the review flows (a rejected payment carries its
+ * notice inside its own transaction) and it is the engine's own shape, not a
+ * shortcut: the tick is a sequence of independent statements, each already
+ * committed, exactly like the audit entries a few lines above. Wrapping the whole
+ * engine in one transaction to gain atomicity for a message would hold money row
+ * locks for the length of the pass.
+ *
+ * State changes are read from `moved`, never from the raw charge rows: what the
+ * driver needs to hear is what happened to HIM (he is in arrears, he cannot work,
+ * he is back on the road), not that a row changed status. Which is also why the
+ * old status matters - "cuenta reactivada" is only true coming from `penalized`.
+ */
+async function notifyTick(db: pg.Pool, cfg: EngineConfig, tick: TickOutcome): Promise<void> {
+  const entries: NotifyManyEntry[] = [];
+
+  for (const row of tick.issued) {
+    entries.push({
+      userId: row.driverId,
+      message: {
+        type: 'charge_issued',
+        amountUsd: row.amountUsd,
+        weekStart: row.periodStart,
+      },
+      payload: { amountUsd: row.amountUsd, weekStart: row.periodStart.toISOString() },
+    });
+    // A single heads-up the evening before the week starts (decision: one
+    // reminder, not one a day). Scheduled here, in the same pass that emits the
+    // charge, so no second job has to re-derive who owes what. Paying it cancels
+    // the reminder (see the payments repository) - a reminder about something
+    // already settled is noise, and noise is what gets notifications muted.
+    entries.push({
+      userId: row.driverId,
+      message: {
+        type: 'charge_reminder',
+        amountUsd: row.amountUsd,
+        weekStart: row.periodStart,
+      },
+      deliverAfter: new Date(
+        row.periodStart.getTime() - REMINDER_HOURS_BEFORE * 60 * 60 * 1000,
+      ),
+      payload: { amountUsd: row.amountUsd, weekStart: row.periodStart.toISOString() },
+    });
+  }
+
+  const fineByDriver = new Map(tick.penalties.map((p) => [p.driverId, p.amountUsd]));
+  for (const row of tick.moved) {
+    if (row.status === 'overdue') {
+      entries.push({
+        userId: row.driverId,
+        // Arrears are marked at 00:05; the message waits for a decent hour.
+        // Separating the two is the whole reason `deliver_after` exists.
+        deliverAfter: nextMorning(cfg.timezone),
+        message: { type: 'debt_overdue', weeks: row.weeks },
+        payload: { weeksOwed: row.weeks },
+      });
+    } else if (row.status === 'penalized') {
+      const fine = fineByDriver.get(row.driverId);
+      entries.push({
+        userId: row.driverId,
+        deliverAfter: nextMorning(cfg.timezone),
+        message: {
+          type: 'penalty_applied',
+          capWeeks: cfg.debtCapWeeks,
+          ...(fine === undefined ? {} : { fineUsd: fine }),
+        },
+        payload: { weeksOwed: row.weeks, ...(fine === undefined ? {} : { fineUsd: fine }) },
+      });
+    } else if (row.status === 'approved' && row.oldStatus === 'penalized') {
+      // Only from `penalized`. An overdue driver who paid was never off the road,
+      // and telling him he "can work again" would be nonsense.
+      entries.push({ userId: row.driverId, message: { type: 'driver_reactivated' } });
+    }
+  }
+
+  await notifyMany(db, entries);
+}
+
+/**
+ * 7:00 am in the business timezone, today if it has not passed yet, tomorrow
+ * otherwise. Bad news that lands at five past midnight wakes people up for
+ * something they cannot act on until the office opens.
+ */
+function nextMorning(timezone: string): Date {
+  const now = new Date();
+  const hourThere = Number(
+    new Intl.DateTimeFormat('en-US', {
+      timeZone: timezone,
+      hour: 'numeric',
+      hour12: false,
+    }).format(now),
+  );
+  const hoursUntilSeven = hourThere < 7 ? 7 - hourThere : 24 - hourThere + 7;
+  return new Date(now.getTime() + hoursUntilSeven * 60 * 60 * 1000);
+}
+
 /**
  * One pass of the debt & penalty engine (design v8, Fase B). Exported so it can
  * be driven directly by tests instead of waiting for the timer.
@@ -81,7 +195,12 @@ export async function runDebtEngineTick(db: pg.Pool): Promise<DebtTickResult> {
   // 2026-08-04: every charge carries an invoice from the moment it is owed, one
   // per concept). date_trunc('week') anchors on Monday (week_anchor_day = 1). The
   // invoice has no receipt yet — a receipt cancels it when the week is paid.
-  const issued = await db.query<{ id: string; driverId: string }>(
+  const issued = await db.query<{
+    id: string;
+    driverId: string;
+    amountUsd: string;
+    periodStart: Date;
+  }>(
     `WITH moment AS (
        SELECT date_trunc('week', (now() AT TIME ZONE $1)) AS week_start,
               date_trunc('week', (now() AT TIME ZONE $1))
@@ -135,9 +254,10 @@ export async function runDebtEngineTick(db: pg.Pool): Promise<DebtTickResult> {
          (driver_subscription_id, invoice_id, period_start, period_end, amount_usd, status)
        SELECT e.sub_id, ni.invoice_id, e.ps, e.pe, e.price_usd, 'pending'
        FROM eligible e JOIN new_invoices ni ON ni.driver_id = e.driver_id
-       RETURNING id, driver_subscription_id
+       RETURNING id, driver_subscription_id, amount_usd, period_start
      )
-     SELECT i.id, ds.driver_id AS "driverId"
+     SELECT i.id, ds.driver_id AS "driverId",
+            i.amount_usd AS "amountUsd", i.period_start AS "periodStart"
      FROM ins i JOIN driver_subscriptions ds ON ds.id = i.driver_subscription_id`,
     [cfg.timezone, cfg.billingDayOfWeek, cfg.billingHour],
   );
@@ -184,7 +304,12 @@ export async function runDebtEngineTick(db: pg.Pool): Promise<DebtTickResult> {
   );
 
   // 4) Derive the driver state from the accumulated debt.
-  const moved = await db.query<{ driverId: string; status: string; weeks: number }>(
+  const moved = await db.query<{
+    driverId: string;
+    status: string;
+    weeks: number;
+    oldStatus: string;
+  }>(
     `WITH debt AS (
        SELECT ds.driver_id, count(*)::int AS weeks
        FROM subscription_payments sp
@@ -201,6 +326,11 @@ export async function runDebtEngineTick(db: pg.Pool): Promise<DebtTickResult> {
      ), target AS (
        SELECT d.user_id,
               COALESCE(x.weeks, 0) AS weeks,
+              -- The pre-update value: inside this statement every other reference
+              -- to the drivers table still sees the old snapshot. It is what tells
+              -- a REACTIVATION (penalized -> approved) apart from a driver who was
+              -- merely overdue and paid: two very different messages.
+              d.status::text AS old_status,
               (CASE
                  WHEN COALESCE(x.weeks, 0) = 0
                       AND (d.reactivates_at IS NULL OR d.reactivates_at <= now()) THEN 'approved'
@@ -227,7 +357,8 @@ export async function runDebtEngineTick(db: pg.Pool): Promise<DebtTickResult> {
                                   ELSE dr.reactivates_at END
      FROM target t
      WHERE dr.user_id = t.user_id AND dr.status IS DISTINCT FROM t.new_status
-     RETURNING dr.user_id AS "driverId", dr.status::text AS status, t.weeks`,
+     RETURNING dr.user_id AS "driverId", dr.status::text AS status, t.weeks,
+               t.old_status AS "oldStatus"`,
     [cfg.debtCapWeeks],
   );
 
@@ -237,7 +368,7 @@ export async function runDebtEngineTick(db: pg.Pool): Promise<DebtTickResult> {
   // for the reactivation moment, dragging him back into debt.
   const justPenalized = moved.rows.filter((r) => r.status === 'penalized').map((r) => r.driverId);
   const penalties = justPenalized.length
-    ? await db.query<{ id: string; driverId: string }>(
+    ? await db.query<{ id: string; driverId: string; amountUsd: string }>(
         `WITH eligible AS (
            SELECT ds.id AS sub_id, ds.driver_id, p.price_usd * $1 AS amount
            FROM driver_subscriptions ds
@@ -268,13 +399,13 @@ export async function runDebtEngineTick(db: pg.Pool): Promise<DebtTickResult> {
            SELECT e.sub_id, ni.invoice_id, now(), now() + make_interval(weeks => $1::int),
                   e.amount, 'pending', 'penalty'
            FROM eligible e JOIN new_invoices ni ON ni.driver_id = e.driver_id
-           RETURNING id, driver_subscription_id
+           RETURNING id, driver_subscription_id, amount_usd
          )
-         SELECT i.id, ds.driver_id AS "driverId"
+         SELECT i.id, ds.driver_id AS "driverId", i.amount_usd AS "amountUsd"
          FROM ins i JOIN driver_subscriptions ds ON ds.id = i.driver_subscription_id`,
         [cfg.penaltyWeeks, justPenalized],
       )
-    : { rows: [] as { id: string; driverId: string }[], rowCount: 0 };
+    : { rows: [] as { id: string; driverId: string; amountUsd: string }[], rowCount: 0 };
 
   for (const row of issued.rows) {
     await writeAudit(db, {
@@ -322,6 +453,12 @@ export async function runDebtEngineTick(db: pg.Pool): Promise<DebtTickResult> {
       data: { driverId: row.driverId, weeksOwed: row.weeks },
     });
   }
+
+  await notifyTick(db, cfg, {
+    issued: issued.rows,
+    moved: moved.rows,
+    penalties: penalties.rows,
+  });
 
   return {
     enabled: true,

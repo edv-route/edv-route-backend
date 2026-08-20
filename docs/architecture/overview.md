@@ -92,6 +92,15 @@ src/plugins/notification-dispatcher.ts
 src/notifications/    Abstracción de push: `PushSender` (interfaz) y `LogPushSender` (deja
                       rastro, no envía). Firebase es la última fase a propósito — todo el
                       sistema funciona sin él. Mismo patrón que `StorageProvider`.
+src/modules/notifications/
+                      `notification-writer.ts` (única puerta de escritura; `notify` recibe
+                      el CLIENTE de la transacción del hecho) y `notification-messages.ts`
+                      (la redacción de los 15 avisos, en un solo sitio: los servicios dicen
+                      QUÉ pasó, el catálogo cómo se lee). Quien emite cada aviso: el motor
+                      de deuda (cobro, recordatorio, mora, penalización, reactivación), el
+                      repositorio de pagos (recibido/aprobado/rechazado), `applications.
+                      service` (solicitud), `documents.service` y `drivers.service`
+                      (documento, vehículo e inicio de tarifa).
 src/app.ts            Ensambla todo (testeable sin puerto). src/server.ts es el entrypoint.
 ```
 

@@ -1,5 +1,7 @@
 import type { FastifyInstance } from 'fastify';
+import { withTransaction } from '../../db/tx.js';
 import { writeAudit } from '../audit-logs/audit-writer.js';
+import { notify } from '../notifications/notification-writer.js';
 import {
   extensionFor,
   isAllowedMimeType,
@@ -127,12 +129,23 @@ export class DocumentsService {
     if (!approve && !trimmed) {
       throw this.app.httpErrors.badRequest('Debe indicar el motivo del rechazo');
     }
-    await this.documents.review(
-      documentId,
-      approve ? 'approved' : 'rejected',
-      approve ? null : trimmed,
-      adminId,
-    );
+    await withTransaction(this.app.db, async (client) => {
+      await this.documents.review(
+        documentId,
+        approve ? 'approved' : 'rejected',
+        approve ? null : trimmed,
+        adminId,
+        client,
+      );
+      await notify(
+        client,
+        document.driverId,
+        approve
+          ? { type: 'document_approved', name: document.requirementName }
+          : { type: 'document_rejected', name: document.requirementName, reason: trimmed! },
+        { payload: { documentId, vehicleId: document.vehicleId, ...(approve ? {} : { reason: trimmed }) } },
+      );
+    });
     await writeAudit(this.app.db, {
       actorAdminId: adminId,
       eventType: approve ? 'document.approved' : 'document.rejected',

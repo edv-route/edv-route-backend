@@ -1,6 +1,7 @@
 import type pg from 'pg';
 import { debtChargePredicate } from '../drivers/billing-sql.js';
 import { withTransaction } from '../../db/tx.js';
+import { notify } from '../notifications/notification-writer.js';
 import type { EnrollmentRepository } from '../drivers/enrollment.repository.js';
 
 /** Pool or in-transaction client: the multi-pending guard re-check must run on
@@ -343,6 +344,17 @@ export class PaymentSubmissionsRepository {
           [id, input.filePaths[i], i + 1],
         );
       }
+      // Only for payments the affiliate reported HIMSELF. When the panel
+      // registers one he is standing in front of the officer who took it: the
+      // acknowledgement is the officer, and the approval notice still follows.
+      if (input.source === 'app') {
+        await notify(
+          client,
+          input.driverId,
+          { type: 'payment_received', amountUsd: input.amountUsd },
+          { payload: { submissionId: id, amountUsd: input.amountUsd } },
+        );
+      }
       return { id };
     });
   }
@@ -567,8 +579,9 @@ export class PaymentSubmissionsRepository {
         payerPhone: string | null;
         payerId: string | null;
         payerAccount: string | null;
+        amountUsd: string;
       }>(
-        `SELECT driver_id AS "driverId", status, purpose, context,
+        `SELECT driver_id AS "driverId", status, purpose, context, amount_usd AS "amountUsd",
                 payment_method_id AS "paymentMethodId", payment_reference AS "reference",
                 payer_bank AS "payerBank", paid_on AS "paidOn", payer_phone AS "payerPhone",
                 payer_id AS "payerId", payer_account AS "payerAccount"
@@ -679,19 +692,58 @@ export class PaymentSubmissionsRepository {
           WHERE id = $1`,
         [id, adminId, invoiceId],
       );
+      // Drop the heads-up the engine scheduled for the week he just paid. A
+      // reminder to pay something already settled is exactly the kind of noise
+      // that gets an app's notifications muted for good - and once muted, the
+      // ones that matter (a rejection) are muted too. Only undelivered ones:
+      // anything already pushed is history and stays in his inbox.
+      await client.query(
+        `DELETE FROM notifications
+          WHERE user_id = $1 AND type = 'charge_reminder'
+            AND push_status = 'pending' AND deliver_after > now()`,
+        [sub.driverId],
+      );
+      // Inside the transaction that moved the money: a reversal of this approval
+      // takes the notice with it, so the affiliate is never left holding an
+      // "approved" message for a payment that was undone.
+      await notify(
+        client,
+        sub.driverId,
+        { type: 'payment_approved', amountUsd: sub.amountUsd },
+        { payload: { submissionId: id, amountUsd: sub.amountUsd, settledCharges } },
+      );
       return { ok: true, invoiceNumber, settledCharges };
     });
   }
 
-  /** Rejects a pending submission (keeps the trace). False if it was not pending. */
+  /**
+   * Rejects a pending submission (keeps the trace). False if it was not pending.
+   *
+   * Transactional since 2026-08-20 only to carry the notice with the rejection.
+   * This is the notice the whole system was built for: without it the affiliate
+   * went back to the payment screen as if he had never sent anything, re-sent
+   * the same receipt, and the office assumed he had already been answered.
+   */
   async reject(id: string, reason: string, adminId: string): Promise<boolean> {
-    const { rowCount } = await this.db.query(
-      `UPDATE payment_submissions
-          SET status = 'rejected', reviewed_by = $2, reviewed_at = now(), rejection_reason = $3
-        WHERE id = $1 AND status = 'pending'`,
-      [id, adminId, reason],
-    );
-    return (rowCount ?? 0) > 0;
+    return withTransaction(this.db, async (client) => {
+      const { rows } = await client.query<{ driverId: string; amountUsd: string }>(
+        `UPDATE payment_submissions
+            SET status = 'rejected', reviewed_by = $2, reviewed_at = now(), rejection_reason = $3
+          WHERE id = $1 AND status = 'pending'
+          RETURNING driver_id AS "driverId", amount_usd AS "amountUsd"`,
+        [id, adminId, reason],
+      );
+      const rejected = rows[0];
+      if (!rejected) return false;
+
+      await notify(
+        client,
+        rejected.driverId,
+        { type: 'payment_rejected', amountUsd: rejected.amountUsd, reason },
+        { payload: { submissionId: id, amountUsd: rejected.amountUsd, reason } },
+      );
+      return true;
+    });
   }
 
   /**

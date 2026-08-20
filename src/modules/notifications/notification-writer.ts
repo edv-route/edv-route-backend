@@ -1,5 +1,6 @@
 import type pg from 'pg';
 import type NotificationType from '../../db/models/public/NotificationType.js';
+import { renderMessage, type MessageInput } from './notification-messages.js';
 
 /**
  * Pool OR transaction client. This is the one real difference with
@@ -23,14 +24,14 @@ export interface NotificationEntry {
   title: string;
   body: string;
   /** Structured context the app acts on: amounts, invoice ids, rejection reason. */
-  payload?: unknown;
+  payload?: unknown | undefined;
   /**
    * Hold the push until this moment (the inbox shows the row immediately either
    * way). This is how a notice stays atomic with its fact while being delivered
    * at a humane hour: the debt engine marks arrears at 00:05 and schedules the
    * message for ~7:00 am in the same transaction. Omit for "as soon as possible".
    */
-  deliverAfter?: Date;
+  deliverAfter?: Date | undefined;
 }
 
 const INSERT_SQL = `
@@ -85,5 +86,56 @@ export async function writeNotifications(
     `INSERT INTO notifications (user_id, type, title, body, payload, deliver_after)
      VALUES ${tuples.join(', ')}`,
     values,
+  );
+}
+
+export interface NotifyOptions {
+  /** Structured context for the app, on top of what the wording already says. */
+  payload?: unknown;
+  deliverAfter?: Date | undefined;
+}
+
+/**
+ * What callers actually use: describe the event, get it rendered and stored.
+ * Keeps every service from importing the catalogue and from ever picking a
+ * `type` that disagrees with the text it wrote next to it.
+ */
+export async function notify(
+  db: NotificationDb,
+  userId: string,
+  message: MessageInput,
+  options: NotifyOptions = {},
+): Promise<void> {
+  const { title, body } = renderMessage(message);
+  await writeNotification(db, {
+    userId,
+    type: message.type,
+    title,
+    body,
+    payload: options.payload,
+    deliverAfter: options.deliverAfter,
+  });
+}
+
+export interface NotifyManyEntry extends NotifyOptions {
+  userId: string;
+  message: MessageInput;
+}
+
+/** Bulk form of `notify` for the engine tick (one notice per affected driver). */
+export async function notifyMany(db: NotificationDb, entries: NotifyManyEntry[]): Promise<void> {
+  await writeNotifications(
+    db,
+    entries.map((entry) => {
+      const { title, body } = renderMessage(entry.message);
+      return {
+        userId: entry.userId,
+        type: entry.message.type,
+        title,
+        body,
+        payload: entry.payload,
+        deliverAfter: entry.deliverAfter,
+      };
+    }),
   );
 }
