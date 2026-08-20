@@ -1309,3 +1309,21 @@ inhabilitado, está **temprano**, y la fecha ya existe en la base.
 | El **409** de `/me/availability` dice la fecha | Un mensaje que manda a llamar a la oficina para algo que el sistema ya sabe es una llamada de teléfono desperdiciada |
 | Aviso en el **Inicio**, con día de la semana y cuenta atrás | Es donde aterriza; el inicio siempre cae en lunes y así es como el chofer lo recuerda («el lunes 24 de agosto · faltan 4 días») |
 | El mensaje distingue penalizado / en pausa / programado | Los tres compartían la misma frase genérica, y cada uno se corrige de forma distinta |
+
+## 2026-08-20 — Cierre de sesión y siguiente bloque
+
+La sesión del 19/20 de agosto queda documentada en
+**`edv-route-mobile/docs/HANDOFF-2026-08-20.md`** (cubre los tres proyectos): smoke E2E del rechazo
+con semanas adelantadas cerrado en verde, cinco bugs reales de producción corregidos, el cambio de
+flujo del vehículo completo en cuatro fases y verificado contra producción, y los ajustes de UX del
+panel y la app.
+
+**El siguiente bloque es el sistema de notificaciones**, con el alcance y el orden ya decididos
+(§6 del handoff): tablas + buzón de salida → endpoints y bandeja → campana en el header → Firebase
+al final. La razón de ese orden es que todo funciona sin push, y Firebase es la única parte que
+depende de terceros.
+
+**El hilo que une la sesión**: cada arreglo de estos dos días hizo que la app diga la verdad *cuando
+el chofer la abre* — el pago rechazado que no se veía, el inicio programado que nadie le decía, el
+afiliado con deuda que no podía pagar. Lo que falta es que se entere *cuando ocurre*, y eso es
+exactamente lo que resuelve el bloque de notificaciones.
