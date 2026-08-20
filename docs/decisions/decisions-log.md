@@ -1327,3 +1327,26 @@ depende de terceros.
 el chofer la abre* — el pago rechazado que no se veía, el inicio programado que nadie le decía, el
 afiliado con deuda que no podía pagar. Lo que falta es que se entere *cuando ocurre*, y eso es
 exactamente lo que resuelve el bloque de notificaciones.
+
+## 2026-08-20 — Sistema de avisos, Fase 1: tablas y buzón de salida
+
+Primer bloque construido del sistema de notificaciones (alcance y orden en el §6 del
+`HANDOFF-2026-08-20.md`). Migración `1752450000000_notifications-outbox`.
+
+| Decisión | Motivo |
+|---|---|
+| **Una sola tabla** `notifications` para la bandeja **y** el buzón de salida | Es el mismo hecho. Dos tablas solo se pueden contradecir, y no hay ningún dato que una tenga y la otra no |
+| El aviso se escribe **dentro de la transacción del hecho** (`writeNotification` recibe el **cliente**, no el pool) | Si el pago se revierte, el aviso se va con él. Es la única diferencia real con `writeAudit`, que escribe *después* porque una operación fallida no debe dejar bitácora |
+| **Jamás** llamar al proveedor dentro de la transacción | Colgaría el tick del motor de deuda tras una llamada de red (ya pasó algo así con la multa) y un push antes del COMMIT avisa de algo que puede no ocurrir |
+| Columna **`deliver_after`** en vez de un segundo scheduler | Es lo que separa el AVISO del HECHO sin perder la atomicidad: el motor marca la mora a las 00:05 y programa el mensaje para las ~7:00 am en esa misma transacción. La alternativa —un proceso que relea los hechos para avisar— rompe justo la propiedad que da valor al buzón |
+| `title` y `body` **ya redactados** en la fila | Si el teléfono compone el texto, la bandeja discrepa del push y corregir una palabra exige publicar un APK |
+| **Sin estado `sending`**: reclamo con `FOR UPDATE SKIP LOCKED` en una transacción por lote | Un estado `sending` deja filas encalladas para siempre la primera vez que el proceso muera a media entrega. Con locks, un caído hace ROLLBACK a `pending` y el siguiente pase las recoge: entrega **al menos una vez**, el lado correcto del error para un aviso |
+| `skipped` **no es un fallo** (sin token vivo, o todos muertos) | Hay choferes que **nunca** recibirán push (Huawei sin Play Services desde 2019, permiso denegado en Android 13+). Para ellos la bandeja es el único canal, y marcar `sent` sin entrega sería mentir |
+| **Dos candados** contra el push accidental: `NODE_ENV=production` en el plugin **+** `notifications_enabled` en `app_settings` | Prod y dev comparten BD. El primero es físico (un backend local sencillamente no tiene despachador, ni con la bandera encendida); el segundo es el interruptor de negocio, que se lee en cada tick como `debt_engine_enabled` |
+| El interruptor vive en el **plugin**, no en la función de despacho | Así la suite prueba la entrega **sin tocar la fila global** que lee el backend desplegado. Una prueba que necesita encender el interruptor de verdad es una prueba que puede dejar mandando push reales si una aserción muere antes de restaurarlo |
+| `device_tokens.token` **UNIQUE GLOBAL**, no por usuario | El token identifica un **teléfono**. Dos dueños significa que el siguiente que use el aparato recibe los montos y los motivos de rechazo del anterior. Es privacidad, no orden |
+| `notification_type` como **enum de PostgreSQL** con la lista cerrada de v1 (15 casos) | Kanel lo vuelve un tipo cerrado en TypeScript y el compilador caza un aviso mal escrito. Que añadir un caso cueste una migración es el freno deseado para no derivar en campañas manuales (`push_campaigns` sigue pospuesta) |
+| Enviador **de mentira** (`LogPushSender`) desde el primer día, detrás de una interfaz | Todo el sistema se prueba de punta a punta sin Firebase, igual que `StorageProvider` aísla a Supabase. En la Fase 4 solo se sustituye esa pieza |
+
+**Fuera de esta fase, a propósito**: enganchar los ~10 puntos donde nacen los avisos (Fase 1b).
+Toca servicios de dinero ya probados y no debe mezclarse con la creación de las tablas.

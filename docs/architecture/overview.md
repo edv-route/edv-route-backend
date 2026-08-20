@@ -78,6 +78,20 @@ src/plugins/debt-scheduler.ts
                       **reactivación diferida** (`drivers.reactivates_at`: en modo `auto`
                       el que saldó vuelve el lunes siguiente). Exporta `runDebtEngineTick`
                       para poder ejercitarlo sin esperar al timer.
+src/plugins/notification-dispatcher.ts
+                      Despachador del **buzón de salida** de avisos (2026-08-20). El aviso lo
+                      escribe `writeNotification` DENTRO de la transacción del hecho que
+                      anuncia; este job es el único que lo convierte en push, fuera de banda.
+                      **Dos candados**, porque prod y dev comparten la BD: no programa
+                      siquiera el timer fuera de `NODE_ENV=production` (un backend local
+                      sencillamente no tiene despachador) y respeta el interruptor
+                      `notifications_enabled` (false por defecto), leído en cada tick.
+                      Reclama el lote con `FOR UPDATE SKIP LOCKED` en una transacción, sin
+                      estado `sending`: un caído hace ROLLBACK a `pending` en vez de dejar
+                      filas encalladas. Exporta `runNotificationDispatchTick`.
+src/notifications/    Abstracción de push: `PushSender` (interfaz) y `LogPushSender` (deja
+                      rastro, no envía). Firebase es la última fase a propósito — todo el
+                      sistema funciona sin él. Mismo patrón que `StorageProvider`.
 src/app.ts            Ensambla todo (testeable sin puerto). src/server.ts es el entrypoint.
 ```
 

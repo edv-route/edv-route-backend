@@ -444,6 +444,7 @@ Claves actuales:
 | `billing_hour` | `18` | **Motor de deuda (v8, B1 — sin efecto hasta B2)**: hora de emisión (0-23; 18=6pm) en `business_timezone` |
 | `week_anchor_day` | `1` | **Motor de deuda (v8, B1 — sin efecto hasta B2)**: día en que arranca la semana (ISO 1=lunes) |
 | `reactivation_mode` | `"auto"` | **Motor de deuda (v8, B1 — sin efecto hasta B2)**: reactivación por defecto (`auto`=lunes siguiente; el admin siempre puede reactivar manual) |
+| `notifications_enabled` | `false` | **Sistema de avisos: interruptor maestro del despachador** (2026-08-20). `false` = los avisos se siguen escribiendo y se ven en la bandeja, pero **no sale ningún push**. El despachador además exige `NODE_ENV=production` |
 
 ### `audit_logs` — bitácora de acciones
 
@@ -519,6 +520,9 @@ Claves actuales:
 | `training_status` | `scheduled`, `cancelled`, `completed` |
 | `training_attendee_status` | `registered`, `attended`, `absent`, `cancelled` |
 | `payment_method_type` | `bank_transfer`, `pago_movil`, `zelle`, `paypal`, `binance`, `crypto`, `contact` (2026-07-23), `cash_usd` (Efectivo Divisa, admin-only, 2026-08-03) |
+| `notification_type` | `charge_issued`, `charge_reminder`, `debt_overdue`, `penalty_applied`, `driver_reactivated`, `tariff_starting`, `payment_received`, `payment_approved`, `payment_rejected`, `application_approved`, `application_rejected`, `document_approved`, `document_rejected`, `vehicle_approved`, `vehicle_rejected` (mig. `1752450000000`, 2026-08-20). **Lista cerrada de v1**: solo avisos automáticos de dinero y aprobación; un caso nuevo cuesta una migración a propósito |
+| `notification_push_status` | `pending`, `sent`, `skipped`, `failed` (2026-08-20). `skipped` **no es un fallo**: no había a dónde enviar (sin token vivo) o todos los tokens estaban muertos — la bandeja ya tiene el aviso |
+| `device_platform` | `android`, `ios` (2026-08-20; hoy solo hay APK Android) |
 
 ## Garantías físicas destacadas (imposibles de violar desde el código)
 
@@ -532,6 +536,7 @@ Claves actuales:
 | Un envío de pago pendiente por chofer | Índice único parcial `payment_submissions_one_pending_per_driver` |
 | Auditoría con máximo un actor | CHECK `audit_logs_max_one_actor` |
 | Usernames de admin en minúsculas | CHECK `admins_username_lowercase` |
+| Un teléfono pertenece a un solo afiliado | UNIQUE `device_tokens.token` (global, no por usuario) |
 
 ## Dominio 8 — Métodos de pago (cobro al afiliado)
 
@@ -551,6 +556,66 @@ Claves actuales:
 Catálogo **informativo** (no es pasarela): el admin registra las cuentas, el afiliado paga por
 fuera y el comprobante se adjunta después (Pieza 2, pendiente). Reutiliza Supabase Storage para
 imágenes (QR), no un proveedor nuevo.
+
+## Dominio 9 — Avisos al afiliado (mig. `1752450000000`, 2026-08-20)
+
+**Una sola tabla hace de bandeja y de buzón de salida.** `notifications` *es* la fila que la app
+lista y *es* la fila que el despachador tiene que enviar; una segunda tabla solo duplicaría el
+mismo hecho e invitaría a que las dos se contradigan.
+
+La fila se escribe **dentro de la transacción del hecho que anuncia** (si el pago se revierte, el
+aviso se va con él) y un proceso aparte —`src/plugins/notification-dispatcher.ts`— la envía. Nunca
+se llama al proveedor dentro de una transacción de dinero: colgaría el tick del motor de deuda tras
+una llamada de red, y un push antes del COMMIT avisa de algo que puede no ocurrir.
+
+### `notifications` — el aviso (bandeja + buzón de salida)
+
+| Columna | Tipo | Null | Default | Descripción |
+|---|---|---|---|---|
+| `id` | bigint IDENTITY | no | — | PK |
+| `user_id` | uuid | no | — | FK → `users.id` (**CASCADE**): la limpieza de solicitantes borra usuarios y sus avisos no son historia que valga la pena dejar huérfana (el registro lo guarda `audit_logs`) |
+| `type` | notification_type | no | — | Lista cerrada de v1 (ver enums) |
+| `title` / `body` | text | no | — | **Ya redactados**. El teléfono nunca compone el texto: la bandeja discreparía del push, y corregir una palabra exigiría publicar un APK |
+| `payload` | jsonb | sí | — | Contexto sobre el que la app actúa: montos, ids de factura, **motivo del rechazo** |
+| `read_at` | timestamptz | sí | — | La bandeja. `NULL` = no leído (alimenta el contador de la campana) |
+| `deliver_after` | timestamptz | no | `now()` | **Retiene el push hasta esa hora** (la bandeja lo muestra igual). Es lo que separa el AVISO del HECHO sin romper la atomicidad: el motor marca la mora a las 00:05 y en la misma transacción programa el mensaje para las ~7:00 am |
+| `push_status` | notification_push_status | no | `pending` | Estado del envío |
+| `push_attempts` | integer | no | `0` | Se abandona (`failed`) al tercer intento; no se reintenta para siempre |
+| `push_sent_at` | timestamptz | sí | — | — |
+| `push_error` | text | sí | — | Último motivo de fallo |
+| `created_at` | timestamptz | no | `now()` | — |
+
+**Sin `updated_at`**: la tabla es de solo-añadir salvo dos cambios de estado que ya llevan su propia
+marca de tiempo explícita (`read_at`, `push_sent_at`); una columna genérica diría menos que ellas.
+
+Índices: `(user_id, created_at DESC)` (la bandeja) · parcial `(user_id) WHERE read_at IS NULL` (el
+contador viaja dentro de `/driver-auth/me/account`, que la app pide en cada pantalla) · parcial
+`(deliver_after) WHERE push_status = 'pending'` (la cola del despachador).
+
+**Reclamo de la cola**: `SELECT … FOR UPDATE SKIP LOCKED` dentro de una única transacción por lote,
+sin estado `sending`. Un estado `sending` es justo lo que dejaría filas encalladas para siempre la
+primera vez que el proceso muera a media entrega; así un caído hace ROLLBACK a `pending` y el
+siguiente pase las recoge (entrega **al menos una vez**, que para un aviso es el lado correcto).
+
+### `device_tokens` — teléfonos donde entregar
+
+| Columna | Tipo | Null | Default | Descripción |
+|---|---|---|---|---|
+| `id` | bigint IDENTITY | no | — | PK |
+| `user_id` | uuid | no | — | FK → `users.id` (CASCADE) |
+| `token` | text | no | — | **UNIQUE GLOBAL** (ver abajo) |
+| `platform` | device_platform | no | — | `android` \| `ios` |
+| `last_seen_at` | timestamptz | no | `now()` | Los tokens FCM rotan; la app los reenvía al abrir |
+| `revoked_at` | timestamptz | sí | — | Revocado, **no borrado**: una fila que revive es normal y conserva su historia |
+| `created_at` | timestamptz | no | `now()` | — |
+
+El **UNIQUE global** (no por usuario) es un control de privacidad, no de orden: el token identifica
+un **teléfono**. Cuando otro chofer inicia sesión en el mismo aparato, registrar el token reapunta
+la fila en vez de dejar dos dueños; si no, los montos y los motivos de rechazo del anterior siguen
+cayendo en una pantalla que ya no es suya. El cierre de sesión revoca además — hay que cerrar las
+dos puertas. Índice parcial `(user_id) WHERE revoked_at IS NULL`.
+
+---
 
 ## Tablas futuras (diseñadas, no implementadas)
 
@@ -573,5 +638,6 @@ también acota el conteo sin un contador. Solo JPG/PNG (validado por magic numbe
 
 Del modelo v7 quedan pendientes para los módulos siguientes: `clients`, `trip_requests`,
 `trip_offers`, `trips`, `trip_route_points`, `ratings`, `fare_rules`, `time_multipliers`,
-`device_tokens`, `notifications`, `push_campaigns`, `service_areas`, `benefit_requests`,
-`support_tickets`. Ver [database-design-v7.md](database-design-v7.md).
+`push_campaigns` (campañas manuales, **pospuesta a propósito**: v1 solo manda avisos automáticos),
+`service_areas`, `benefit_requests`, `support_tickets`. Ver
+[database-design-v7.md](database-design-v7.md).
