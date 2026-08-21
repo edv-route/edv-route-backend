@@ -8,7 +8,7 @@
 | [database/archive/](database/archive/) | Versiones históricas del diseño (v1–v6) — no usar como referencia |
 | [api/endpoints.md](api/endpoints.md) | Referencia de la API REST (auth, convenciones, todos los endpoints) |
 | [architecture/overview.md](architecture/overview.md) | Arquitectura: stack, capas, metodología y flujo de una petición |
-| [features/notifications.md](features/notifications.md) | **Sistema de avisos al afiliado** (buzón transaccional, bandeja y campana): cómo funciona, los 15 avisos y de dónde salen, los candados contra el push accidental y lo que falta de Firebase |
+| [features/notifications.md](features/notifications.md) | **Sistema de avisos al afiliado** (COMPLETO y encendido) (buzón transaccional, bandeja y campana): cómo funciona, los 15 avisos y de dónde salen, los candados contra el push accidental y cómo se ve en la app |
 | [guides/setup.md](guides/setup.md) | Levantar el entorno de desarrollo desde cero |
 | [guides/deploy-railway.md](guides/deploy-railway.md) | **Despliegue en producción** (Railway): arquitectura, variables, runbook y gotchas |
 | [decisions/decisions-log.md](decisions/decisions-log.md) | Registro cronológico de decisiones de negocio y técnicas |

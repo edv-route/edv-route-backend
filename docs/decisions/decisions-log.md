@@ -1443,3 +1443,33 @@ Semanal **Vencida**» con cobertura pagada hasta el 24, y el aviso del cobro sin
 | La regla vive en `billing-sql.ts`, no copiada en el repositorio de pagos | Es la misma pregunta que responde el motor. Una segunda copia deriva el día que se toque una de las dos — exactamente lo que ya justificaba ese archivo |
 | El scheduler de tarifas **rescata** suscripciones `expired` con cobertura pagada viva (antes solo avanzaba las `active`) | Con el motor de deuda encendido la cobertura vive en `subscription_payments`, no en `current_period_end`. Una tarifa semanal expirada **antes** de encender el motor se quedaba expirada **para siempre**: el paso que avanza el período solo miraba `active` y el que expira solo expira. El chofer pagaba, el motor le facturaba bien, y su tarjeta decía «Vencida» mientras tenía otra semana cubierta |
 | El aviso `charge_issued` ahora nombra la **factura** y el **día en que entra en mora** | «Se emitió tu semana» le dejaba a él deducir la consecuencia. Ahora dice las tres cosas de golpe: que la factura existe, cuánto es y hasta cuándo tiene |
+
+## 2026-08-21 — Segunda tanda de la app: el pago y los avisos, probados en el teléfono
+
+Todo esto salió de Luis usando el APK contra producción, no de buscar fallos.
+
+| Decisión | Motivo |
+|---|---|
+| Un afiliado **ya operando** nunca queda retenido en la pantalla de alta (regla nueva y **primera** de `altaScreenState`) | Reportó un pago y la app lo mandó a una pantalla de espera cuyo único botón era «Cerrar sesión»: **encerrado fuera de su cuenta** hasta que un admin lo revisara. `tariffStarted` es la señal sólida — el admin solo puede establecer el inicio con el alta saldada |
+| La pantalla de pago se abre **apilada** desde el perfil (`isEntrance: false`) | Reportar un pago es algo que hace DENTRO de la app, no una puerta que se cierra tras él. Título «Reportar pago», sin logout, y al enviar «Volver a la app» |
+| **Dos preguntas, dos funciones**: `altaScreenState` (¿dónde pertenece este chofer?) y `reportPaymentState` (¿qué hay que pagar?) | Responder ambas con una sola regla es lo que convirtió un pago en una puerta cerrada. Es la misma trampa que atrapó a los `pending` el 19/08, una puerta más adentro |
+| Los métodos de pago pasan de lista completa a **selector** | Cinco tarjetas empujaban el formulario fuera de pantalla en una hoja que ya scrollea. Es una elección única de una lista cerrada: `PickerField`, el mismo del banco emisor |
+| El envío ocurre **DENTRO del modal**, con su loading, y solo cierra cuando el servidor responde | Se cerraba al pulsar y enviaba después: durante el viaje de red no había nada en pantalla. Si falla se queda **abierto con todo lo escrito** — cerrarlo obligaba a rellenar el formulario entero para reintentar |
+| El perfil se refresca **antes** de que el modal cierre | Lo que aparece detrás ya es el estado nuevo, nunca la tarjeta vieja por un parpadeo |
+| Con la app abierta, el aviso es una **tarjeta de marca que baja desde arriba**, no un `SnackBar` | Losa gris en el borde de abajo: parecía un mensaje de depuración. Android no dibuja nada mientras la app está en primer plano, así que **eso ES la notificación** para el chofer y tiene que parecerlo |
+| Tocar un push **abre la bandeja** (`onMessageOpenedApp` + `getInitialMessage`) | Antes solo levantaba la app y había que buscar la campana. Con la app CERRADA el toque llega antes de que exista el shell, así que queda en bandera y el shell la recoge al montarse |
+| Tocar un aviso en la bandeja lo **abre como un mensaje** (`notification_detail_sheet`) | Solo lo marcaba leído: la lista era un muro de texto sobre el que no se podía actuar. El cuerpo entero sin recortes, el momento completo, y el **motivo del rechazo en bloque propio** — iba diluido en el párrafo y es lo único que le dice qué corregir |
+| El veredicto del pago se dice **una vez, en el panel, donde se pulsó** | El perfil llevaba un banner «Pago rechazado» permanente repitiendo dos líneas que el admin ya sabía. Un veredicto es un momento, no un estado del perfil; el rastro sigue en Historial de pagos |
+| El aviso del panel dice **que el afiliado ya fue notificado** | Información que el admin no tenía: hasta ayer rechazar era a ciegas |
+
+### Deuda conocida que este día dejó al descubierto
+
+⚠️ **La suite de pruebas le factura de verdad a choferes reales.** `debt-engine.test.ts`
+fuerza `billing_day_of_week`/`billing_hour` para que el motor emita en el acto, y el tick emite
+**para todos los afiliados elegibles**, no solo los de prueba. El martes 18/08 a las 10:24 eso
+emitió a Luis y a Darwing la semana del 24/08, **tres días antes de tiempo** — y por eso el
+viernes a las 18:00 no se generó nada (ya existía) y no hubo aviso que mandar.
+
+Los valores se restauran al terminar, así que el calendario sigue siendo viernes 18:00; pero si
+la suite muere a media corrida quedarían forzados. **Propuesta pendiente de aprobación**: que
+`runDebtEngineTick` acepte limitarse a un chofer y que las pruebas pasen el suyo.

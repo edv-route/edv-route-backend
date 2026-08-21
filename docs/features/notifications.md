@@ -1,8 +1,8 @@
 # Sistema de avisos al afiliado
 
-> Estado al **2026-08-20**: **COMPLETO, las cuatro fases**. Falta un solo paso operativo:
-> poner las tres variables de Firebase en Railway y **encender `notifications_enabled`**.
-> Hasta que se encienda no sale ningún push, y todo lo demás (bandeja y campana) ya funciona.
+> Estado al **2026-08-21**: **COMPLETO y ENCENDIDO en producción**. Las cuatro fases más el
+> pulido de la app tras usarlo en el teléfono. Los push salen de verdad: `notifications_enabled`
+> está en `true` y el despachador corre con `provider: fcm`.
 >
 > Decisiones con su porqué: [decisions-log.md](../decisions/decisions-log.md) (entradas del
 > 2026-08-19 y 2026-08-20) · Tablas: [schema.md §Dominio 9](../database/schema.md) ·
@@ -256,12 +256,48 @@ FCM aceptó la petición y respondió `INVALID_ARGUMENT` **sobre el token**, no 
 — que es exactamente la prueba de que la firma y el intercambio funcionan. El enviador lo tradujo a
 «revocar esta fila» y reportó `delivered: 0`, sin declarar una entrega que no ocurrió.
 
-## Lo único que queda (operativo, no código)
+## En producción desde el 2026-08-21
 
-1. **Las tres variables en Railway**: `FIREBASE_PROJECT_ID`, `FIREBASE_CLIENT_EMAIL` y
-   `FIREBASE_PRIVATE_KEY` (esta última en una línea, con los `\n` literales, entre comillas).
-   Sin ellas el backend desplegado sigue con el enviador de mentira.
-2. **Encender `notifications_enabled`** — y solo entonces salen push reales. Conviene hacerlo con
-   un solo chofer de prueba delante, recordando que prod y dev comparten la base.
+Las tres variables están en Railway y `notifications_enabled` está **encendido**. El log de
+arranque dice `notification dispatcher started · provider: fcm`. Verificado en vivo: el aviso de
+prueba, «Recibimos tu pago» y «Pago aprobado» salieron con estado `sent` y cero errores.
+
+## Cómo se ve en la app (pulido del 2026-08-21)
+
+Los push llegaban pero la experiencia no acompañaba. Tres arreglos, los tres salidos de usarlo:
+
+- **Con la app ABIERTA Android no dibuja nada.** Entrega el mensaje al código y, si nadie lo
+  recoge, se pierde en silencio — por eso tres push salieron `sent` y no se vio ninguno. Ahora el
+  shell lo recoge y muestra una **tarjeta con el degradado de la marca que baja desde arriba**
+  (`shared/widgets/notice_banner.dart`): entra con un rebote corto, se toca para abrir, se desliza
+  hacia arriba para descartar y se va sola a los 5 s. Antes era un `SnackBar` gris abajo, que
+  parecía un mensaje de depuración.
+- **Tocar el push abre la bandeja.** `onMessageOpenedApp` (app en segundo plano) y
+  `getInitialMessage` (app cerrada — ese mensaje arranca el proceso, se entrega una vez y solo si
+  se pide). Con la app cerrada el toque llega antes de que exista el shell, así que queda en
+  bandera y el shell la recoge al montarse.
+- **Tocar un aviso en la bandeja lo ABRE como un mensaje**
+  (`notification_detail_sheet.dart`): el cuerpo entero sin recortes, el momento completo («viernes
+  21 de agosto · 5:56 p. m.») y el **motivo del rechazo en bloque propio** — iba diluido en el
+  párrafo y es lo único que le dice qué corregir. Debajo, los datos del payload que apliquen.
+  Antes el toque solo marcaba leído: la lista era un muro de texto sobre el que no se podía actuar.
+
+## En el panel
+
+El perfil del afiliado llevaba un banner «Pago rechazado» permanente. Se quitó: un veredicto es un
+momento, no un estado del perfil. Ahora el **modal de revisión confirma el resultado donde el admin
+pulsó el botón**, y le dice algo que antes no sabía — que el afiliado **ya fue notificado con el
+motivo**. El rastro completo sigue en Historial de pagos.
+
+## ⚠️ Deuda conocida: la suite factura de verdad
+
+`debt-engine.test.ts` fuerza `billing_day_of_week`/`billing_hour` para que el motor emita en el
+acto, y el tick emite **para todos los afiliados elegibles**, no solo los de prueba. El martes
+18/08 eso emitió a dos afiliados reales la semana del 24/08, **tres días antes** — y por eso el
+viernes a las 18:00 no se generó nada (ya existía) ni hubo aviso que mandar.
+
+Los valores se restauran al terminar, así que el calendario sigue siendo viernes 18:00; pero si la
+suite muere a media corrida quedarían forzados. **Propuesta pendiente de aprobación**: que
+`runDebtEngineTick` acepte limitarse a un chofer y que las pruebas pasen el suyo.
 
 **Coste**: FCM es gratis. iOS pediría los $99/año de Apple; hoy solo hay APK Android, no aplica.
