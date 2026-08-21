@@ -942,10 +942,57 @@ export class EnrollmentRepository {
     );
     const base = anchorRows[0]!.base;
 
+    /**
+     * ABSORB the weeks the engine already issued (2026-08-21).
+     *
+     * The advance chains N NEW weeks after the last PAID one, so a week already
+     * emitted and unpaid — the classic case: the engine bills Friday for the
+     * Monday after — would get a SECOND charge, and the first would go overdue
+     * days later: phantom debt for someone who had just prepaid a month.
+     *
+     * Refusing the advance was the first attempt and it was a lock with no exit:
+     * that week is NOT debt yet (its period has not started, decisión de Luis
+     * 2026-08-19), so nothing let him pay it and nothing let him advance either.
+     * So the advance PAYS it as its first week instead — which is what "adelantar
+     * dos semanas" means to the driver anyway. Same amount, no duplicate.
+     */
+    const { rows: absorbed } = await client.query<{ id: string; invoiceId: string | null }>(
+      `SELECT id, invoice_id AS "invoiceId"
+         FROM subscription_payments
+        WHERE driver_subscription_id = $1
+          AND charge_kind = 'period'
+          AND status IN ('pending', 'overdue')
+          AND period_start >= $2::timestamptz
+          AND period_start < $2::timestamptz + ($3::interval * $4)
+        ORDER BY period_start
+        FOR UPDATE`,
+      [input.subscriptionId, base, input.periodInterval, input.periods],
+    );
+    const invoiceNumbers: string[] = [];
+    for (const charge of absorbed) {
+      // It already carries its invoice from the day it was issued; the receipt
+      // just settles it. Only a legacy charge without one needs a fresh invoice.
+      let invoiceId = charge.invoiceId;
+      if (!invoiceId) {
+        const inv = await this.createInvoice(
+          client, input.driverId, input.planPriceUsd, input.registeredBy, input.submissionId,
+        );
+        invoiceId = inv.id;
+        invoiceNumbers.push(inv.invoiceNumber);
+      }
+      await client.query(
+        `UPDATE subscription_payments
+            SET status = 'paid', paid_at = now(), invoice_id = $2,
+                registered_by = $3, submission_id = $4
+          WHERE id = $1`,
+        [charge.id, invoiceId, input.registeredBy, input.submissionId],
+      );
+    }
+
     // Billing redesign (2026-08-04): ONE invoice per prepaid week, all linked to
     // the receipt that generated them (payment details live on the receipt).
-    const invoiceNumbers: string[] = [];
-    for (let i = 0; i < input.periods; i++) {
+    // Only the weeks NOT already absorbed above are created here.
+    for (let i = absorbed.length; i < input.periods; i++) {
       const weekInvoice = await this.createInvoice(
         client, input.driverId, input.planPriceUsd, input.registeredBy, input.submissionId,
       );
