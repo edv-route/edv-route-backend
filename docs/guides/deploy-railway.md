@@ -105,14 +105,17 @@ Dockerfile Path `/Dockerfile`). Sin esto el sitio queda en blanco.
 El **pooler en modo sesión de Supabase limita TODO el proyecto a 15 clientes**, y producción y
 desarrollo comparten la misma base. Ese techo no es por proceso: es la suma de todos.
 
-
+```
+Railway (prod)  8  +  laptop (dev)  3  +  una corrida de pruebas  2..4   =  13..15
+```
 
 Con el `max: 10` plano que había antes la cuenta no daba: dos backends solos pedían 20 y el
 pooler empezaba a rechazar con `(EMAXCONNSESSION) max clients reached in session mode`. Todos
 los schedulers fallaban a la vez, lo que **se lee como una caída de la base de datos** y en
 realidad son dos máquinas siendo avariciosas (2026-08-21).
 
-- El tamaño lo elige  por entorno; `DATABASE_POOL_MAX` lo sobreescribe.
+- El tamaño lo elige `src/plugins/db.ts` por entorno; `DATABASE_POOL_MAX` lo sobreescribe, para
+  poder retunear producción desde Railway sin redesplegar código.
 - Los pools de pruebas y scripts van con `max: 2` **explícito**: sin `max`, node-postgres asume
   **10** y una sola corrida se comía dos tercios del techo sin que nadie lo viera.
 - **La forma de verdad de ganar aire** es subir el techo: Supabase > Settings > Database >
