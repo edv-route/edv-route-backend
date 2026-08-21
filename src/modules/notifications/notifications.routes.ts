@@ -20,6 +20,24 @@ const idParam = {
   properties: { id: { type: 'string', pattern: '^[0-9]+$' } },
 } as const;
 
+/** FCM tokens are long opaque strings; the bound only keeps junk out. */
+const deviceTokenBody = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['token'],
+  properties: {
+    token: { type: 'string', minLength: 20, maxLength: 4096 },
+    platform: { type: 'string', enum: ['android', 'ios'], default: 'android' },
+  },
+} as const;
+
+const revokeTokenBody = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['token'],
+  properties: { token: { type: 'string', minLength: 20, maxLength: 4096 } },
+} as const;
+
 /**
  * Every field is declared: Fastify serializes against the schema and DROPS
  * anything missing, silently. That has already cost this project two bugs
@@ -91,6 +109,33 @@ const notificationsRoutes: FastifyPluginAsync = async (app) => {
     '/me/notifications/read-all',
     { onRequest: [app.authenticateDriver] },
     async (req) => ({ marked: await notifications.markAllRead(req.user.sub) }),
+  );
+
+  // The app registers its FCM token here on every start and whenever it rotates.
+  // Idempotent by construction (upsert on the token), so re-sending the same one
+  // is the normal case, not an edge one.
+  app.post<{ Body: { token: string; platform?: 'android' | 'ios' } }>(
+    '/me/device-tokens',
+    { onRequest: [app.authenticateDriver], schema: { body: deviceTokenBody } },
+    async (req, reply) => {
+      await notifications.registerDevice(
+        req.user.sub,
+        req.body.token,
+        req.body.platform ?? 'android',
+      );
+      return reply.code(204).send();
+    },
+  );
+
+  // Logout. NOT optional and not cosmetic: without it the next person to use
+  // this phone receives the previous driver's amounts and rejection reasons.
+  app.delete<{ Body: { token: string } }>(
+    '/me/device-tokens',
+    { onRequest: [app.authenticateDriver], schema: { body: revokeTokenBody } },
+    async (req, reply) => {
+      await notifications.revokeDevice(req.user.sub, req.body.token);
+      return reply.code(204).send();
+    },
   );
 };
 

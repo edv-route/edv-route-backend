@@ -1395,3 +1395,22 @@ sistema **funciona entero sin push**: solo falta Firebase (Fase 4), que es puro 
 | La campana en el **header**, no en la isla flotante | La isla navega entre lugares donde uno *está*; los avisos se consultan y se cierran. Además la isla gasta uno de los ~3 cupos que hacen falta para Viajes. Ventaja concreta: en el header el **dorado está libre** (en la isla ya significa «pestaña activa»), así que el indicador se lee sin ambigüedad |
 | El tile «Notificaciones — próximamente» del Inicio se **borra** | Anunciar como futuro algo que el chofer ya ve dos centímetros más arriba es peor que no tener el tile |
 | La app **nunca compone texto**: pinta `title`/`body` tal como llegan | Si el teléfono redacta, la bandeja y el push empiezan a decir cosas distintas y corregir una palabra exige publicar un APK. Del `type` solo se deriva el **icono y su color** |
+
+## 2026-08-20 — Sistema de avisos, Fase 4: Firebase (push real)
+
+Última pieza. Proyecto `edv-route`, paquete `com.edvroute.edv_route_mobile`.
+
+| Decisión | Motivo |
+|---|---|
+| **Sin SDK**: FCM HTTP v1 llamado a mano (`node:crypto` firma el JWT, `fetch` lo envía) | `firebase-admin` arrastra un árbol de dependencias enorme para hacer dos cosas que necesitamos: firmar un JWT y mandar JSON. El intercambio OAuth son 40 líneas documentadas |
+| Las credenciales son **opcionales** en el arranque, como las de Storage | Sin las tres variables el despachador conserva el enviador de mentira y la API sirve todo lo demás igual. El push **jamás** puede ser lo que impida arrancar |
+| **Mensajes de notificación**, no de datos | Los pinta el sistema: sobreviven a los gestores de batería de Xiaomi/Oppo/Vivo y llegan con la app cerrada. Un mensaje de datos aterriza en un manejador que esos lanzadores se niegan a despertar |
+| El **canal `edv_avisos` declarado en el manifiesto**, no solo en Dart | Android 8+ se niega a mostrar una notificación sin canal. Si solo se creara desde Dart, un push que llega con la app **cerrada** (donde no ha corrido ni una línea de Dart) no se dibujaría |
+| Una llamada HTTP **por dispositivo** | La v1 no tiene endpoint multicast (el de lotes se retiró) y un chofer tiene uno o dos teléfonos, no cientos |
+| `UNREGISTERED`/`INVALID_ARGUMENT`/`NOT_FOUND` → **revocar la fila**; lo demás → reintentar | Un token muerto que nadie borra llena la tabla de direcciones donde no contesta nadie, y cada envío las paga |
+| Un **401** tira el token de acceso cacheado | Si el token murió antes de tiempo, el siguiente pase acuña uno nuevo en vez de fallar tres veces y abandonar el aviso |
+| La clave privada viaja en **una sola línea** con `\n` literales | Un `.env` es de líneas y el editor de Railway también: la misma forma tiene que funcionar en los dos sitios |
+| **Upsert sobre el token**, no sobre (usuario, token) | El token identifica un TELÉFONO: FCM entrega el mismo en ese aparato, así que la fila se reapunta al nuevo dueño en vez de dejar dos. Es privacidad, no orden |
+| Al cerrar sesión se revoca en el servidor **y** se borra el token local | Dos puertas: la primera impide que se le siga enviando; la segunda hace que el siguiente chofer reciba un token **nuevo** en vez de heredar este |
+| El registro se dispara en `DriverRootScreen`, no en el shell | Un `applicant` nunca llega al shell — y es justo quien espera el veredicto de su solicitud. Ese es el único punto por el que pasa toda sesión autenticada |
+| Todo fallo del push es **silencioso** para el chofer | Un teléfono sin Play Services o con el permiso negado tiene que seguir usando la app igual: la bandeja es su canal y no depende de ningún proveedor |

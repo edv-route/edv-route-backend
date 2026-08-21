@@ -240,3 +240,119 @@ test('the badge travels inside /me/account, not in a call of its own', async () 
     await removeDriver(driver.id);
   }
 });
+
+/**
+ * Device tokens. The privacy control of the whole feature: a phone belongs to
+ * ONE driver at a time, and signing out has to close the door behind you.
+ */
+
+const registerDevice = (token: string, deviceToken: string) =>
+  app.inject({
+    method: 'POST',
+    url: '/api/v1/driver-auth/me/device-tokens',
+    headers: { authorization: `Bearer ${token}` },
+    payload: { token: deviceToken, platform: 'android' },
+  });
+
+async function deviceRow(deviceToken: string) {
+  const { rows } = await pool.query<{ userId: string; revokedAt: Date | null }>(
+    `SELECT user_id AS "userId", revoked_at AS "revokedAt"
+       FROM device_tokens WHERE token = $1`,
+    [deviceToken],
+  );
+  return rows[0] ?? null;
+}
+
+test('registering the same phone twice does not duplicate it', async () => {
+  const driver = await newDriver('DeviceTwice');
+  const deviceToken = `fake-fcm-token-twice-${driver.id}`;
+  try {
+    assert.equal((await registerDevice(driver.token, deviceToken)).statusCode, 204);
+    assert.equal((await registerDevice(driver.token, deviceToken)).statusCode, 204);
+
+    const { rows } = await pool.query<{ count: string }>(
+      `SELECT count(*)::text AS count FROM device_tokens WHERE user_id = $1`,
+      [driver.id],
+    );
+    assert.equal(
+      rows[0]!.count,
+      '1',
+      'la app lo reenvía en cada arranque: repetir es el caso normal, no un borde',
+    );
+  } finally {
+    await removeDriver(driver.id);
+  }
+});
+
+test('a second driver on the SAME phone takes the token over', async () => {
+  const first = await newDriver('DeviceHandoverA');
+  const second = await newDriver('DeviceHandoverB');
+  const deviceToken = `fake-fcm-token-shared-${first.id}`;
+  try {
+    await registerDevice(first.token, deviceToken);
+    await registerDevice(second.token, deviceToken);
+
+    const row = await deviceRow(deviceToken);
+    assert.equal(
+      row!.userId,
+      second.id,
+      'FCM entrega el MISMO token en ese teléfono: si no se reapunta, el anterior sigue recibiendo montos y motivos de rechazo ajenos',
+    );
+    assert.equal(row!.revokedAt, null);
+  } finally {
+    await removeDriver(first.id);
+    await removeDriver(second.id);
+  }
+});
+
+test('logging out revokes the phone, and signing back in revives it', async () => {
+  const driver = await newDriver('DeviceLogout');
+  const deviceToken = `fake-fcm-token-logout-${driver.id}`;
+  const headers = { authorization: `Bearer ${driver.token}` };
+  try {
+    await registerDevice(driver.token, deviceToken);
+
+    const out = await app.inject({
+      method: 'DELETE',
+      url: '/api/v1/driver-auth/me/device-tokens',
+      headers,
+      payload: { token: deviceToken },
+    });
+    assert.equal(out.statusCode, 204);
+    assert.ok((await deviceRow(deviceToken))!.revokedAt, 'cerrar sesión cierra la puerta');
+
+    await registerDevice(driver.token, deviceToken);
+    assert.equal(
+      (await deviceRow(deviceToken))!.revokedAt,
+      null,
+      'volver a entrar la abre de nuevo, sin perder la fila',
+    );
+  } finally {
+    await removeDriver(driver.id);
+  }
+});
+
+test('a driver cannot revoke a phone that is not his', async () => {
+  const mine = await newDriver('DeviceMine');
+  const other = await newDriver('DeviceOther');
+  const foreignToken = `fake-fcm-token-foreign-${other.id}`;
+  try {
+    await registerDevice(other.token, foreignToken);
+
+    const res = await app.inject({
+      method: 'DELETE',
+      url: '/api/v1/driver-auth/me/device-tokens',
+      headers: { authorization: `Bearer ${mine.token}` },
+      payload: { token: foreignToken },
+    });
+    assert.equal(res.statusCode, 204, 'idempotente: no revela si el token existe');
+    assert.equal(
+      (await deviceRow(foreignToken))!.revokedAt,
+      null,
+      'pero no puede dejar a otro chofer sin avisos',
+    );
+  } finally {
+    await removeDriver(mine.id);
+    await removeDriver(other.id);
+  }
+});

@@ -1,9 +1,8 @@
 # Sistema de avisos al afiliado
 
-> Estado al **2026-08-20**: Fases 1, 1b, 2 y 3 **implementadas y desplegadas**. Falta la
-> **Fase 4 (Firebase)**. El sistema **funciona entero sin push**: los avisos se escriben, se
-> listan en la bandeja de la app y la campana los cuenta. Lo único que no ocurre todavía es que
-> el teléfono suene.
+> Estado al **2026-08-20**: **COMPLETO, las cuatro fases**. Falta un solo paso operativo:
+> poner las tres variables de Firebase en Railway y **encender `notifications_enabled`**.
+> Hasta que se encienda no sale ningún push, y todo lo demás (bandeja y campana) ya funciona.
 >
 > Decisiones con su porqué: [decisions-log.md](../decisions/decisions-log.md) (entradas del
 > 2026-08-19 y 2026-08-20) · Tablas: [schema.md §Dominio 9](../database/schema.md) ·
@@ -184,6 +183,7 @@ volver sería otra ida al servidor por un número que ya conocía.
 | `src/modules/notifications/notifications.routes.ts` | `/driver-auth/me/notifications` |
 | `src/plugins/notification-dispatcher.ts` | Despachador (quinto scheduler) |
 | `src/notifications/push-sender.ts` | Interfaz `PushSender` + `LogPushSender` |
+| `src/notifications/fcm-push-sender.ts` | `FcmPushSender`: OAuth con la cuenta de servicio + FCM HTTP v1 |
 
 **App**
 
@@ -196,6 +196,7 @@ volver sería otra ida al servidor por un número que ya conocía.
 | `lib/features/notifications/presentation/widgets/notification_tile.dart` | La fila (icono/color por tipo) |
 | `lib/shared/widgets/driver_header.dart` | La campana con su contador |
 | `lib/features/home/presentation/screens/driver_shell.dart` | Dueño del contador y del estado de cuenta |
+| `lib/core/push/push_service.dart` | Permiso, token FCM, rotación y revocación al cerrar sesión |
 
 ## Pruebas
 
@@ -205,24 +206,62 @@ volver sería otra ida al servidor por un número que ya conocía.
 | `tests/notification-events.test.ts` (6) | Dónde nacen: rechazo con motivo · un veredicto que no ocurre no deja aviso · aprobar borra el recordatorio futuro pero **no** el ya enviado · documento y vehículo nombrados |
 | `tests/notification-inbox.test.ts` (7) | La bandeja: orden y contador · el aviso diferido no se lista ni cuenta · marcar es idempotente · `read-all` respeta lo diferido · **un chofer no ve ni marca los avisos de otro** · paginación sin repetir · el contador viaja en `/me/account` |
 
-Backend **55/55**. App **58/58** + `flutter analyze` limpio.
+| `tests/notification-inbox.test.ts` (+4) | Los teléfonos: registrar dos veces no duplica · **un segundo chofer en el MISMO teléfono se queda con el token** · cerrar sesión revoca y volver a entrar revive la fila · **nadie puede revocar un teléfono ajeno** |
 
-## Fase 4 — lo que falta (Firebase)
+Backend **59/59**. App **58/58** + `flutter analyze` limpio.
 
-Todo lo anterior funciona sin esto. Firebase es la parte que da guerra (cuenta,
-`google-services.json`, Gradle, APK nuevo) y por eso se dejó al final.
+## Fase 4 — Firebase (hecho)
 
-1. **Cuenta y proyecto Firebase**; `google-services.json` en la app (es identificador público y
-   **sí se versiona**). La clave de servidor va **solo** en `edv-route-backend/.env` (regla 3).
-2. **`FcmPushSender`** implementando `PushSender`. Es la única pieza que cambia: el despachador,
-   el buzón y la bandeja no se tocan. Mandar **mensajes de notificación** (los pinta el sistema),
-   **no** mensajes de datos: sobreviven mucho mejor a Xiaomi/Oppo/Vivo y funcionan con la app
-   cerrada.
-3. **Endpoints de `device_tokens`**: registrar al abrir y al rotar, **revocar al cerrar sesión**.
-   ⚠️ Si no se revoca, el siguiente que use ese teléfono recibe los montos y los motivos de
-   rechazo del anterior. El `UNIQUE` global del token tapa el otro lado (reapunta la fila cuando
-   otro chofer inicia sesión en el mismo aparato), pero **hay que cerrar las dos puertas**.
-4. **Permiso de notificaciones en Android 13+** (se puede negar; la bandeja sigue siendo el canal).
-5. **Encender `notifications_enabled`** — y solo entonces empiezan a salir push reales.
+Proyecto **`edv-route`** · paquete **`com.edvroute.edv_route_mobile`**.
+
+**Sin SDK.** `firebase-admin` arrastra un árbol de dependencias enorme para hacer dos cosas que
+necesitamos —firmar un JWT y mandar JSON—, y el intercambio OAuth son 40 líneas documentadas:
+`node:crypto` firma la aserción (RFC 7523), `fetch` la cambia por un token de acceso de 1 h (que se
+cachea y se renueva 5 min antes) y con él se llama a `fcm.googleapis.com/v1/.../messages:send`.
+
+**Las credenciales son opcionales al arrancar**, igual que las de Storage: sin las tres variables
+el despachador conserva el enviador de mentira y la API sirve todo lo demás exactamente igual. El
+push jamás puede ser lo que impida arrancar.
+
+| Detalle | Por qué |
+|---|---|
+| **Mensajes de notificación**, no de datos | Los pinta el sistema: sobreviven a los gestores de batería de Xiaomi/Oppo/Vivo y llegan con la app cerrada. Un mensaje de datos aterriza en un manejador que esos lanzadores se niegan a despertar |
+| Canal **`edv_avisos` declarado en el manifiesto** | Android 8+ se niega a mostrar una notificación sin canal. Creándolo solo desde Dart, un push que llega con la app **cerrada** no se dibujaría |
+| Una llamada HTTP **por dispositivo** | La v1 no tiene multicast (el endpoint de lotes se retiró) y un chofer tiene uno o dos teléfonos |
+| `UNREGISTERED`/`INVALID_ARGUMENT`/`NOT_FOUND` → revocar la fila | Un token muerto que nadie borra llena la tabla de direcciones donde no contesta nadie, y cada envío las paga. Lo demás se reintenta |
+| Un **401** tira el token de acceso cacheado | Si murió antes de tiempo, el siguiente pase acuña uno nuevo en vez de fallar tres veces y abandonar el aviso |
+| La clave privada viaja en **una línea** con `\n` literales | Un `.env` es de líneas y el editor de Railway también: la misma forma tiene que servir en los dos sitios |
+
+### El teléfono (app)
+
+`PushService` es deliberadamente delgado: pide el permiso (Android 13+ lo exige explícitamente),
+obtiene el token, lo entrega al backend y lo devuelve al cerrar sesión. **No decide qué dice un
+aviso ni cuándo llega** — eso vive en el servidor, donde la redacción se corrige sin publicar un
+APK y donde la bandeja y el push no pueden discrepar.
+
+- Se dispara en **`DriverRootScreen`**, no en el shell: un `applicant` nunca llega al shell y es
+  justo quien espera el veredicto de su solicitud. Ese es el único punto por el que pasa toda
+  sesión autenticada.
+- **Escucha la rotación** (`onTokenRefresh`). FCM reemplaza tokens solo, y un token que nadie
+  vuelve a registrar es un chofer que deja de recibir en silencio.
+- **Todo fallo es silencioso** para el chofer: un teléfono sin Play Services o con el permiso
+  negado tiene que seguir usando la app igual.
+- **Al cerrar sesión se cierran dos puertas**: el backend revoca la fila y la app **borra el token
+  local**, así que el siguiente chofer en ese aparato recibe uno nuevo en vez de heredar este.
+
+### Verificado contra el Firebase real
+
+Se acuñó un token OAuth con la cuenta de servicio y se intentó enviar a un dispositivo inexistente:
+FCM aceptó la petición y respondió `INVALID_ARGUMENT` **sobre el token**, no sobre las credenciales
+— que es exactamente la prueba de que la firma y el intercambio funcionan. El enviador lo tradujo a
+«revocar esta fila» y reportó `delivered: 0`, sin declarar una entrega que no ocurrió.
+
+## Lo único que queda (operativo, no código)
+
+1. **Las tres variables en Railway**: `FIREBASE_PROJECT_ID`, `FIREBASE_CLIENT_EMAIL` y
+   `FIREBASE_PRIVATE_KEY` (esta última en una línea, con los `\n` literales, entre comillas).
+   Sin ellas el backend desplegado sigue con el enviador de mentira.
+2. **Encender `notifications_enabled`** — y solo entonces salen push reales. Conviene hacerlo con
+   un solo chofer de prueba delante, recordando que prod y dev comparten la base.
 
 **Coste**: FCM es gratis. iOS pediría los $99/año de Apple; hoy solo hay APK Android, no aplica.

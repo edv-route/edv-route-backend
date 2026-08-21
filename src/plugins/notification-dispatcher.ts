@@ -2,6 +2,7 @@ import fp from 'fastify-plugin';
 import type pg from 'pg';
 import type NotificationType from '../db/models/public/NotificationType.js';
 import { LogPushSender, type PushSender } from '../notifications/push-sender.js';
+import { FcmPushSender } from '../notifications/fcm-push-sender.js';
 
 const TICK_MS = 60_000;
 /**
@@ -163,7 +164,21 @@ export default fp(
       return;
     }
 
-    const sender: PushSender = new LogPushSender((payload, msg) => app.log.info(payload, msg));
+    // Real sender only when the three credentials are there. Their absence is
+    // not an error: the system keeps working exactly as it did before Firebase,
+    // writing what WOULD have gone out. Push must never be what breaks a deploy.
+    const credentials = {
+      projectId: app.config.FIREBASE_PROJECT_ID,
+      clientEmail: app.config.FIREBASE_CLIENT_EMAIL,
+      privateKey: app.config.FIREBASE_PRIVATE_KEY,
+    };
+    const sender: PushSender = FcmPushSender.isConfigured(credentials)
+      ? new FcmPushSender(credentials, (payload, msg) => app.log.warn(payload, msg))
+      : new LogPushSender((payload, msg) => app.log.info(payload, msg));
+    app.log.info(
+      { provider: FcmPushSender.isConfigured(credentials) ? 'fcm' : 'log-only' },
+      'notification dispatcher started',
+    );
     let running = false;
 
     const tick = async (): Promise<void> => {

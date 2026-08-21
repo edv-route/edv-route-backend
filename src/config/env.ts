@@ -13,6 +13,14 @@ export interface AppConfig {
   SUPABASE_URL: string;
   SUPABASE_SERVICE_ROLE_KEY: string;
   STORAGE_BUCKET: string;
+  /**
+   * Firebase Cloud Messaging. Optional, exactly like the storage keys: without
+   * the three of them the dispatcher keeps the log-only sender and nothing ever
+   * leaves the building. Push must never be what stops the API from booting.
+   */
+  FIREBASE_PROJECT_ID: string;
+  FIREBASE_CLIENT_EMAIL: string;
+  FIREBASE_PRIVATE_KEY: string;
 }
 
 const schema = {
@@ -38,6 +46,9 @@ const schema = {
     SUPABASE_URL: { type: 'string', default: '' },
     SUPABASE_SERVICE_ROLE_KEY: { type: 'string', default: '' },
     STORAGE_BUCKET: { type: 'string', default: 'documents' },
+    FIREBASE_PROJECT_ID: { type: 'string', default: '' },
+    FIREBASE_CLIENT_EMAIL: { type: 'string', default: '' },
+    FIREBASE_PRIVATE_KEY: { type: 'string', default: '' },
   },
 } as const;
 

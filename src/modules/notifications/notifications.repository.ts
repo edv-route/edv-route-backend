@@ -95,6 +95,47 @@ export class NotificationsRepository {
     return (rowCount ?? 0) > 0;
   }
 
+  /**
+   * Registers (or re-points) the phone this driver receives push on.
+   *
+   * UPSERT ON THE TOKEN, not on (user, token), and that is the privacy control:
+   * the token identifies a PHONE. When a second driver signs in on the same
+   * handset, FCM hands the app the SAME token, and this moves the row to him
+   * instead of leaving two owners — otherwise the previous driver's amounts and
+   * rejection reasons keep landing on a screen that is no longer his.
+   *
+   * Also un-revokes: a token that comes back to life is normal (FCM rotates
+   * them, the driver reinstalls, he signs back in), and its row keeps its history.
+   */
+  async registerDevice(userId: string, token: string, platform: string): Promise<void> {
+    await this.db.query(
+      `INSERT INTO device_tokens (user_id, token, platform)
+       VALUES ($1, $2, $3::device_platform)
+       ON CONFLICT (token) DO UPDATE
+          SET user_id = EXCLUDED.user_id,
+              platform = EXCLUDED.platform,
+              last_seen_at = now(),
+              revoked_at = NULL`,
+      [userId, token, platform],
+    );
+  }
+
+  /**
+   * Logout. Revokes the token so the next person to use this phone does not
+   * receive HIS notices — the other half of the door the global UNIQUE closes.
+   * Scoped to the owner: a token that is not his is left alone.
+   *
+   * Revoked, not deleted: the row is the phone's history, and signing back in
+   * brings it straight back.
+   */
+  async revokeDevice(userId: string, token: string): Promise<void> {
+    await this.db.query(
+      `UPDATE device_tokens SET revoked_at = now()
+        WHERE token = $2 AND user_id = $1 AND revoked_at IS NULL`,
+      [userId, token],
+    );
+  }
+
   /** Clears the badge in one go. Only what he could actually see. */
   async markAllRead(userId: string): Promise<number> {
     const { rowCount } = await this.db.query(
