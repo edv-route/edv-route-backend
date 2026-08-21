@@ -31,6 +31,7 @@ before(async () => {
   token = (login.json() as { token: string }).token;
 });
 after(async () => {
+  await removeMethod();
   await pool.end();
   await app.close();
 });
@@ -77,7 +78,17 @@ async function newDriverWithDebt(nationalId: string): Promise<string> {
   return (res.json() as { userId: string }).userId;
 }
 
+/**
+ * ONE payment method for the whole suite, created on first use and removed in
+ * `after`. It used to be created per test and never cleaned up: 32 rows named
+ * "TEST Zelle avisos" ended up in PRODUCTION's payment method list, which the
+ * driver sees when he reports a payment from the app (found 2026-08-21). The
+ * catalogue is user-facing data — a test that writes into it owes a cleanup.
+ */
+let methodId: number | null = null;
+
 async function createMethod(): Promise<number> {
+  if (methodId !== null) return methodId;
   const res = await app.inject({
     method: 'POST',
     url: '/api/v1/payment-methods',
@@ -88,7 +99,24 @@ async function createMethod(): Promise<number> {
       details: { email: 'avisos@test.com', holder: 'EDV' },
     },
   });
-  return (res.json() as { id: number }).id;
+  methodId = (res.json() as { id: number }).id;
+  return methodId;
+}
+
+/**
+ * Deletes it only when no money points at it: an invoice or a submission that
+ * references the method is part of the trail and must keep it (regla 7).
+ */
+async function removeMethod(): Promise<void> {
+  if (methodId === null) return;
+  await pool.query(
+    `DELETE FROM payment_methods pm
+      WHERE pm.id = $1
+        AND NOT EXISTS (SELECT 1 FROM payment_submissions s WHERE s.payment_method_id = pm.id)
+        AND NOT EXISTS (SELECT 1 FROM invoices i WHERE i.payment_method_id = pm.id)`,
+    [methodId],
+  );
+  methodId = null;
 }
 
 async function insertPending(
