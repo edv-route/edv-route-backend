@@ -12,7 +12,7 @@ import pg from 'pg';
  */
 
 const CLEAN_ONLY = process.argv.includes('--clean');
-const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
+const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL, max: 2 });
 
 const TZ = 'America/Caracas';
 /** Monday 00:00 of the running week (business timezone) — a week already in force. */

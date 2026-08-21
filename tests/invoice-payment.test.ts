@@ -20,7 +20,7 @@ let token: string;
 before(async () => {
   app = await buildApp();
   await app.ready();
-  pool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
+  pool = new pg.Pool({ connectionString: process.env.DATABASE_URL, max: 2 });
   const login = await app.inject({
     method: 'POST', url: '/api/v1/auth/login',
     payload: { username: 'admin', password: 'EdvRoute2026' },

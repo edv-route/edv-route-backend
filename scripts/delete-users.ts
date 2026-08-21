@@ -17,7 +17,7 @@ const args = process.argv.slice(2);
 const apply = args.includes('--apply');
 const cedulas = args.filter((a) => a !== '--apply');
 
-const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
+const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL, max: 2 });
 
 async function main(): Promise<void> {
   if (cedulas.length === 0) {

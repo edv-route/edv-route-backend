@@ -7,6 +7,12 @@ export interface AppConfig {
   LOG_LEVEL: 'fatal' | 'error' | 'warn' | 'info' | 'debug' | 'trace';
   CORS_ORIGIN: string;
   DATABASE_URL: string;
+  /**
+   * Connections this instance may hold. 0 = pick by environment (see db.ts).
+   * Exists so production can be retuned from Railway when the Supabase pool
+   * size changes, without a redeploy of code.
+   */
+  DATABASE_POOL_MAX: number;
   JWT_SECRET: string;
   JWT_EXPIRES_IN: string;
   /** File storage. Optional: without them the app boots with uploads disabled. */
@@ -41,6 +47,7 @@ const schema = {
     },
     CORS_ORIGIN: { type: 'string', default: 'http://localhost:4200' },
     DATABASE_URL: { type: 'string' },
+    DATABASE_POOL_MAX: { type: 'number', default: 0 },
     JWT_SECRET: { type: 'string', minLength: 32 },
     JWT_EXPIRES_IN: { type: 'string', default: '8h' },
     SUPABASE_URL: { type: 'string', default: '' },

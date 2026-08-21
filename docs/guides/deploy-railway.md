@@ -99,3 +99,23 @@ Dockerfile Path `/Dockerfile`). Sin esto el sitio queda en blanco.
 - **Alternativa de hosting del frontend**: al ser estático, un CDN (Cloudflare Pages / Vercel) es el
   lugar natural — sin colas de build, gratis, HTTPS/CDN. Evaluado como salida si Railway diera guerra.
 - **`CORS_ORIGIN.trim()`** por robustez.
+
+## Límite de conexiones (EMAXCONNSESSION)
+
+El **pooler en modo sesión de Supabase limita TODO el proyecto a 15 clientes**, y producción y
+desarrollo comparten la misma base. Ese techo no es por proceso: es la suma de todos.
+
+
+
+Con el `max: 10` plano que había antes la cuenta no daba: dos backends solos pedían 20 y el
+pooler empezaba a rechazar con `(EMAXCONNSESSION) max clients reached in session mode`. Todos
+los schedulers fallaban a la vez, lo que **se lee como una caída de la base de datos** y en
+realidad son dos máquinas siendo avariciosas (2026-08-21).
+
+- El tamaño lo elige  por entorno; `DATABASE_POOL_MAX` lo sobreescribe.
+- Los pools de pruebas y scripts van con `max: 2` **explícito**: sin `max`, node-postgres asume
+  **10** y una sola corrida se comía dos tercios del techo sin que nadie lo viera.
+- **La forma de verdad de ganar aire** es subir el techo: Supabase > Settings > Database >
+  Connection pooling > *Pool Size*. Este archivo solo reparte lo que hay.
+- Si vuelve a aparecer: cierra el backend local antes de correr la suite, y comprueba en el log
+  de arranque la línea `database connection established` con su `poolMax`.

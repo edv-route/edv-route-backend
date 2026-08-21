@@ -23,7 +23,7 @@ let pool: pg.Pool;
 let repo: DriversRepository;
 
 before(async () => {
-  pool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
+  pool = new pg.Pool({ connectionString: process.env.DATABASE_URL, max: 2 });
   repo = new DriversRepository(pool);
   // The suite shares its database with the deployed backend: remember how the
   // engine was configured so the after() hook restores THAT, not a guess.

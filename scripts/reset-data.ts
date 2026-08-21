@@ -12,7 +12,7 @@ import pg from 'pg';
  *   node --import tsx scripts/reset-data.ts
  */
 
-const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
+const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL, max: 2 });
 
 // User/driver-scoped tables. CASCADE covers anything else that references them;
 // listing them keeps the intent explicit. Catalogs and admins are NOT here.

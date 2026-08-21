@@ -23,7 +23,7 @@ let token: string;
 before(async () => {
   app = await buildApp();
   await app.ready();
-  pool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
+  pool = new pg.Pool({ connectionString: process.env.DATABASE_URL, max: 2 });
   billing = new BillingRepository(pool);
   const login = await app.inject({
     method: 'POST',

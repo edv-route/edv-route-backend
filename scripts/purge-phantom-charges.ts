@@ -47,7 +47,7 @@ interface Row {
 }
 
 async function main(): Promise<void> {
-  const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
+  const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL, max: 2 });
   try {
     console.log(`\n== Purga de cargos fantasma (${APPLY ? 'APPLY' : 'DRY-RUN'}) ==\n`);
 

@@ -55,7 +55,7 @@ interface PreviewRow {
 }
 
 async function main(): Promise<void> {
-  const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
+  const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL, max: 2 });
   try {
     const tzRow = await pool.query<{ value: unknown }>(
       `SELECT value FROM app_settings WHERE key = 'business_timezone'`,
