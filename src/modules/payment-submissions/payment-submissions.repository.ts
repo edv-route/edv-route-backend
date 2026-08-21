@@ -1,5 +1,5 @@
 import type pg from 'pg';
-import { debtChargePredicate } from '../drivers/billing-sql.js';
+import { debtChargePredicate, deriveDriverState } from '../drivers/billing-sql.js';
 import { withTransaction } from '../../db/tx.js';
 import { notify } from '../notifications/notification-writer.js';
 import type { EnrollmentRepository } from '../drivers/enrollment.repository.js';
@@ -692,6 +692,15 @@ export class PaymentSubmissionsRepository {
           WHERE id = $1`,
         [id, adminId, invoiceId],
       );
+      // The money moved, so his standing changed WITH it. Without this the
+      // engine was the only thing deriving state, up to a minute later, and the
+      // panel showed «En mora · Debe 0 semana(s)» in the meantime — a badge
+      // arguing with the number next to it.
+      const { rows: capRows } = await client.query<{ value: unknown }>(
+        `SELECT value FROM app_settings WHERE key = 'debt_cap_weeks'`,
+      );
+      await deriveDriverState(client, sub.driverId, Number(capRows[0]?.value ?? 2));
+
       // Drop the heads-up the engine scheduled for the week he just paid. A
       // reminder to pay something already settled is exactly the kind of noise
       // that gets an app's notifications muted for good - and once muted, the

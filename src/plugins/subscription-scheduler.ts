@@ -48,10 +48,19 @@ export default fp(
         // their tariff clock is shifted forward on resume, not consumed here)
         const advanced = await app.db.query<{ id: string; driver_id: string }>(
           `UPDATE driver_subscriptions ds SET
+             status = 'active',
              current_period_start = sp.period_start,
              current_period_end = sp.period_end
            FROM subscription_payments sp
-           WHERE ds.status = 'active'
+           -- 'expired' is included, and that is the fix (2026-08-21): with the
+           -- debt engine on, coverage lives in subscription_payments, not in
+           -- current_period_end. A weekly subscription expired BEFORE the engine
+           -- was switched on stayed expired forever — this step only looked at
+           -- 'active' rows, and step 2 only expires. The driver kept paying and
+           -- the engine kept billing him correctly, but his tariff card read
+           -- "Vencida" while his coverage ran for another week.
+           -- The paid charge covering NOW is what proves it should be active.
+           WHERE ds.status IN ('active', 'expired')
              AND ds.current_period_end <= now()
              AND sp.driver_subscription_id = ds.id
              AND sp.status = 'paid'

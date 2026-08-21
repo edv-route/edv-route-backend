@@ -1425,9 +1425,20 @@ estaba al día y ahí terminaba (lo encontró Luis probando el APK 10).
 | El canal de la app acepta ahora `advance` (antes solo `debt` y `enroll`) | La lógica ya existía y estaba probada — `prepareAdvanceContext` valida aprobado, tarifa vigente y sin cambio programado. Era abrir la puerta, no escribir el motor |
 | `change_plan` **sigue siendo solo-admin** | Elegir otra tarifa es una decisión comercial, no un pago |
 | **Guarda de doble cobro** en `prepareAdvanceContext`: se rechaza el adelanto si solaparía un cargo de período ya emitido y sin pagar | `settleAdvanceOnClient` encadena N semanas NUEVAS después de la última pagada; **no consume** un cargo que el motor ya emitió. Adelantar con la semana siguiente emitida y pendiente producía **dos cargos por la misma semana**, y el segundo pasaba a `overdue` días después — deuda fantasma a quien acababa de pagar un mes. El motor ya protegía el orden inverso (salta una semana ya cubierta); esto cierra la dirección que faltaba |
-| Tope propio de la app: **12 semanas** (`MAX_APP_ADVANCE_WEEKS`), frente al respaldo de 520 del admin | Dinero cobrado por un servicio aún no prestado hay que devolverlo si el afiliado se va. Tres meses es generoso para quien quiere despreocuparse y acota la exposición. Vive junto a su hermano en `payment-submissions.service.ts` para que los dos límites se lean juntos |
-| El tope viaja en **`/me/account`** (`maxAdvanceWeeks`), no codificado en la app | La rueda no puede ofrecer un número que el servidor rechazaría. La app no lleva copias de reglas de negocio |
+| **SIN tope de semanas** (revertido el mismo día) | Puse un límite de 12 semanas y **contradecía una decisión ya tomada**: adelantar es libre, no hay tope de producto. Queda solo el respaldo técnico de 520 contra un dedazo (99999 semanas), que ya existía |
 | En la app es un **enlace discreto**, no un botón, y **solo aparece sin deuda** (decisión de Luis) | El que debe ve un botón sólido «Pagar»; el que está al día, una línea callada. El peso visual dice la urgencia y nadie confunde una cosa con la otra — sin leer una palabra |
 | Las semanas se eligen en una hoja **antes** de la pantalla de pago, y ahí ya no se pueden cambiar | «Adelantar» no significa nada hasta saber cuánto. Y volver a ofrecer el selector dejaría cambiar lo ya decidido contra un total que se le acaba de cotizar |
 | La hoja destaca **hasta cuándo queda cubierto**, no el monto | Es lo que al chofer le importa de adelantar; el total es el medio, no el fin |
 | El modal de captura de pago es **el mismo**, sin tocar | Un segundo formulario de pago sería una tercera copia de la misma revisión (ya pasó con las solicitudes) |
+
+## 2026-08-21 — Estados que se contradecían en pantalla
+
+Tres fallos que Luis vio en el perfil del panel: «En mora» con **0 semanas de deuda**, «Tarifa
+Semanal **Vencida**» con cobertura pagada hasta el 24, y el aviso del cobro sin decir la consecuencia.
+
+| Decisión | Motivo |
+|---|---|
+| Aprobar un pago **deriva el estado del chofer en la misma transacción** (`deriveDriverState`) | El motor era el único que lo hacía, una vez por minuto. Durante ese minuto el panel mostraba «En mora · Debe 0 semana(s) de tarifa»: una etiqueta discutiendo con el número que tenía al lado. El motor sigue siendo la autoridad de las transiciones por **tiempo**; esto cierra la de **evento**, con la misma regla para que no puedan discrepar |
+| La regla vive en `billing-sql.ts`, no copiada en el repositorio de pagos | Es la misma pregunta que responde el motor. Una segunda copia deriva el día que se toque una de las dos — exactamente lo que ya justificaba ese archivo |
+| El scheduler de tarifas **rescata** suscripciones `expired` con cobertura pagada viva (antes solo avanzaba las `active`) | Con el motor de deuda encendido la cobertura vive en `subscription_payments`, no en `current_period_end`. Una tarifa semanal expirada **antes** de encender el motor se quedaba expirada **para siempre**: el paso que avanza el período solo miraba `active` y el que expira solo expira. El chofer pagaba, el motor le facturaba bien, y su tarjeta decía «Vencida» mientras tenía otra semana cubierta |
+| El aviso `charge_issued` ahora nombra la **factura** y el **día en que entra en mora** | «Se emitió tu semana» le dejaba a él deducir la consecuencia. Ahora dice las tres cosas de golpe: que la factura existe, cuánto es y hasta cuándo tiene |

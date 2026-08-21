@@ -6,7 +6,6 @@ import { ApplicationsService } from '../drivers/applications.service.js';
 import type { VehicleSubmission } from '../drivers/applications.service.js';
 import { PaymentSubmissionsRepository } from '../payment-submissions/payment-submissions.repository.js';
 import {
-  MAX_APP_ADVANCE_WEEKS,
   PaymentSubmissionsService,
   type UploadedFile,
 } from '../payment-submissions/payment-submissions.service.js';
@@ -145,14 +144,6 @@ const driverAuthRoutes: FastifyPluginAsync = async (app) => {
     const rawPeriods = fields['periods'] ? Number(fields['periods']) : null;
     if (rawPeriods !== null && (!Number.isInteger(rawPeriods) || rawPeriods < 1)) {
       throw app.httpErrors.badRequest('El número de semanas no es válido');
-    }
-    // The APP's own ceiling, far below the admin's backstop (520 weeks). Money
-    // taken for a service not yet rendered has to be given back if the affiliate
-    // leaves, so the driver's self-service limit is deliberately short.
-    if (purpose === 'advance' && rawPeriods !== null && rawPeriods > MAX_APP_ADVANCE_WEEKS) {
-      throw app.httpErrors.badRequest(
-        `Puedes adelantar hasta ${MAX_APP_ADVANCE_WEEKS} semanas`,
-      );
     }
     const periods = rawPeriods;
     // Gate (solicitudes-app): an applicant cannot pay yet; paying requires

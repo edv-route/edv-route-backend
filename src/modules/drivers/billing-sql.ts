@@ -91,3 +91,56 @@ export const paidUntilSql = (subscriptionRef: string): string => `
    WHERE spp.driver_subscription_id = ${subscriptionRef} AND spp.status = 'paid'
      AND spp.charge_kind::text = 'period')
 `;
+
+/**
+ * Re-derives ONE driver's lifecycle state from his debt, right after the money
+ * moved, on the caller's transaction client.
+ *
+ * The debt engine already does this for everyone once a minute (step 4 of its
+ * tick), and that was the only place doing it — so for up to a minute after an
+ * admin approved a payment the panel showed «En mora · Debe 0 semana(s) de
+ * tarifa», a badge contradicting the very number beside it (found 2026-08-21).
+ * The engine stays the authority for time-driven transitions; this closes the
+ * gap for the event-driven one, using the SAME rule so the two cannot disagree.
+ *
+ * Deliberately narrow: it only moves a driver ALREADY in the engine's orbit
+ * (approved/overdue/penalized) and never touches a `pending`, `paused` or
+ * `suspended` one — those are the admin's, not the debt's. A driver who settled
+ * but still has a reactivation moment ahead stays penalized until it arrives.
+ */
+export async function deriveDriverState(
+  executor: { query: (text: string, values: unknown[]) => Promise<unknown> },
+  driverId: string,
+  capWeeks: number,
+): Promise<void> {
+  await executor.query(
+    `WITH debt AS (
+       SELECT count(*)::int AS weeks
+         FROM subscription_payments sp
+         JOIN driver_subscriptions ds ON ds.id = sp.driver_subscription_id
+        WHERE ds.driver_id = $1
+          AND sp.status = 'overdue'
+          AND (sp.charge_kind <> 'period' OR sp.period_start >= COALESCE(
+                (SELECT max(cov.period_end) FROM subscription_payments cov
+                  WHERE cov.driver_subscription_id = sp.driver_subscription_id
+                    AND cov.status = 'paid' AND cov.charge_kind = 'period'),
+                sp.period_start))
+     )
+     UPDATE drivers d
+        SET status = (CASE
+              WHEN (SELECT weeks FROM debt) = 0
+                   AND (d.reactivates_at IS NULL OR d.reactivates_at <= now()) THEN 'approved'
+              WHEN (SELECT weeks FROM debt) = 0 THEN 'penalized'
+              WHEN (SELECT weeks FROM debt) <= $2 THEN 'overdue'
+              ELSE 'penalized'
+            END)::driver_status,
+            reactivates_at = CASE
+              WHEN (SELECT weeks FROM debt) = 0
+                   AND (d.reactivates_at IS NULL OR d.reactivates_at <= now()) THEN NULL
+              ELSE d.reactivates_at END
+      WHERE d.user_id = $1
+        AND d.status::text IN ('approved', 'overdue', 'penalized')
+        AND d.tariff_start_set_at IS NOT NULL`,
+    [driverId, capWeeks],
+  );
+}

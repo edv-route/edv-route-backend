@@ -2,7 +2,6 @@ import { randomUUID } from 'node:crypto';
 import argon2 from 'argon2';
 import { writeAudit } from '../audit-logs/audit-writer.js';
 import { NotificationsRepository } from '../notifications/notifications.repository.js';
-import { MAX_APP_ADVANCE_WEEKS } from '../payment-submissions/payment-submissions.service.js';
 import {
   MAX_FILE_BYTES,
   extensionFor,
@@ -114,12 +113,6 @@ export interface AppAccount {
    * behaved).
    */
   unreadNotifications: number;
-  /**
-   * Weeks he may prepay from the app. Sent by the server so the wheel can never
-   * offer a number the backend would refuse — the app must not carry its own
-   * copy of a business limit.
-   */
-  maxAdvanceWeeks: number;
 }
 
 /** What a driver may change about himself (see updateOwnProfile). */
@@ -511,7 +504,6 @@ export class DriverAuthService {
       capWeeks: row.capWeeks,
       planPriceUsd: row.planPriceUsd,
       unreadNotifications: await this.notifications.unreadCount(userId),
-      maxAdvanceWeeks: MAX_APP_ADVANCE_WEEKS,
     };
   }
 

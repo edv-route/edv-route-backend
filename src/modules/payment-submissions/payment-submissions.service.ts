@@ -22,15 +22,6 @@ const SIGNED_URL_TTL_SECONDS = 60;
 // only a technical guard against a typo (e.g. 99999 weeks).
 const MAX_ADVANCE_WEEKS = 520;
 
-/**
- * Weeks a DRIVER may prepay himself from the app. The 520 above is the admin
- * backstop (ten years); this is the product limit. Three months is generous for
- * someone who wants to stop worrying, and bounds what the guild would have to
- * refund if he leaves. It lives here, beside its sibling, so the two limits are
- * read together and neither drifts.
- */
-export const MAX_APP_ADVANCE_WEEKS = 12;
-
 const PERIOD_INTERVALS: Record<string, string> = {
   daily: '1 day',
   weekly: '7 days',

@@ -77,9 +77,12 @@ export type MessageInput =
 export function renderMessage(input: MessageInput): RenderedMessage {
   switch (input.type) {
     case 'charge_issued':
+      // Says the three things he needs at once: the invoice exists, what it
+      // costs, and the DAY it turns into arrears. The deadline is the point —
+      // "se emitió tu semana" alone left him to work out the consequence.
       return {
         title: 'Nuevo cobro semanal',
-        body: `Se emitió tu semana del ${longDate(input.weekStart)} por ${money(input.amountUsd)}. Ya puedes reportar el pago desde la app.`,
+        body: `Se generó tu factura de ${money(input.amountUsd)} por la semana que empieza el ${longDate(input.weekStart)}. Si no la pagas antes de ese día, entras en mora.`,
       };
     case 'charge_reminder':
       return {
