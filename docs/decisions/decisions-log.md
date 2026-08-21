@@ -1414,3 +1414,20 @@ sistema **funciona entero sin push**: solo falta Firebase (Fase 4), que es puro 
 | Al cerrar sesión se revoca en el servidor **y** se borra el token local | Dos puertas: la primera impide que se le siga enviando; la segunda hace que el siguiente chofer reciba un token **nuevo** en vez de heredar este |
 | El registro se dispara en `DriverRootScreen`, no en el shell | Un `applicant` nunca llega al shell — y es justo quien espera el veredicto de su solicitud. Ese es el único punto por el que pasa toda sesión autenticada |
 | Todo fallo del push es **silencioso** para el chofer | Un teléfono sin Play Services o con el permiso negado tiene que seguir usando la app igual: la bandeja es su canal y no depende de ningún proveedor |
+
+## 2026-08-21 — Adelantar pagos desde la app
+
+Un afiliado con deuda **cero** no tenía forma de pagar nada desde la app: la pantalla decía que
+estaba al día y ahí terminaba (lo encontró Luis probando el APK 10).
+
+| Decisión | Motivo |
+|---|---|
+| El canal de la app acepta ahora `advance` (antes solo `debt` y `enroll`) | La lógica ya existía y estaba probada — `prepareAdvanceContext` valida aprobado, tarifa vigente y sin cambio programado. Era abrir la puerta, no escribir el motor |
+| `change_plan` **sigue siendo solo-admin** | Elegir otra tarifa es una decisión comercial, no un pago |
+| **Guarda de doble cobro** en `prepareAdvanceContext`: se rechaza el adelanto si solaparía un cargo de período ya emitido y sin pagar | `settleAdvanceOnClient` encadena N semanas NUEVAS después de la última pagada; **no consume** un cargo que el motor ya emitió. Adelantar con la semana siguiente emitida y pendiente producía **dos cargos por la misma semana**, y el segundo pasaba a `overdue` días después — deuda fantasma a quien acababa de pagar un mes. El motor ya protegía el orden inverso (salta una semana ya cubierta); esto cierra la dirección que faltaba |
+| Tope propio de la app: **12 semanas** (`MAX_APP_ADVANCE_WEEKS`), frente al respaldo de 520 del admin | Dinero cobrado por un servicio aún no prestado hay que devolverlo si el afiliado se va. Tres meses es generoso para quien quiere despreocuparse y acota la exposición. Vive junto a su hermano en `payment-submissions.service.ts` para que los dos límites se lean juntos |
+| El tope viaja en **`/me/account`** (`maxAdvanceWeeks`), no codificado en la app | La rueda no puede ofrecer un número que el servidor rechazaría. La app no lleva copias de reglas de negocio |
+| En la app es un **enlace discreto**, no un botón, y **solo aparece sin deuda** (decisión de Luis) | El que debe ve un botón sólido «Pagar»; el que está al día, una línea callada. El peso visual dice la urgencia y nadie confunde una cosa con la otra — sin leer una palabra |
+| Las semanas se eligen en una hoja **antes** de la pantalla de pago, y ahí ya no se pueden cambiar | «Adelantar» no significa nada hasta saber cuánto. Y volver a ofrecer el selector dejaría cambiar lo ya decidido contra un total que se le acaba de cotizar |
+| La hoja destaca **hasta cuándo queda cubierto**, no el monto | Es lo que al chofer le importa de adelantar; el total es el medio, no el fin |
+| El modal de captura de pago es **el mismo**, sin tocar | Un segundo formulario de pago sería una tercera copia de la misma revisión (ya pasó con las solicitudes) |

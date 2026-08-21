@@ -22,6 +22,15 @@ const SIGNED_URL_TTL_SECONDS = 60;
 // only a technical guard against a typo (e.g. 99999 weeks).
 const MAX_ADVANCE_WEEKS = 520;
 
+/**
+ * Weeks a DRIVER may prepay himself from the app. The 520 above is the admin
+ * backstop (ten years); this is the product limit. Three months is generous for
+ * someone who wants to stop worrying, and bounds what the guild would have to
+ * refund if he leaves. It lives here, beside its sibling, so the two limits are
+ * read together and neither drifts.
+ */
+export const MAX_APP_ADVANCE_WEEKS = 12;
+
 const PERIOD_INTERVALS: Record<string, string> = {
   daily: '1 day',
   weekly: '7 days',
@@ -465,6 +474,40 @@ export class PaymentSubmissionsService {
 
     const timezone = String(await this.getSetting('business_timezone', 'America/Caracas'));
     const engineOn = (await this.getSetting('debt_engine_enabled', false)) === true;
+
+    // DOUBLE-CHARGE GUARD (2026-08-21). `settleAdvanceOnClient` chains N NEW
+    // weeks after the last PAID period; it does not consume a charge the engine
+    // already issued. So an advance taken while next week's charge sits there
+    // unpaid produces TWO charges for that same week — and the second one goes
+    // `overdue` days later, showing debt to someone who had just prepaid a month.
+    //
+    // The engine protects the other order (it skips a week that is already
+    // covered); this closes the remaining direction. Refusing is right: the
+    // driver has something concrete to do first — pay the week he already owes.
+    const { rows: overlap } = await this.app.db.query<{ pending: string }>(
+      `SELECT to_char(sp.period_start AT TIME ZONE $3, 'DD/MM/YYYY') AS pending
+         FROM subscription_payments sp
+        WHERE sp.driver_subscription_id = $1
+          AND sp.charge_kind = 'period'
+          AND sp.status IN ('pending', 'overdue')
+          AND sp.period_start < COALESCE(
+                (SELECT max(period_end) FROM subscription_payments
+                  WHERE driver_subscription_id = $1 AND status = 'paid'),
+                sp.period_start) + ($2::interval * $4)
+        ORDER BY sp.period_start LIMIT 1`,
+      [
+        sub.id,
+        PERIOD_INTERVALS[sub.billingPeriod] ?? '7 days',
+        timezone,
+        periods,
+      ],
+    );
+    if (overlap[0]) {
+      throw this.app.httpErrors.conflict(
+        `Ya tienes emitido el cobro de la semana del ${overlap[0].pending}. Págalo primero y luego adelanta las siguientes.`,
+      );
+    }
+
     const planPriceUsd = Number(sub.priceUsd);
     const context = {
       subscriptionId: sub.id,

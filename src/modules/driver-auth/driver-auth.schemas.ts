@@ -230,6 +230,7 @@ export const appAccountSchema = {
         // The bell's badge. Declared or the serializer drops it in silence — the
         // same trap that already ate `rejected` and `tariffStartsAt`.
         unreadNotifications: { type: 'integer' },
+        maxAdvanceWeeks: { type: 'integer' },
       },
     },
   },
