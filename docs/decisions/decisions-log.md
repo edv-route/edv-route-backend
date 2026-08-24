@@ -1473,3 +1473,24 @@ viernes a las 18:00 no se generó nada (ya existía) y no hubo aviso que mandar.
 Los valores se restauran al terminar, así que el calendario sigue siendo viernes 18:00; pero si
 la suite muere a media corrida quedarían forzados. **Propuesta pendiente de aprobación**: que
 `runDebtEngineTick` acepte limitarse a un chofer y que las pruebas pasen el suyo.
+
+## 2026-08-24 — 📧 El correo pasa a ser obligatorio en los dos canales
+
+> Salió al preparar la recuperación de clave ("olvidé mi contraseña"): si el correo es el canal
+> por el que se recupera una cuenta, un afiliado sin correo no tiene forma de volver a entrar.
+> **Sin migración** (la columna sigue nullable por los registros previos). Verificado: backend
+> `typecheck` · panel `build` · app `analyze` + 65/65 tests.
+
+**El hallazgo.** El panel **ya lo exigía** desde siempre (`required` en el wizard). El agujero
+estaba en el canal de la app, cuyo campo decía literalmente **«Correo (opcional)»** y aceptaba
+vacío — y en el backend, que solo exigía nombre y apellido en ambos canales. De los 10 afiliados
+en producción, el único sin correo (**Yornel Marval**, V-20356841, aprobado) se auto-registró
+desde la app. Ninguno de los otros nueve tiene un correo basura.
+
+| Decisión | Motivo |
+|---|---|
+| El correo es **obligatorio al registrarse en los dos canales**, exigido en el **backend** (`createBody` y `registerBody` lo llevan en `required`) y no solo en cada cliente | Es una regla del **dato**, no del canal: la recuperación de clave no puede depender de por qué puerta entró el afiliado. Se aparta a propósito del precedente de 2026-07-16 (`password`/`nationalId` opcionales en la API, obligatorios en el panel), porque aquel dejaba justo el hueco que produjo este caso |
+| El correo **ya no se puede vaciar** en ninguna edición: `personProperties.email` deja de admitir `null`, y `PATCH /driver-auth/me` rechaza un valor en blanco en vez de convertirlo en `NULL` | Un correo que se puede borrar no es un canal de recuperación fiable. El `\|\| null` del auto-servicio era una puerta silenciosa: el chofer podía quedarse sin salida sin enterarse |
+| El **PATCH sigue siendo parcial** (no lleva `required`): solo se prohíbe **vaciarlo**, no se obliga a mandarlo en cada edición | Nadie debe reescribir el correo del chofer para corregirle el teléfono — mismo criterio que la contraseña desde 2026-07-16 |
+| El panel exige el correo también **al editar** el perfil (antes solo al crear) | La validación decía "editar lo deja opcional para que los registros viejos se puedan guardar", y ese permiso convertía cualquier edición en una forma de dejar a alguien sin correo |
+| ⚠️ **Yornel Marval sigue sin correo** y no se le inventa uno | Es un dato real que solo él o la oficina pueden aportar. En cuanto un admin guarde su perfil el panel se lo exigirá; mientras tanto no podría recuperar su clave |

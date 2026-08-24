@@ -435,7 +435,14 @@ export class DriverAuthService {
 
     if (input.phone !== undefined) changes.phone = input.phone.trim() || null;
     if (input.address !== undefined) changes.address = input.address.trim() || null;
-    if (input.email !== undefined) changes.email = input.email.trim() || null;
+    // Email is the only channel a forgotten password can be recovered through, so
+    // it is never blanked here: the schema keeps it non-empty and a blank-looking
+    // value is rejected rather than quietly turned into NULL.
+    if (input.email !== undefined) {
+      const email = input.email.trim();
+      if (!email) throw httpErrors.badRequest('El correo electrónico es obligatorio');
+      changes.email = email;
+    }
 
     if (input.password !== undefined) {
       if (!input.currentPassword) {

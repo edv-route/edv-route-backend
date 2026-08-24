@@ -171,7 +171,7 @@ export const appSelfUpdateSchema = {
     minProperties: 1,
     properties: {
       phone: { type: 'string', maxLength: 30 },
-      email: { type: 'string', format: 'email', maxLength: 120 },
+      email: { type: 'string', format: 'email', minLength: 5, maxLength: 120 },
       address: { type: 'string', maxLength: 250 },
       password: { type: 'string', minLength: 6, maxLength: 72 },
       currentPassword: { type: 'string', maxLength: 72 },

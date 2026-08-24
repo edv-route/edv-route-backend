@@ -49,7 +49,10 @@ export const personProperties = {
   secondLastName: { type: ['string', 'null'], maxLength: 80, pattern: NAME_PATTERN },
   birthDate: { type: ['string', 'null'], format: 'date' },
   address: { type: ['string', 'null'], maxLength: 500 },
-  email: { type: ['string', 'null'], format: 'email' },
+  // The account's recovery channel ("olvide mi clave"): REQUIRED at registration on
+  // both channels (panel and app) and never blankable afterwards - an address that
+  // can be erased is not a channel anyone can be recovered through.
+  email: { type: 'string', format: 'email', minLength: 5, maxLength: 120 },
   phone: { type: ['string', 'null'], pattern: '^\\+58\\d{10}$' },
   // V = venezolano · E = extranjero · J = jurídico (RIF)
   nationalId: { type: ['string', 'null'], pattern: '^[VEJ]-\\d{5,9}$' },
@@ -74,7 +77,7 @@ const documentItems = {
 
 export const createBody = {
   type: 'object',
-  required: ['firstName', 'lastName'],
+  required: ['firstName', 'lastName', 'email'],
   additionalProperties: false,
   properties: personProperties,
 } as const;
@@ -88,7 +91,7 @@ export const createBody = {
  */
 export const registerBody = {
   type: 'object',
-  required: ['firstName', 'lastName'],
+  required: ['firstName', 'lastName', 'email'],
   additionalProperties: false,
   properties: {
     ...personProperties,

@@ -52,7 +52,7 @@ eliminan: se suspenden.
 | `full_name` | text | no | — | **Compuesto por el backend** en cada escritura (`concat` de las 4 partes); lo consumen todos los listados/auditoría/facturas sin cambios |
 | `birth_date` | date | sí | — | El backend exige **≥ 18 años** al escribirla |
 | `address` | text | sí | — | Dirección de domicilio |
-| `email` | text | sí | — | UNIQUE |
+| `email` | text | sí | — | UNIQUE. **Obligatorio en la API desde 2026-08-24** (canal de recuperación de clave): el registro lo exige en los dos canales y ninguna edición puede vaciarlo. La columna sigue nullable por los registros previos a esa fecha |
 | `phone` | text | sí | — | Canónico **E.164** (`+58…`), compuesto por el backend |
 | `password_hash` | text | sí | — | **Login de la app**: usuario = `national_id` + esta contraseña (argon2id, mínimo 6, admite solo números). NULL = aún no puede entrar a la app (el panel ya la exige al registrar; nullable por los registros previos y el flujo futuro de la app) |
 | `photo_url` | text | sí | — | Supabase Storage (futuro) |
