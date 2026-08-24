@@ -181,9 +181,10 @@ cree configurado y responde *«No pudimos enviar el correo, inténtalo de nuevo 
 un mensaje que invita a reintentar algo que nunca va a funcionar. Sin ellas responde *«El envío de
 correos no está disponible por ahora, comunícate con la oficina»*, que es la verdad y es accionable.
 
-**Estado hoy**: sin proveedor en producción, a la espera de un dominio propio para activar Resend
-(ya implementado y probado). El `SmtpEmailSender` se conserva porque es lo que permite probar el
-flujo de correo **en local**, donde SMTP sí sale.
+**Estado hoy (2026-08-24)**: producción envía por la **API de Gmail** (ver la sección de arriba),
+verificado contra Railway con un correo real. Resend queda listo para el día que exista un dominio
+propio — gana en cuanto se añadan sus dos variables. El `SmtpEmailSender` se conserva porque es lo
+que permite probar el flujo de correo **en local**, donde SMTP sí sale.
 
 **Hoy: Gmail**, porque EDV Route no tiene dominio propio y ningún proveedor envía a destinatarios
 arbitrarios desde un dominio sin verificar. **Solo sirve en local** (ver el aviso de arriba).
