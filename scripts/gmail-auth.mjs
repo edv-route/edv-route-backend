@@ -82,15 +82,13 @@ const server = createServer(async (req, res) => {
   if (error) {
     reply('Autorización cancelada');
     console.error(`\nGoogle respondió: ${error}`);
-    server.close();
-    process.exit(1);
+    return server.close(() => process.exit(1));
   }
 
   if (url.searchParams.get('state') !== state) {
     reply('Respuesta inesperada');
     console.error('\nEl `state` no coincide: se ignora esta respuesta.');
-    server.close();
-    process.exit(1);
+    return server.close(() => process.exit(1));
   }
 
   const token = await fetch('https://oauth2.googleapis.com/token', {
@@ -116,8 +114,7 @@ const server = createServer(async (req, res) => {
           'revoca el acceso en https://myaccount.google.com/permissions y repite.',
       );
     }
-    server.close();
-    process.exit(1);
+    return server.close(() => process.exit(1));
   }
 
   reply('Listo');
@@ -126,8 +123,7 @@ const server = createServer(async (req, res) => {
   console.log('\n=========================================');
   console.log('\nRecuerda: la app OAuth tiene que estar EN PRODUCCIÓN.');
   console.log('En modo Prueba este token caduca a los 7 días.\n');
-  server.close();
-  process.exit(0);
+  server.close(() => process.exit(0));
 });
 
 server.listen(PORT);
