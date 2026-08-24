@@ -16,8 +16,23 @@ export interface DriverTokenPayload {
   type: 'driver';
 }
 
+/**
+ * Minted when a recovery code is verified, and good for ONE thing: setting a
+ * new password. It is not a session - the guards below reject it because its
+ * `type` matches neither audience, which is the point: verifying a 6-digit
+ * code must not hand out something that can read the driver's money.
+ *
+ * `rid` is the reset attempt it belongs to, so the row can veto a replay even
+ * while the signature is still valid (a JWT cannot be revoked; the row can).
+ */
+export interface PasswordResetTokenPayload {
+  sub: string;
+  type: 'pwd_reset';
+  rid: string;
+}
+
 /** Every token this API issues. `type` discriminates the audience. */
-export type AppTokenPayload = AdminTokenPayload | DriverTokenPayload;
+export type AppTokenPayload = AdminTokenPayload | DriverTokenPayload | PasswordResetTokenPayload;
 
 declare module '@fastify/jwt' {
   interface FastifyJWT {
@@ -61,6 +76,8 @@ export default fp(
         }
       };
 
+    // Only the two session audiences get a guard. A 'pwd_reset' token is
+    // verified by hand where it is redeemed, never as a session.
     app.decorate('authenticate', guard('admin'));
     app.decorate('authenticateDriver', guard('driver'));
   },

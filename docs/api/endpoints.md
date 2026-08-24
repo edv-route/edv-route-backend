@@ -60,6 +60,24 @@ por `status` (revisión / bloqueado / home). Lockout por intentos: diferido (no 
 | POST | `/driver-auth/me/device-tokens` | **Registra este teléfono** para recibir push (2026-08-20). `{ token, platform? }` → `204`. **Idempotente por construcción** (upsert sobre el token): la app lo reenvía en cada arranque y cuando FCM lo rota, así que repetir es el caso normal. El `UNIQUE` es del **token**, no del par usuario+token: el token identifica un TELÉFONO, y cuando otro chofer inicia sesión en el mismo aparato FCM le entrega el MISMO token — la fila se reapunta a él en vez de dejar dos dueños |
 | DELETE | `/driver-auth/me/device-tokens` | **Cierre de sesión**: revoca el token de este teléfono (`{ token }` en el cuerpo) → `204`. **No es cosmético**: sin esto el siguiente que use el aparato recibe los montos y los motivos de rechazo del anterior. Acotado al dueño — un token ajeno no se toca, y responde igual sin revelar si existe |
 
+### Recuperación de clave (2026-08-24)
+
+**Los tres únicos endpoints públicos del chofer**, y tienen que serlo: quien olvidó su clave no
+puede autenticarse. El correo del afiliado es la llave, por eso es obligatorio desde el mismo día
+(ver [decisions-log](../decisions/decisions-log.md)).
+
+| Método | Ruta | Descripción |
+|---|---|---|
+| POST | `/driver-auth/password-reset/request` | `{ nationalId, email }` → **204**. Cédula y correo deben apuntar al **mismo** afiliado (un solo `WHERE`, no dos comprobaciones: resolver por cédula y comparar el correo después hace el desajuste observable por tiempo). Emite un código de **6 dígitos**, lo guarda **hasheado con argon2id** —un código de recuperación es una clave temporal: un respaldo filtrado o una línea de log no puede regalar una cuenta— y lo manda por correo. **404** si no coinciden · **429** si pidió más de 5 en una hora o si aún no pasaron 60 s desde el anterior · **503** si no hay proveedor de correo (en producción) o si el envío falla. Si el envío falla el código se **gasta**, para no dejarlo esperando un correo que nunca llegará ni quemarle una petición de su cupo |
+| POST | `/driver-auth/password-reset/verify` | `{ nationalId, email, code }` → `{ resetToken }`. **3 intentos**; el mensaje dice cuántos quedan y al agotarlos gasta el código. El token es de **un solo propósito** (claim `type: 'pwd_reset'` + el id del intento) y dura 10 min: los guards de sesión lo rechazan, así que verificar un código de 6 dígitos **no** entrega nada que pueda leer el dinero del chofer. **400** código errado, vencido o ya usado |
+| POST | `/driver-auth/password-reset/confirm` | `{ resetToken, password }` → **204**. Cambia la clave y **gasta el intento en la misma transacción** (partido en dos, una caída entre medias deja un código verificado todavía usable contra una cuenta cuya clave ya cambió). Rechaza explícitamente un **token de sesión** de chofer: si no, una sesión robada bastaría para cambiar la clave sin conocer la actual — justo lo que `PATCH /me` evita exigiendo `currentPassword`. **401** token inválido, vencido o ya gastado. Manda un correo de aviso del cambio (best-effort: la clave ya cambió, y fallar aquí le diría que no) |
+
+⚠️ **Enumeración de usuarios, asumida a propósito**: responder «los datos no coinciden» le confirma
+a un desconocido que esa cédula existe. Exigir **dos** datos la hace estrecha, y se eligió claridad
+para el chofer que se equivoca al teclear su propia cédula. Cambiar a la respuesta neutra («si los
+datos coinciden, te enviamos un código») es una línea en `password-reset.service.ts` y otra en el
+texto de la app.
+
 **Foto de perfil y avatares.** `users.photo_url` guarda el **path del bucket**, nunca un enlace:
 el binario jamás toca la BD y el bucket sigue privado. Toda salida la firma la API — `/driver-auth/me`
 y el login la firman una a una; el **detalle** y las **listas** del panel (afiliados y solicitudes) la

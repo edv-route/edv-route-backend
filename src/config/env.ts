@@ -27,6 +27,14 @@ export interface AppConfig {
   FIREBASE_PROJECT_ID: string;
   FIREBASE_CLIENT_EMAIL: string;
   FIREBASE_PRIVATE_KEY: string;
+  /**
+   * Transactional email (Resend). Optional like storage and Firebase: without
+   * them the API boots with a log-only sender and password recovery refuses up
+   * front instead of promising a code that never leaves.
+   */
+  RESEND_API_KEY: string;
+  /** Verified sender, e.g. `EDV Route <no-responder@tu-dominio.com>`. */
+  EMAIL_FROM: string;
 }
 
 const schema = {
@@ -56,6 +64,8 @@ const schema = {
     FIREBASE_PROJECT_ID: { type: 'string', default: '' },
     FIREBASE_CLIENT_EMAIL: { type: 'string', default: '' },
     FIREBASE_PRIVATE_KEY: { type: 'string', default: '' },
+    RESEND_API_KEY: { type: 'string', default: '' },
+    EMAIL_FROM: { type: 'string', default: '' },
   },
 } as const;
 

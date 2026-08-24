@@ -8,6 +8,7 @@ import { MAX_FILE_BYTES } from './storage/storage-provider.js';
 import dbPlugin from './plugins/db.js';
 import authPlugin from './plugins/auth.js';
 import storagePlugin from './plugins/storage.js';
+import emailPlugin from './plugins/email.js';
 import subscriptionScheduler from './plugins/subscription-scheduler.js';
 import documentScheduler from './plugins/document-scheduler.js';
 import debtScheduler from './plugins/debt-scheduler.js';
@@ -18,6 +19,7 @@ import healthRoutes from './modules/health/health.routes.js';
 import authRoutes from './modules/auth/auth.routes.js';
 import driverAuthRoutes from './modules/driver-auth/driver-auth.routes.js';
 import notificationsRoutes from './modules/notifications/notifications.routes.js';
+import passwordResetRoutes from './modules/driver-auth/password-reset.routes.js';
 import adminsRoutes from './modules/admins/admins.routes.js';
 import vehicleTypesRoutes from './modules/vehicle-types/vehicle-types.routes.js';
 import requirementsRoutes from './modules/requirements/requirements.routes.js';
@@ -81,6 +83,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(dbPlugin);
   await app.register(authPlugin);
   await app.register(storagePlugin);
+  await app.register(emailPlugin);
   await app.register(subscriptionScheduler);
   await app.register(documentScheduler);
   await app.register(debtScheduler);
@@ -95,6 +98,7 @@ export async function buildApp(): Promise<FastifyInstance> {
       await api.register(authRoutes, { prefix: '/auth' });
       await api.register(driverAuthRoutes, { prefix: '/driver-auth' });
       await api.register(notificationsRoutes, { prefix: '/driver-auth' }); // /me/notifications
+      await api.register(passwordResetRoutes, { prefix: '/driver-auth' }); // /password-reset/*
       await api.register(adminsRoutes, { prefix: '/admins' });
       await api.register(vehicleTypesRoutes, { prefix: '/vehicle-types' });
       await api.register(requirementsRoutes, { prefix: '/requirements' });

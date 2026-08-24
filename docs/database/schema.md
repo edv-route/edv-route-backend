@@ -634,6 +634,31 @@ dos puertas. Índice parcial `(user_id) WHERE revoked_at IS NULL`.
 también acota el conteo sin un contador. Solo JPG/PNG (validado por magic number). Migración
 `1752310000000_vehicle-images`. Endpoints en `/drivers/:id/vehicles/:vehicleId/images`.
 
+## Dominio 10 — Recuperación de clave (mig. `1752460000000`, 2026-08-24)
+
+### `password_reset_codes` — un intento de recuperación
+
+| Columna | Tipo | Null | Default | Descripción |
+|---|---|---|---|---|
+| `id` | bigint | no | identidad | PK |
+| `user_id` | uuid | no | — | FK → `users.id` (**CASCADE**, igual que `notifications`: un intento a medias no es historia que valga la pena dejar huérfana) |
+| `code_hash` | text | no | — | El código de 6 dígitos **hasheado con argon2id**, nunca en claro: es una clave temporal |
+| `expires_at` | timestamptz | no | — | 10 minutos desde la emisión |
+| `attempts` | smallint | no | `0` | Intentos fallidos. El tope (3) vive en el service |
+| `verified_at` | timestamptz | sí | — | El código acertó. Desde aquí el intento autoriza el cambio de clave y nada más |
+| `used_at` | timestamptz | sí | — | Gastado: clave cambiada, intentos agotados, o sustituido por uno nuevo |
+| `requested_ip` | text | sí | — | Rastro del origen; **nunca** identifica al chofer (eso lo hace la fila) |
+| `created_at` | timestamptz | no | `now()` | También alimenta el límite por hora |
+
+**No hay columna `status`**: cada pregunta ya tiene respuesta autoritativa (vencido =
+`expires_at`, gastado = `used_at`, verificado = `verified_at`, sin intentos = `attempts`).
+Una columna de estado sería una segunda opinión capaz de contradecir a las cuatro.
+
+**Índice único parcial `password_reset_codes_one_live_per_user`** (`user_id` WHERE
+`used_at IS NULL`): **un solo intento vivo por chofer**. Pedir un código nuevo invalida el
+anterior; dos códigos vivos duplican la superficie de adivinanza, y esa garantía no puede depender
+de que todos los llamadores futuros se acuerden.
+
 ---
 
 Del modelo v7 quedan pendientes para los módulos siguientes: `clients`, `trip_requests`,

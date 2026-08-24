@@ -1494,3 +1494,33 @@ desde la app. Ninguno de los otros nueve tiene un correo basura.
 | El **PATCH sigue siendo parcial** (no lleva `required`): solo se prohíbe **vaciarlo**, no se obliga a mandarlo en cada edición | Nadie debe reescribir el correo del chofer para corregirle el teléfono — mismo criterio que la contraseña desde 2026-07-16 |
 | El panel exige el correo también **al editar** el perfil (antes solo al crear) | La validación decía "editar lo deja opcional para que los registros viejos se puedan guardar", y ese permiso convertía cualquier edición en una forma de dejar a alguien sin correo |
 | ⚠️ **Yornel Marval sigue sin correo** y no se le inventa uno | Es un dato real que solo él o la oficina pueden aportar. En cuanto un admin guarde su perfil el panel se lo exigirá; mientras tanto no podría recuperar su clave |
+
+## 2026-08-24 — 🔑 «Olvidé mi clave»: recuperación por correo desde la app
+
+> Hasta hoy la clave la ponía un admin y no había forma de recuperarla: el enlace del login
+> mostraba «próximamente». Migración `1752460000000_password-reset-codes` (aditiva) + módulo de
+> correo + 4 pantallas en la app. Verificado: backend `typecheck` y **smoke E2E contra la base
+> real** (los 8 pasos, incluida la clave restaurada intacta) · app `analyze` limpio y **75/75
+> tests**. Pantallas aprobadas por Luis antes de escribir el código.
+
+**El flujo**: cédula + correo → código de 6 dígitos al correo → clave nueva. Tres pasos, tres
+endpoints públicos (los únicos del canal del chofer, porque quien olvidó su clave no puede
+autenticarse).
+
+| Decisión | Motivo |
+|---|---|
+| **Dos datos, no uno**: cédula y correo tienen que apuntar al mismo afiliado, comprobados en un **solo `WHERE`** | La cédula sola es semipública (está en cada documento que entrega) y un correo solo no dice de quién es. Resolver por cédula y comparar el correo después haría el desajuste observable **por tiempo**, y tienta a una comparación «suficientemente parecida» más adelante |
+| El código se guarda **hasheado (argon2id)**, nunca en claro | Un código de recuperación **es una clave temporal**. Un respaldo filtrado o una línea de log descuidada no puede regalar una cuenta. Son cortos y de bajo volumen: el coste del hash es irrelevante aquí |
+| **La fila es toda la máquina de estados**: no hay columna `status` | Cada pregunta ya tiene respuesta autoritativa: vencido = `expires_at`, gastado = `used_at`, verificado = `verified_at`, sin intentos = `attempts`. Una columna de estado sería una segunda opinión capaz de contradecir a las cuatro |
+| **Un solo intento vivo por chofer**, garantizado por índice único parcial | Pedir otro código invalida el anterior. Dos códigos vivos duplican la superficie de adivinanza, y la garantía no puede depender de que todos los llamadores futuros se acuerden |
+| Verificar el código entrega un **token de un solo propósito** (`type: 'pwd_reset'` + id del intento), no una sesión | Los guards de sesión lo rechazan por su `type`, así que acertar 6 dígitos **no** abre la app ni el dinero del chofer. Lleva el id de la fila porque un JWT no se puede revocar y la fila sí: un replay se topa con `used_at` aunque la firma siga viva |
+| `confirm` **rechaza explícitamente un token de sesión** de chofer | Sin esa comprobación, una sesión robada bastaba para cambiar la clave sin conocer la actual — exactamente lo que `PATCH /me` evita exigiendo `currentPassword`. Verificado en el smoke: responde 401 |
+| La clave nueva y el gasto del intento van en **una transacción** | Partido en dos, una caída entre medias deja un código verificado todavía usable contra una cuenta cuya clave ya cambió |
+| **3 intentos, 10 minutos, 5 códigos por hora, 60 s entre envíos** | Un código de 6 dígitos con intentos ilimitados es un código que cualquiera adivina; sin tope por hora, el sistema se convierte en una forma de bombardear el correo de otro. El límite se cuenta **sobre las propias filas**, no en memoria: sobrevive a un reinicio y no hay contador que mantener sincronizado |
+| Si el envío del correo falla, el código se **gasta** | Dejarlo vivo lo deja mirando seis casillas esperando un correo que no va a llegar, y le quema una petición de su cupo por nada |
+| El correo de «tu clave fue cambiada» se manda **después**, best-effort | La clave YA cambió: fallar la petición ahí le diría que no. Es el único modo en que el dueño real se entera de que otro completó la recuperación, cuando hacer algo todavía es barato |
+| **Proveedor de correo detrás de una interfaz** (`EmailSender` + `ResendEmailSender` + `LogEmailSender`), opcional al arrancar | Mismo patrón que `StorageProvider` y `PushSender`: sin credenciales la API arranca igual y el código queda en el log (así se probó el flujo entero antes de contratar nada). En **producción** sin proveedor el endpoint responde 503 en vez de prometer un correo que solo llegó a un archivo de log |
+| **Sin SDK**: Resend por REST con `fetch` nativo | El paquete `resend` envuelve un POST con un bearer. Mismo criterio que ya se aplicó a Supabase Storage y a FCM |
+| El **correo no lleva imágenes**, ni el logo | Los clientes bloquean imágenes remotas por defecto y las incrustadas del todo: el logo se vería como un recuadro roto en la primera apertura, que es peor que no ponerlo. La marca va en el degradado, el dorado y la tipografía, que siempre se pintan |
+| ⚠️ **NO se cierran las sesiones de otros teléfonos** | La pantalla lo prometía en el diseño y se **quitó** en vez de dejarla mintiendo. Los tokens del chofer se validan solo por firma y viven 8 h; cerrarlos exige consultar la BD **en cada petición**, justo lo que no conviene con el techo de 15 conexiones. Va junto con el pendiente de validar el `status` en `authenticateDriver`, que necesita esa misma consulta |
+| El código de 6 casillas **pega el código completo** | Hallado por su propia prueba: `maxLength: 1` instala un formateador que **truncaba el pegado al primer carácter antes** de que corriera el reparto. La gente copia el código del correo, no lo memoriza |

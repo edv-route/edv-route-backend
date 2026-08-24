@@ -89,6 +89,16 @@ src/plugins/notification-dispatcher.ts
                       Reclama el lote con `FOR UPDATE SKIP LOCKED` en una transacción, sin
                       estado `sending`: un caído hace ROLLBACK a `pending` en vez de dejar
                       filas encalladas. Exporta `runNotificationDispatchTick`.
+src/plugins/email.ts  Proveedor de correo (`app.email`). NUNCA null: sin credenciales queda
+                      el enviador de mentira, así que la API arranca igual. `app.emailConfigured`
+                      dice si el correo SALE de verdad; la recuperación de clave lo consulta y
+                      se niega de frente en producción en vez de prometer un correo que solo
+                      llegó a un log.
+src/email/            Abstracción de correo: `EmailSender` (interfaz), `LogEmailSender` (deja
+                      rastro, no envía), `ResendEmailSender` (REST + fetch, sin SDK) y
+                      `email-templates.ts` (la redacción de los correos en un solo sitio, mismo
+                      principio que el catálogo de avisos). Solo lo usa la recuperación de clave
+                      del canal de la app. Mismo patrón que `StorageProvider`.
 src/notifications/    Abstracción de push: `PushSender` (interfaz) y `LogPushSender` (deja
                       rastro, no envía). Firebase es la última fase a propósito — todo el
                       sistema funciona sin él. Mismo patrón que `StorageProvider`.
