@@ -129,6 +129,44 @@ El backend elige proveedor por las variables que encuentre: **Resend** si están
 **SMTP**, si no un enviador de mentira que solo escribe en el log. En el arranque lo dice:
 `email ready · provider: smtp` (o `resend`, o el aviso `email not configured`).
 
+### Gmail por su API HTTP (lo que usa producción)
+
+La salida al bloqueo de SMTP: **la misma cuenta de Gmail, pero hablando por HTTPS** (puerto 443,
+que nadie bloquea). El correo sigue saliendo de los servidores de Google, firmado por Google, así
+que llega a bandeja y el afiliado ve la cuenta de EDV Route como remitente — que es justo lo que un
+proveedor externo reenviando "en nombre de" un `@gmail.com` no puede lograr.
+
+**Configuración en Google Cloud (una sola vez):**
+
+1. [console.cloud.google.com](https://console.cloud.google.com) → crear un proyecto (p. ej. `edv-route-mail`).
+2. **APIs y servicios → Biblioteca** → buscar **Gmail API** → *Habilitar*.
+3. **APIs y servicios → Google Auth Platform** (antes "Pantalla de consentimiento"):
+   - **Branding**: nombre de la app y correo de asistencia.
+   - **Audience**: tipo **Externo**.
+   - ⚠️ **PUBLICAR LA APP** → estado **En producción**. Este es EL paso que importa: en "Prueba"
+     el refresh token **caduca a los 7 días** y el correo se muere cada semana sin causa aparente.
+     Google avisará de que los permisos sensibles "requieren verificación": se puede publicar sin
+     completarla. Lo único que pasa es que al autorizar sale un aviso de app no verificada, que se
+     ve **una vez** y solo lo ve quien autoriza.
+   - **Data Access**: añadir el permiso `https://www.googleapis.com/auth/gmail.send` — solo enviar,
+     no leer nada.
+4. **Clients** → *Crear cliente* → tipo **Aplicación de escritorio**. Da el **ID de cliente** y el
+   **secreto**.
+5. Ponerlos en el `.env` local como `GMAIL_CLIENT_ID` y `GMAIL_CLIENT_SECRET` y ejecutar:
+
+   ```
+   npm run gmail:auth
+   ```
+
+   Abre el consentimiento de Google, recoge la respuesta en `localhost:4599` e imprime el
+   `GMAIL_REFRESH_TOKEN`. Ese token **no caduca** con la app publicada.
+
+**Variables en Railway** (servicio backend): `GMAIL_CLIENT_ID`, `GMAIL_CLIENT_SECRET`,
+`GMAIL_REFRESH_TOKEN` y, opcional, `EMAIL_FROM` = `EDV Route <la-cuenta@gmail.com>` (tiene que ser
+esa misma cuenta; Gmail reescribe cualquier otra). En el arranque: `email ready · provider: gmail-api`.
+
+**Límite**: 500 correos/día de una cuenta gratuita. Con diez afiliados sobra de largo.
+
 ### ⚠️ Railway NO deja salir SMTP (verificado el 2026-08-24)
 
 **Los puertos 25, 465 y 587 están bloqueados** en los planes Hobby y de prueba; SMTP solo está

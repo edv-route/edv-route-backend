@@ -1561,3 +1561,26 @@ mandar correo?» sino «¿deja este hosting salir por ese puerto?».
 | ⚠️ **Las variables `SMTP_*` se quitan de producción**, no se dejan «por si acaso» | Con ellas el backend se cree configurado y responde *«no pudimos enviar, inténtalo de nuevo en unos minutos»*: invita a reintentar algo que **nunca** va a funcionar. Sin ellas dice *«comunícate con la oficina»*, que es la verdad y es accionable. Un mensaje de error que miente es peor que la funcionalidad ausente |
 | **`SmtpEmailSender` se conserva** aunque no sirva en producción | No es código muerto: es lo único que permite probar el flujo de correo **en local**, donde SMTP sí sale — así se verificó de punta a punta (correo real recibido, con su plantilla). Y sirve tal cual el día que se cambie de hosting o se suba a Pro |
 | El día del dominio: **dos variables** y listo | `RESEND_API_KEY` + `EMAIL_FROM`. Resend gana sobre SMTP en el plugin, ya está implementado y probado. No se toca una línea de código, ni del backend ni de la app |
+
+## 2026-08-24 — 📮 Gmail por su API HTTP: el correo sale sin dominio y sin SMTP
+
+> Salida al bloqueo de SMTP de Railway, sin renunciar a que el remitente sea la cuenta de EDV
+> Route. Decisión de Luis: se hace Gmail y **lo ya construido queda como plan B** (Resend para el
+> día del dominio, SMTP para local). Verificado: `typecheck` limpio, el MIME generado revisado a
+> mano y la prioridad de proveedores comprobada arrancando la app en los cuatro casos.
+
+**La distinción que lo resuelve**: que el destinatario *vea* un remitente es trivial —cualquier
+proveedor deja poner el `From`—, pero que el correo *llegue* exige que quien firma el mensaje sea
+quien dice ser. Por eso un proveedor externo reenviando «en nombre de» un `@gmail.com` acaba en
+spam, y por eso Gmail hablando por su propia API no.
+
+| Decisión | Motivo |
+|---|---|
+| **Gmail por HTTPS** (`gmail.googleapis.com`) en vez de SMTP | Es la **misma** cuenta y el mismo Gmail: el correo sale de los servidores de Google firmado por Google. Lo único que cambia es el transporte — puerto 443 en vez de 465, y el 443 no lo bloquea nadie. Resuelve el bloqueo de Railway sin bajar la calidad de entrega ni pagar un dominio |
+| **Sin SDK**, igual que FCM | `googleapis` arrastra un cliente para cada producto de Google para hacer un POST. El intercambio de token es el mismo baile que ya hace `fcm-push-sender.ts`: `fetch` al endpoint de OAuth y el access token cacheado hasta poco antes de caducar |
+| Permiso **`gmail.send` y nada más** | Puede enviar como la cuenta y **no puede leer un solo mensaje**. Es el mínimo con el que esto funciona, y limita el daño si el refresh token se filtra |
+| ⚠️ **La app OAuth tiene que quedar PUBLICADA** («En producción») | En modo «Prueba» Google **caduca el refresh token a los 7 días** y el correo se muere cada semana sin causa aparente. Es la trampa central de este montaje, así que está escrita en el runbook, en `.env.example`, en el script de autorización y en el mensaje de error del propio enviador |
+| Se publica **sin completar la verificación** de Google | La verificación de permisos sensibles existe para apps que autorizan a terceros. Aquí el dueño de la app y el único usuario son la misma cuenta: publicar sin verificar deja un aviso de «app no verificada» que se ve **una vez**, al autorizar. Verificarla costaría días de formularios para no cambiar nada |
+| El `From` se **omite** si no hay `EMAIL_FROM` | Gmail reescribe el remitente a la cuenta autorizada. Poner un nombre suelto sin dirección daría una cabecera malformada; omitirla deja que Gmail la rellene bien |
+| **Orden de preferencia**: Resend → Gmail API → SMTP → log | Resend sigue ganando en cuanto exista el dominio, así que migrar es **añadir** dos variables, no acordarse de quitar tres. SMTP se queda para local, que es donde sí sale |
+| El MIME se arma a mano (`multipart/alternative`, base64 en líneas de 76, asunto en RFC 2047) | Es lo que pide el estándar y lo que Gmail espera en `raw`. Los asuntos llevan acentos: sin codificar la cabecera llegan como galimatías. Revisado generando el mensaje real antes de confiarlo |

@@ -48,6 +48,16 @@ export interface AppConfig {
   SMTP_PORT: number;
   SMTP_USER: string;
   SMTP_PASSWORD: string;
+  /**
+   * Gmail through its HTTP API. This is what production uses: Railway blocks
+   * outbound SMTP below the Pro plan, but nothing blocks HTTPS, and the mail
+   * still leaves Google's servers signed by Google.
+   * The refresh token only stays valid if the OAuth app is PUBLISHED - left in
+   * "Testing" Google expires it after 7 days.
+   */
+  GMAIL_CLIENT_ID: string;
+  GMAIL_CLIENT_SECRET: string;
+  GMAIL_REFRESH_TOKEN: string;
 }
 
 const schema = {
@@ -83,6 +93,9 @@ const schema = {
     SMTP_PORT: { type: 'number', default: 587 },
     SMTP_USER: { type: 'string', default: '' },
     SMTP_PASSWORD: { type: 'string', default: '' },
+    GMAIL_CLIENT_ID: { type: 'string', default: '' },
+    GMAIL_CLIENT_SECRET: { type: 'string', default: '' },
+    GMAIL_REFRESH_TOKEN: { type: 'string', default: '' },
   },
 } as const;
 

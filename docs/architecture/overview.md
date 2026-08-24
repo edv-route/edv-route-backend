@@ -96,6 +96,8 @@ src/plugins/email.ts  Proveedor de correo (`app.email`). NUNCA null: sin credenc
                       llegó a un log.
 src/email/            Abstracción de correo: `EmailSender` (interfaz), `LogEmailSender` (deja
                       rastro, no envía), `ResendEmailSender` (REST + fetch, sin SDK),
+                      `GmailApiEmailSender` (Gmail por HTTPS con OAuth2 — **lo que usa
+                      producción**, porque Railway bloquea el SMTP saliente),
                       `SmtpEmailSender` (nodemailer — el único sitio donde el proyecto toma
                       una librería de protocolo, porque SMTP no es un POST; en uso hoy contra
                       Gmail mientras no haya dominio propio) y

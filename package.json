@@ -22,7 +22,8 @@
     "db:reanchor": "node --import tsx scripts/reanchor-weekly.ts",
     "db:purge-phantom": "node --import tsx scripts/purge-phantom-charges.ts",
     "db:seed-demo": "node --import tsx scripts/seed-demo-drivers.ts",
-    "db:reset": "node --import tsx scripts/reset-data.ts"
+    "db:reset": "node --import tsx scripts/reset-data.ts",
+    "gmail:auth": "node --env-file=.env scripts/gmail-auth.mjs"
   },
   "keywords": [
     "fastify",
