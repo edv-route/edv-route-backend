@@ -129,8 +129,26 @@ El backend elige proveedor por las variables que encuentre: **Resend** si están
 **SMTP**, si no un enviador de mentira que solo escribe en el log. En el arranque lo dice:
 `email ready · provider: smtp` (o `resend`, o el aviso `email not configured`).
 
+### ⚠️ Railway NO deja salir SMTP (verificado el 2026-08-24)
+
+**Los puertos 25, 465 y 587 están bloqueados** en los planes Hobby y de prueba; SMTP solo está
+disponible a partir de **Pro** (20 USD/mes). Se comprobó en vivo: las mismas credenciales de Gmail
+autentican sin problema desde una máquina local y **agotan el tiempo de espera desde Railway**.
+
+Consecuencia práctica: **el correo desde aquí tiene que salir por una API HTTPS** (puerto 443, que
+nadie bloquea), no por SMTP. Resend, Brevo, Mailgun y Postmark funcionan así; Gmail no.
+
+⚠️ **No dejes las variables `SMTP_*` puestas en Railway "por si acaso"**: con ellas el backend se
+cree configurado y responde *«No pudimos enviar el correo, inténtalo de nuevo en unos minutos»* —
+un mensaje que invita a reintentar algo que nunca va a funcionar. Sin ellas responde *«El envío de
+correos no está disponible por ahora, comunícate con la oficina»*, que es la verdad y es accionable.
+
+**Estado hoy**: sin proveedor en producción, a la espera de un dominio propio para activar Resend
+(ya implementado y probado). El `SmtpEmailSender` se conserva porque es lo que permite probar el
+flujo de correo **en local**, donde SMTP sí sale.
+
 **Hoy: Gmail**, porque EDV Route no tiene dominio propio y ningún proveedor envía a destinatarios
-arbitrarios desde un dominio sin verificar.
+arbitrarios desde un dominio sin verificar. **Solo sirve en local** (ver el aviso de arriba).
 
 | Variable | Valor |
 |---|---|

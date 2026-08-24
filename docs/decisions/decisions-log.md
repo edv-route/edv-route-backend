@@ -1542,3 +1542,22 @@ autenticarse).
 | Con SMTP, `EMAIL_FROM` vacío cae en `SMTP_USER` | Gmail reescribe el remitente a la cuenta autenticada, así que un `EMAIL_FROM` distinto se enviaría en silencio bajo otra dirección. Igualarlos evita esa sorpresa |
 | La contraseña es una **contraseña de aplicación** de Google, nunca la real | Exige verificación en 2 pasos, se revoca sola sin cambiar la clave de la cuenta, y no da acceso al buzón |
 | Tiempos de espera cortos (10 s conexión, 20 s socket) | La pantalla del chofer está esperando esta llamada: mejor un fallo claro que pueda reintentar que una petición colgada hasta que el cliente se rinda |
+
+## 2026-08-24 — ⚠️ Railway no deja salir SMTP: el correo queda a la espera de un dominio
+
+> Cierre del bloque de recuperación de clave. Verificado en vivo, no leído en un foro: las
+> **mismas** credenciales de Gmail autentican desde una máquina local y agotan el tiempo de espera
+> desde Railway.
+
+**El hallazgo.** Railway **bloquea los puertos 25, 465 y 587** en los planes Hobby y de prueba;
+SMTP solo existe a partir de Pro (20 USD/mes). Recomendar Gmail sin comprobar antes la red de
+salida del hosting fue un error de análisis: la pregunta correcta no era «¿puede este proveedor
+mandar correo?» sino «¿deja este hosting salir por ese puerto?».
+
+| Decisión | Motivo |
+|---|---|
+| **El correo de producción tiene que ir por una API HTTPS**, no por SMTP | El puerto 443 no lo bloquea nadie. Resend, Brevo, Mailgun y Postmark funcionan así; Gmail no. Es una restricción del **hosting**, no del proveedor de correo |
+| **Se deja parado hasta tener dominio propio** (decisión de Luis) | Las alternativas eran Brevo con remitente `@gmail.com` —que Gmail archiva como spam, y los diez afiliados son de Gmail, o sea el peor caso— o Railway Pro a 240 USD/año para ahorrarse los ~12 de un dominio. Ninguna compra nada frente a esperar |
+| ⚠️ **Las variables `SMTP_*` se quitan de producción**, no se dejan «por si acaso» | Con ellas el backend se cree configurado y responde *«no pudimos enviar, inténtalo de nuevo en unos minutos»*: invita a reintentar algo que **nunca** va a funcionar. Sin ellas dice *«comunícate con la oficina»*, que es la verdad y es accionable. Un mensaje de error que miente es peor que la funcionalidad ausente |
+| **`SmtpEmailSender` se conserva** aunque no sirva en producción | No es código muerto: es lo único que permite probar el flujo de correo **en local**, donde SMTP sí sale — así se verificó de punta a punta (correo real recibido, con su plantilla). Y sirve tal cual el día que se cambie de hosting o se suba a Pro |
+| El día del dominio: **dos variables** y listo | `RESEND_API_KEY` + `EMAIL_FROM`. Resend gana sobre SMTP en el plugin, ya está implementado y probado. No se toca una línea de código, ni del backend ni de la app |
