@@ -1584,3 +1584,23 @@ spam, y por eso Gmail hablando por su propia API no.
 | El `From` se **omite** si no hay `EMAIL_FROM` | Gmail reescribe el remitente a la cuenta autorizada. Poner un nombre suelto sin dirección daría una cabecera malformada; omitirla deja que Gmail la rellene bien |
 | **Orden de preferencia**: Resend → Gmail API → SMTP → log | Resend sigue ganando en cuanto exista el dominio, así que migrar es **añadir** dos variables, no acordarse de quitar tres. SMTP se queda para local, que es donde sí sale |
 | El MIME se arma a mano (`multipart/alternative`, base64 en líneas de 76, asunto en RFC 2047) | Es lo que pide el estándar y lo que Gmail espera en `raw`. Los asuntos llevan acentos: sin codificar la cabecera llegan como galimatías. Revisado generando el mensaje real antes de confiarlo |
+
+## 2026-08-24 — 🎨 El avatar del remitente: foto de perfil sí, BIMI no
+
+> Pregunta de Luis al ver que Farmatodo muestra su logo en Gmail. Evaluado, **no implementado**.
+
+Son **dos caminos distintos** que se confunden con facilidad:
+
+| Camino | Qué hace falta | Veredicto |
+|---|---|---|
+| **Foto de perfil de la cuenta de Google** | Subir una imagen en la cuenta. Gratis | ✅ **Recomendado.** Pendiente de hacer |
+| **BIMI** (el logo *verificado*) | Dominio propio + DMARC en `quarantine`/`reject` + **certificado de marca de 650–1.750 USD/año** | ❌ Fuera de alcance |
+
+**Fuera de alcance por precio, no por dificultad**: ningún emisor entrega un VMC o CMC gratis, y el
+VMC además exige marca registrada. Con diez afiliados no compensa. Tendría sentido el día que EDV
+Route mande miles de correos y la suplantación sea un riesgo real.
+
+La foto de perfil consigue casi lo mismo a la vista del destinatario por cero euros — con el matiz
+honesto de que Google decide cuándo mostrarla según el historial entre cuentas y su propia caché,
+así que no es una garantía absoluta. La imagen buena ya existe:
+`edv-route-mobile/assets/images/edv_icon.png` (cuadrada, 1024×1024, fondo de marca).
