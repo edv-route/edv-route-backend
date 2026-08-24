@@ -33,8 +33,21 @@ export interface AppConfig {
    * front instead of promising a code that never leaves.
    */
   RESEND_API_KEY: string;
-  /** Verified sender, e.g. `EDV Route <no-responder@tu-dominio.com>`. */
+  /**
+   * Verified sender, e.g. `EDV Route <no-responder@tu-dominio.com>`. With SMTP
+   * against Gmail it must be the authenticated account itself (Gmail rewrites
+   * anything else); left empty there, SMTP_USER is used.
+   */
   EMAIL_FROM: string;
+  /**
+   * Plain SMTP, the fallback while EDV Route has no domain of its own: no ESP
+   * sends to arbitrary recipients from an unverified domain. Resend wins when
+   * both are configured.
+   */
+  SMTP_HOST: string;
+  SMTP_PORT: number;
+  SMTP_USER: string;
+  SMTP_PASSWORD: string;
 }
 
 const schema = {
@@ -66,6 +79,10 @@ const schema = {
     FIREBASE_PRIVATE_KEY: { type: 'string', default: '' },
     RESEND_API_KEY: { type: 'string', default: '' },
     EMAIL_FROM: { type: 'string', default: '' },
+    SMTP_HOST: { type: 'string', default: '' },
+    SMTP_PORT: { type: 'number', default: 587 },
+    SMTP_USER: { type: 'string', default: '' },
+    SMTP_PASSWORD: { type: 'string', default: '' },
   },
 } as const;
 

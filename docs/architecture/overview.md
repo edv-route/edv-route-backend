@@ -95,7 +95,10 @@ src/plugins/email.ts  Proveedor de correo (`app.email`). NUNCA null: sin credenc
                       se niega de frente en producción en vez de prometer un correo que solo
                       llegó a un log.
 src/email/            Abstracción de correo: `EmailSender` (interfaz), `LogEmailSender` (deja
-                      rastro, no envía), `ResendEmailSender` (REST + fetch, sin SDK) y
+                      rastro, no envía), `ResendEmailSender` (REST + fetch, sin SDK),
+                      `SmtpEmailSender` (nodemailer — el único sitio donde el proyecto toma
+                      una librería de protocolo, porque SMTP no es un POST; en uso hoy contra
+                      Gmail mientras no haya dominio propio) y
                       `email-templates.ts` (la redacción de los correos en un solo sitio, mismo
                       principio que el catálogo de avisos). Solo lo usa la recuperación de clave
                       del canal de la app. Mismo patrón que `StorageProvider`.

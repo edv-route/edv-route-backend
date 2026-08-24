@@ -1524,3 +1524,21 @@ autenticarse).
 | El **correo no lleva imágenes**, ni el logo | Los clientes bloquean imágenes remotas por defecto y las incrustadas del todo: el logo se vería como un recuadro roto en la primera apertura, que es peor que no ponerlo. La marca va en el degradado, el dorado y la tipografía, que siempre se pintan |
 | ⚠️ **NO se cierran las sesiones de otros teléfonos** | La pantalla lo prometía en el diseño y se **quitó** en vez de dejarla mintiendo. Los tokens del chofer se validan solo por firma y viven 8 h; cerrarlos exige consultar la BD **en cada petición**, justo lo que no conviene con el techo de 15 conexiones. Va junto con el pendiente de validar el `status` en `authenticateDriver`, que necesita esa misma consulta |
 | El código de 6 casillas **pega el código completo** | Hallado por su propia prueba: `maxLength: 1` instala un formateador que **truncaba el pegado al primer carácter antes** de que corriera el reparto. La gente copia el código del correo, no lo memoriza |
+
+## 2026-08-24 — 📧 Los correos salen por Gmail mientras no haya dominio propio
+
+> EDV Route todavía no tiene dominio, y **ningún proveedor de correo envía a destinatarios
+> arbitrarios desde un dominio sin verificar** — Resend incluido: sin dominio solo deja escribirte
+> a ti mismo. Decisión de Luis tras ver las opciones. Aditivo: `SmtpEmailSender` junto al de
+> Resend, ambos detrás de `EmailSender`. Verificado: `typecheck` limpio y los tres casos de
+> selección de proveedor comprobados arrancando la app.
+
+| Decisión | Motivo |
+|---|---|
+| **Gmail por SMTP**, no un proveedor que acepte remitentes sin dominio (Brevo lo permite) | Enviando por el SMTP de Gmail el correo **sale de verdad de los servidores de Google, firmado por Google**, así que autentica bien y llega a bandeja. Un proveedor que reenvía «en nombre de» una dirección `@gmail.com` **no alinea la firma DKIM** y Gmail lo archiva como spam — y un código de recuperación en spam es un código que no se envió |
+| El límite de 500 correos/día **no aprieta** | Diez afiliados; aunque cada uno pidiera recuperar su clave dos veces al mes son ~20 correos. La advertencia habitual de «no uses Gmail para transaccional» va por volumen y por reputación compartida, y a esta escala no aplica |
+| Se añade **`nodemailer`**, apartándose del «sin SDK» del proyecto | Resend, FCM y Supabase Storage son **un POST autenticado** cada uno: ahí el SDK no compraba nada. SMTP es un handshake TLS, un intercambio de autenticación y un diálogo de comandos. Escribir eso a mano sería el error, no la disciplina |
+| **Resend gana si están las dos configuraciones** | Migrar el día que exista el dominio es **añadir dos variables**, no acordarse de quitar otras dos. El código no se toca: los dos enviadores viven detrás de la misma interfaz, que es exactamente para lo que se creó |
+| Con SMTP, `EMAIL_FROM` vacío cae en `SMTP_USER` | Gmail reescribe el remitente a la cuenta autenticada, así que un `EMAIL_FROM` distinto se enviaría en silencio bajo otra dirección. Igualarlos evita esa sorpresa |
+| La contraseña es una **contraseña de aplicación** de Google, nunca la real | Exige verificación en 2 pasos, se revoca sola sin cambiar la clave de la cuenta, y no da acceso al buzón |
+| Tiempos de espera cortos (10 s conexión, 20 s socket) | La pantalla del chofer está esperando esta llamada: mejor un fallo claro que pueda reintentar que una petición colgada hasta que el cliente se rinda |

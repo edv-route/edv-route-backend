@@ -122,3 +122,26 @@ realidad son dos máquinas siendo avariciosas (2026-08-21).
   Connection pooling > *Pool Size*. Este archivo solo reparte lo que hay.
 - Si vuelve a aparecer: cierra el backend local antes de correr la suite, y comprueba en el log
   de arranque la línea `database connection established` con su `poolMax`.
+
+## Correo (recuperación de clave)
+
+El backend elige proveedor por las variables que encuentre: **Resend** si están las suyas, si no
+**SMTP**, si no un enviador de mentira que solo escribe en el log. En el arranque lo dice:
+`email ready · provider: smtp` (o `resend`, o el aviso `email not configured`).
+
+**Hoy: Gmail**, porque EDV Route no tiene dominio propio y ningún proveedor envía a destinatarios
+arbitrarios desde un dominio sin verificar.
+
+| Variable | Valor |
+|---|---|
+| `SMTP_HOST` | `smtp.gmail.com` |
+| `SMTP_PORT` | `587` |
+| `SMTP_USER` | la cuenta de Gmail de EDV Route |
+| `SMTP_PASSWORD` | la **contraseña de aplicación** de Google (16 caracteres, sin espacios), nunca la clave real de la cuenta |
+| `EMAIL_FROM` | opcional: `EDV Route <la-misma-cuenta@gmail.com>`. Gmail reescribe el remitente a la cuenta autenticada, así que tiene que ser esa misma dirección |
+
+La contraseña de aplicación se saca en la cuenta de Google → Seguridad → **Verificación en 2 pasos**
+(hay que activarla primero) → Contraseñas de aplicaciones. Se puede revocar sin tocar la clave real.
+
+**El día que haya dominio**: verificarlo en Resend y añadir `RESEND_API_KEY` + `EMAIL_FROM` con una
+dirección de ese dominio. Resend tiene prioridad, así que no hace falta quitar las de SMTP.
