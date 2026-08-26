@@ -1690,3 +1690,31 @@ refleja**.
 **Asunción declarada**: quedarse activo toda la noche es, por ahora, **responsabilidad del chofer**
 — no hay apagado automático. Es lo más simple y lo que no añade comportamiento sorpresa; la capa de
 apagado se monta encima sin rehacer nada. Pendiente de decisión de Luis.
+
+## 2026-08-24 — 🛰️ Corrección: «mientras usas la app» SÍ basta para rastrear
+
+> Salió al probar el APK 18 en el teléfono: el diálogo de Android **no ofrecía** «Permitir todo el
+> tiempo», y la pantalla insistía en pedirlo. Parecía que el rastreo con la app cerrada era
+> imposible. No lo es — el error estaba en la pantalla.
+
+**El modelo real de permisos**, que es fácil de entender al revés:
+
+| Lo que se quiere hacer | Permiso que hace falta |
+|---|---|
+| Rastrear con la app cerrada, habiendo **arrancado** el servicio con la app abierta | **«Mientras usas la app»** ✅ |
+| **Arrancar** el servicio desde segundo plano (revivirlo tras reiniciar el teléfono) | «Todo el tiempo» |
+
+Un servicio en primer plano de tipo `location` **iniciado con la app en primer plano cuenta como
+«while-in-use»**, y sigue recibiendo posiciones después de cerrarla. Eso es justo para lo que
+existen los servicios en primer plano.
+
+| Decisión | Motivo |
+|---|---|
+| El arranque exige **`canTrack()`** (`always` o `whileInUse`), no `always` | La comprobación anterior bloqueaba el rastreo por un permiso que no hace falta, y encima **Android 11+ ya no lo ofrece en el diálogo**: solo se concede a mano en los ajustes del sistema, que es el paso donde más gente se cae |
+| «Todo el tiempo» se ofrece **después**, como extra | Cuando esa pantalla aparece, el rastreo **ya está funcionando**. Se enmarca como una mejora («si reinicias el teléfono, se reanuda solo»), nunca como un problema. Bloquear en ese paso sería bloquear en lo que casi nadie completa, por un beneficio que casi nadie nota |
+| La pantalla vuelve a mirar el permiso al **volver de los ajustes** | Android no avisa de eso: se detecta por el ciclo de vida de la app. Sin ello, quien sí lo concede se queda mirando una pantalla que no se entera |
+| `autoRunOnBoot` se deja encendido | Solo surte efecto para quien concedió «todo el tiempo». Para el resto, Android rechaza el arranque y no pasa nada: la app reanuda el rastreo al abrirse |
+
+**La lección**, y es la segunda vez esta sesión: verificar la plataforma **antes** de diseñar contra
+ella. Con Railway fue el puerto de salida; aquí, qué permiso exige Android para qué. En ambos casos
+la pregunta correcta no era «¿se puede hacer esto?» sino «¿bajo qué condiciones exactas?».
