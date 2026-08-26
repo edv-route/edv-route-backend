@@ -1665,3 +1665,28 @@ Ninguna era un fallo del código: describían un contrato que **cambió a propó
 el patrón del 18/08 («todas describían diseños que se cambiaron a propósito y nadie volvió a
 mirar»), y la lección se repite: **un cambio de contrato no está terminado hasta que la suite lo
 refleja**.
+
+## 2026-08-24 — 📍 Ubicación, Fase 3: la app reporta con la pantalla apagada
+
+> Tercera fase de [proposals/ubicacion-afiliados](../proposals/ubicacion-afiliados/README.md).
+> Verificado: `flutter analyze` limpio, **82/82** tests (7 nuevos de la cola) y **APK release
+> compilado** — pero el comportamiento real (que Android no lo mate, que el permiso se conceda)
+> solo se prueba en un teléfono.
+
+| Decisión | Motivo |
+|---|---|
+| **`geolocator` + `flutter_foreground_task`**, no `flutter_background_geolocation` | El tercero es el que más se recomienda y **cuesta 500 USD por app** para compilar en release. Funciona sin licencia en depuración, que es justo la trampa: se descubre al generar el APK final |
+| **Servicio en primer plano** con notificación permanente | Android mata el trabajo en segundo plano en minutos. Es la única forma de seguir reportando con la app cerrada — y la notificación no es un mal necesario: es la señal honesta para alguien a quien se está localizando |
+| ⚠️ El rastreo corre en **otro isolate**, sin memoria compartida con la app | De ahí salen dos decisiones que si no, parecerían raras: la cola es un **archivo** (un almacén en memoria sería invisible desde allí) y el token se lee del almacén seguro **en cada pase**, en vez de pasárselo |
+| La cola **borra por cantidad**, no vaciando el archivo | El rastreador puede añadir un punto mientras el envío está en vuelo; vaciar lo tiraría sin enviar |
+| Al llenarse, se descartan **los más viejos** | Un punto fresco vale más que uno rancio — y los rancios son justo los que el servidor rechaza pasadas 24 h |
+| Un **403 apaga el servicio**, un fallo de red no | Son cosas distintas: la red significa «reintenta en diez minutos», el 403 significa «deja de despertar el GPS». Tratarlos igual gasta batería en una petición que nunca se va a aceptar |
+| El **permiso se pide al ponerse activo**, no al entrar | Pedirlo al iniciar sesión es pedirlo antes de que el chofer tenga motivo para decir que sí — y un permiso denegado no vuelve a preguntarse. Tiene **pantalla propia** porque Android 11+ no muestra un diálogo para «todo el tiempo»: manda a los ajustes del sistema, y es donde más gente se cae del flujo |
+| Al **arrancar la app** se reanuda el rastreo, pero **sin pedir permisos** | Un chofer que estaba activo puede haber perdido el servicio (reinicio, gestor de batería). Reanudarlo es correcto; plantarle una pantalla de permisos nada más abrir, cuando no está decidiendo nada, es intrusivo |
+| **Cerrar sesión para el servicio Y borra la cola** | Mismo criterio que revocar el token de push: el siguiente chofer en ese teléfono no puede heredar las posiciones del anterior |
+| El **ritmo lo aplica el servidor** en cada respuesta | Es lo que permite subir la frecuencia el día que haya viajes sin publicar un APK |
+| `autoRunOnBoot` encendido | Un chofer que reinicia el teléfono a media jornada no debería desaparecer del mapa hasta que se dé cuenta |
+
+**Asunción declarada**: quedarse activo toda la noche es, por ahora, **responsabilidad del chofer**
+— no hay apagado automático. Es lo más simple y lo que no añade comportamiento sorpresa; la capa de
+apagado se monta encima sin rehacer nada. Pendiente de decisión de Luis.
