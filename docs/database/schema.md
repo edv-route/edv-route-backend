@@ -659,6 +659,52 @@ Una columna de estado sería una segunda opinión capaz de contradecir a las cua
 anterior; dos códigos vivos duplican la superficie de adivinanza, y esa garantía no puede depender
 de que todos los llamadores futuros se acuerden.
 
+## Dominio 11 — Ubicación de los afiliados (mig. `1752470000000`, 2026-08-24)
+
+### `driver_locations` — el historial de posiciones
+
+| Columna | Tipo | Null | Default | Descripción |
+|---|---|---|---|---|
+| `id` | bigint | no | identidad | PK |
+| `driver_id` | uuid | no | — | FK → `drivers.user_id` (**CASCADE**) |
+| `point` | `geography(Point, 4326)` | no | — | La coordenada. **PostGIS vive en el esquema `extensions`** en Supabase: las migraciones tienen que calificar el tipo (`extensions.geography`), las consultas en caliente no |
+| `accuracy_m` | real | sí | — | Margen de error que reportó el teléfono |
+| `recorded_at` | timestamptz | no | — | **Cuándo lo tomó el teléfono** |
+| `created_at` | timestamptz | no | `now()` | **Cuándo llegó al servidor** |
+
+**Dos fechas, no una.** Con la cola local un punto puede llegar horas después de tomarse: el
+recorrido se dibuja con `recorded_at`, y la diferencia entre ambas mide cuánto tiempo estuvo ese
+chofer sin señal — información operativa, no contabilidad.
+
+**La precisión se guarda siempre y se filtra al leer.** Un punto con 500 m de error sirve para el
+historial (dice por qué zona anduvo) y **no** para asignar una carrera. Descartarlo al escribir
+perdería lo primero para proteger lo segundo.
+
+**Índice** `driver_locations_driver_recent_idx` sobre `(driver_id, recorded_at DESC)`: la única
+consulta que se hace es «el recorrido de este chofer entre estas dos horas». La purga diaria
+deliberadamente **no lleva índice propio** — gravaría cada inserción para acelerar un trabajo al día
+que recorre una tabla de este tamaño en milisegundos.
+
+### `drivers.last_location` + `last_location_at` — la última conocida
+
+Diseñadas en el modelo v7 y **nunca implementadas** hasta ahora. **No duplican el historial**: el
+mapa pregunta «dónde está cada uno **ahora**», y responder eso desde `driver_locations` obliga a
+sacar la fila más nueva de cada chofer entre decenas de miles, cada vez que alguien lo abre.
+
+Se actualizan **solo si el punto es más nuevo** que el que ya hay: un vaciado de cola trae
+posiciones de hace horas, y dejarlas pisar la actual haría retroceder al chofer en el mapa.
+
+**Índice GIST parcial** `drivers_last_location_gist`: convierte «quién está más cerca» en una
+búsqueda en vez de un recorrido completo. Barato de crear con diez filas, caro cuando los viajes ya
+dependan de él.
+
+### Ajustes
+
+| Clave | Por defecto | Para qué |
+|---|---|---|
+| `location_retention_days` | 30 | Días de historial que se conservan. Los purga un job diario |
+| `location_interval_seconds` | 600 | Cada cuántos segundos reporta la app en reposo. Viaja en cada respuesta del endpoint, así que subirlo no exige publicar un APK |
+
 ---
 
 Del modelo v7 quedan pendientes para los módulos siguientes: `clients`, `trip_requests`,

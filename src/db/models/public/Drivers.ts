@@ -43,6 +43,10 @@ export default interface Drivers {
   accepted_terms_at: Date | null;
 
   tariff_start_set_at: Date | null;
+
+  last_location: unknown | null;
+
+  last_location_at: Date | null;
 }
 
 /** Represents the initializer for the table public.drivers */
@@ -90,6 +94,10 @@ export interface DriversInitializer {
   accepted_terms_at?: Date | null;
 
   tariff_start_set_at?: Date | null;
+
+  last_location?: unknown | null;
+
+  last_location_at?: Date | null;
 }
 
 /** Represents the mutator for the table public.drivers */
@@ -131,4 +139,8 @@ export interface DriversMutator {
   accepted_terms_at?: Date | null;
 
   tariff_start_set_at?: Date | null;
+
+  last_location?: unknown | null;
+
+  last_location_at?: Date | null;
 }

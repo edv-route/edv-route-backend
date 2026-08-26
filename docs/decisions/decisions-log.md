@@ -1604,3 +1604,34 @@ La foto de perfil consigue casi lo mismo a la vista del destinatario por cero eu
 honesto de que Google decide cuándo mostrarla según el historial entre cuentas y su propia caché,
 así que no es una garantía absoluta. La imagen buena ya existe:
 `edv-route-mobile/assets/images/edv_icon.png` (cuadrada, 1024×1024, fondo de marca).
+
+## 2026-08-24 — 📍 Ubicación de los afiliados, Fase 1: la tubería del backend
+
+> Primera fase de [proposals/ubicacion-afiliados](../proposals/ubicacion-afiliados/README.md).
+> Migración `1752470000000` + módulo `locations` + job de retención. **La app todavía no manda
+> nada**: esto se probó con peticiones directas. Verificado: `typecheck` limpio y **8/8** en
+> `tests/locations.test.ts`, cada prueba con su propio chofer creado y borrado.
+
+| Decisión | Motivo |
+|---|---|
+| **Un lote de puntos por petición**, nunca uno suelto | La app guarda una cola local mientras no hay señal. Vaciarla de uno en uno convierte cada reconexión en veinte viajes contra un pool que en producción tiene ocho conexiones. El lote entra en **una sola sentencia** con `unnest` |
+| **Dos fechas por punto**: cuándo lo tomó el teléfono y cuándo llegó | Con la cola, un punto puede llegar horas tarde. El recorrido se dibuja con la primera; la diferencia entre ambas mide cuánto estuvo sin señal, que es información operativa y no contabilidad |
+| La **última posición** vive en `drivers`, aparte del historial | No es duplicar: el mapa pregunta «dónde está cada uno ahora», y responder eso desde el historial obliga a sacar la fila más nueva de cada chofer entre decenas de miles **cada vez que alguien lo abre**. Estaba en el diseño v7 y nunca se había implementado |
+| La última posición **solo avanza, nunca retrocede** | Un vaciado de cola trae puntos de hace horas. Sin el guard, el chofer daría saltos hacia atrás en el mapa cada vez que recupera cobertura |
+| **La precisión se guarda siempre y se filtra al leer** | Un punto con 500 m de error sirve para el historial y no para asignar una carrera. Descartarlo al escribir perdería lo primero por proteger lo segundo |
+| **Los puntos malos se descartan uno a uno**, no tumban el lote | Una lectura corrupta no puede llevarse por delante las diecinueve buenas que venían detrás. Se descarta lo que no es una posición: fuera de rango, el `(0,0)` de un teléfono **sin fix**, y lo anterior a 24 h |
+| Unos segundos **en el futuro** se aceptan; una hora, no | Los relojes de los teléfonos van desajustados. Rechazar todo lo que venga por delante tiraría en silencio cada punto de unos cuantos aparatos; el tope de 5 minutos separa el reloj torcido de la falsificación |
+| Quién puede reportar reutiliza **`CAN_OPERATE_STATUSES`**, no una copia | Es la misma pregunta que gobierna el interruptor de disponibilidad. Una segunda copia deriva el día que se toque una de las dos, y entonces un chofer podría estar activo y no poder reportar, o al revés |
+| Un `overdue` **sí** reporta | Debe semanas pero sigue trabajando: si desaparece del mapa, deja de recibir carreras justo cuando más necesita pagarlas |
+| El rechazo va con **motivo**, y la app **apaga el servicio** | Repetir una petición cada diez minutos contra una puerta cerrada gasta batería para nada. El chofer suspendido merece que su teléfono se calle, no que insista |
+| **`intervalSeconds` viaja en cada respuesta** | Es cómo un cambio de ritmo llega a todos los teléfonos sin publicar un APK. Declarado en el schema de respuesta: Fastify borra en silencio lo que no esté declarado, y ya se comió tres campos antes |
+| El **job de retención se despliega con la tabla**, no después | Una tabla que solo crece, en una base de 500 MB, es una bomba con temporizador. Lee la ventana en cada pasada, así cambiarla en el panel surte efecto sin redesplegar. Y **solo corre en producción**, como el despachador de avisos: prod y dev comparten base, y un backend local no puede borrar el historial de producción |
+
+**Gotcha nuevo**: **PostGIS vive en el esquema `extensions`** en Supabase. Una sesión normal lo lleva
+en el `search_path`, pero **node-pg-migrate no**, así que una migración tiene que calificar el tipo
+(`extensions.geography`). Las consultas en caliente no lo necesitan.
+
+**Corregido de paso**: la documentación de `PATCH /driver-auth/me/availability` daba la forma de la
+**respuesta** (`{ isAvailable }`) como si fuera la del **cuerpo** (`{ available }`). Se descubrió
+porque una prueba escrita contra la doc no ponía al chofer inactivo, y el fallo parecía estar en el
+control de acceso nuevo.

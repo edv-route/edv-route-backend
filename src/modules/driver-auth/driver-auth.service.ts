@@ -30,7 +30,7 @@ const UNIQUE_VIOLATION = '23505';
  * is under the tolerance cap, so he keeps operating (debt engine, decision
  * 2026-07-23). `penalized` and `paused` are out.
  */
-const CAN_OPERATE_STATUSES = ['approved', 'overdue'];
+export const CAN_OPERATE_STATUSES = ['approved', 'overdue'];
 
 /** Vehicle photo signed URLs are short-lived: enough to view, not to share. */
 const VEHICLE_IMAGE_TTL_SECONDS = 60;
