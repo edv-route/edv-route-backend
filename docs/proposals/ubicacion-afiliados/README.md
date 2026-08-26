@@ -14,11 +14,35 @@ de días (30 por defecto).
 Solo reporta quien **está trabajando**: aprobado, con la tarifa arrancada y con su interruptor de
 disponibilidad en activo. Quien se pone inactivo deja de reportar en el acto.
 
+## 0 · Para qué es el dato, y por qué manda el ritmo
+
+**Es una app de carreras y habrá un mapa** (confirmado por Luis, 2026-08-24). Eso convierte la
+ubicación en dos cosas distintas con necesidades opuestas:
+
+| Uso | Ritmo que necesita |
+|---|---|
+| **Historial**: por dónde anduvo, auditar, resolver disputas | 10 minutos sobra |
+| **Asignar una carrera al más cercano** | 30–60 segundos |
+
+**Un coche a 40 km/h recorre casi 7 km en 10 minutos.** Asignar por un punto de hace nueve minutos
+puede mandar al chofer que ya cruzó la ciudad y dejar fuera al que estaba a dos cuadras.
+
+**La salida es que el ritmo lo decida el servidor**, no un número compilado en el APK:
+
+- **En reposo** (activo, esperando trabajo): 10 minutos. Es el estado normal y el que gasta batería
+  todo el día.
+- **Buscando carrera o en viaje**: 30–60 s, solo mientras dura.
+
+El backend **no se entera de la diferencia**: recibe puntos igual. Quién dispara el envío y cada
+cuánto es cosa de la app, y el número vive en `app_settings` — mismo patrón que el motor de cobro y
+los avisos. El día que se encienda Viajes se sube la frecuencia desde el panel y **todos los
+teléfonos obedecen sin publicar un APK**.
+
 ## Decisiones ya tomadas (Luis, 2026-08-24)
 
 | Punto | Decisión | Lo que implica |
 |---|---|---|
-| **Cada cuánto** | **10 minutos** | Rebajado desde 60 s. Divide entre diez el volumen y el gasto de batería |
+| **Cada cuánto** | **10 minutos, configurable desde el servidor** | Rebajado desde 60 s. Divide entre diez el volumen y el gasto de batería. Configurable porque **para asignar carreras 10 min no sirve** (ver §0) |
 | **Con la app cerrada** | **Sí** | Hace falta un **servicio en primer plano** con notificación permanente |
 | **Sin señal** | **Guardar y reenviar** | Cola local en el teléfono; el servidor acepta puntos con fecha pasada |
 | **Chofer parado** | **Guardar todo igual** | Sin filtro por distancia. A 10 minutos el ahorro no compensa la complejidad |
@@ -74,8 +98,16 @@ directa.
 
 ### El ajuste configurable
 
-`app_settings` gana **`location_retention_days`** (30 por defecto), igual que el resto de la
-configuración: la clave nace en la migración, el panel solo edita su valor.
+`app_settings` gana dos claves, igual que el resto de la configuración (nacen en la migración, el
+panel solo edita su valor):
+
+| Clave | Por defecto | Para qué |
+|---|---|---|
+| `location_retention_days` | 30 | Cuántos días de historial se conservan |
+| `location_interval_seconds` | 600 | Cada cuánto reporta la app **en reposo**. Se sube el día que llegue Viajes, sin publicar APK |
+
+La app pregunta el intervalo al arrancar y obedece. Un valor que no llega (sin señal al abrir) cae
+en el último conocido, y si no hay ninguno, en 600.
 
 ---
 
@@ -182,6 +214,24 @@ recuperación de clave — pero aquí ya no es opcional: **es la única forma de
 alguien**. Y de paso tacha ese pendiente, que ya hacía falta para cuando llegue Viajes.
 
 ---
+
+## 4b · Lo que el mapa va a necesitar (y hoy no está)
+
+Anotado ahora aunque el panel se aborde después, porque **condiciona lo que se guarda desde el
+primer punto** — y un dato que no se guardó no se recupera.
+
+- **Un punto impreciso no se descarta, se marca.** El teléfono reporta su margen de error: dentro
+  de un edificio o con el GPS frío puede ser de 500 m o más. Para el historial vale igual —dice por
+  qué zona anduvo—, pero **el mapa en vivo y la asignación de carreras tienen que poder ignorarlo**,
+  o acabarás mandando a alguien a una dirección que el teléfono se inventó. Por eso `accuracy_m` se
+  guarda siempre y el filtro se aplica al leer, no al escribir.
+- **Cuánto hace que no reporta.** El mapa tiene que distinguir «está aquí» de «aquí estaba hace tres
+  horas». Sin eso, un chofer con el teléfono apagado o sin datos aparece disponible y se le asignan
+  carreras que nunca va a atender. Se deriva de `last_location_at`: pasado cierto margen (dos o
+  tres veces el intervalo configurado), deja de contar como presente.
+
+Ninguna de las dos cuesta nada ahora: una es una columna que ya está en el diseño y la otra es una
+resta. Las dos son carísimas de añadir cuando ya hay un mes de historial sin ellas.
 
 ## 5 · Orden de trabajo
 
