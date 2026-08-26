@@ -9,13 +9,27 @@
 
 | Pieza | Dónde | URL pública |
 |---|---|---|
-| **Backend** (Fastify) | Railway · repo `edv-route-backend` (rama `main`) | `https://edv-route-backend.up.railway.app` |
-| **Frontend** (Angular) | Railway · repo `edv-route-admin` (rama `main`) | `https://edv-route-admin.up.railway.app` |
+| **Backend** (Fastify) | Railway · repo `edv-route-backend` (rama **`dev`**) | `https://edv-route-backend-production.up.railway.app` |
+| **Frontend** (Angular) | Railway · repo `edv-route-admin` (rama **`dev`**) | `https://edv-route-admin-production.up.railway.app` |
+
+> **Cuenta nueva desde el 2026-08-26.** Se migró todo al agotarse el crédito de la anterior. El
+> sufijo `-production` es lo que genera Railway cuando el nombre original sigue ocupado por el
+> proyecto viejo. El despliegue sigue la rama **`dev`** en ambos repos (antes `main`).
+>
+> ⚠️ **Al migrar, apagar el proyecto viejo — no basta con quitarle el dominio.** El proceso sigue
+> corriendo con sus schedulers: dos motores de cobro y dos despachadores de avisos sobre la MISMA
+> base, y el pooler de Supabase (15 conexiones para todo el proyecto) se llena. Se detiene sin
+> perder nada en Deployments → menú de tres puntos del despliegue activo → **Remove**; vuelve con
+> **Redeploy**, conservando servicio, variables y configuración.
+>
+> ⚠️ **Y actualizar `CORS_ORIGIN` con el dominio NUEVO del panel**: la variable no viaja con el
+> código, así que un proyecto recién creado arranca con el valor por defecto (`localhost:4200`) y
+> el panel queda bloqueado por el navegador sin que nada en el log lo explique.
 | **Base de datos + Storage** | Supabase (el **mismo** de desarrollo) | — |
 
-- Ambos servicios viven en el **mismo proyecto** de Railway; cada push a `main` de su repo dispara
-  un redeploy automático.
+- Ambos servicios viven en el **mismo proyecto** de Railway.
 - La API vive bajo `/api/v1`; el frontend la consume en `…/api/v1` (ver `environment.prod.ts`).
+- Cada push a **`dev`** de su repo dispara un redeploy automático.
 - Health del backend (público): `GET /api/v1/health` → `{ status, dbTime, postgis }`.
 
 ## Backend — Nixpacks
@@ -74,7 +88,7 @@ Dockerfile Path `/Dockerfile`). Sin esto el sitio queda en blanco.
 
 ## Runbook
 
-- **Redesplegar** (cualquiera): `git push` a `main` del repo → Railway reconstruye solo.
+- **Redesplegar** (cualquiera): `git push` a **`dev`** del repo → Railway reconstruye solo.
 - **Cambiar la URL de la API** (si cambia el dominio del backend): editar `apiUrl` en
   `environment.prod.ts` → push → Railway reconstruye el frontend.
 - **Cambiar CORS**: editar la variable `CORS_ORIGIN` del backend en Railway (redeploy automático).
