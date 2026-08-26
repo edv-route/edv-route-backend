@@ -6,6 +6,10 @@ import type { FastifyInstance } from 'fastify';
 import { buildApp } from '../src/app.js';
 import { removeDriver as removeDriverFixture } from './helpers/db-fixtures.js';
 
+/** Unique throwaway address: `users.email` is UNIQUE and required since 2026-08-24. */
+let emailSeq = 0;
+const testEmail = (): string => `test-${Date.now()}-${++emailSeq}@edvroute.test`;
+
 /**
  * Backend validation contract (2026-07-31): the API must reject what the panel
  * rejects — name character/length rules, digits-only cédula/phone, the payment
@@ -36,7 +40,13 @@ const auth = () => ({ authorization: `Bearer ${token}` });
 const removeDriver = (driverId: string): Promise<void> => removeDriverFixture(pool, driverId);
 
 const createDriver = (payload: Record<string, unknown>) =>
-  app.inject({ method: 'POST', url: '/api/v1/drivers', headers: auth(), payload });
+  app.inject({
+    method: 'POST',
+    url: '/api/v1/drivers',
+    headers: auth(),
+    // Email is required since 2026-08-24; these tests are about other fields.
+    payload: { email: testEmail(), ...payload },
+  });
 
 test('names: rejects digits/symbols, accepts accents and ñ', async () => {
   // A name with digits/symbols is rejected (400) by the pattern.

@@ -14,7 +14,17 @@ export interface AppConfig {
    */
   DATABASE_POOL_MAX: number;
   JWT_SECRET: string;
+  /** Admin (panel) session. Stays SHORT: it is a browser on a shared machine. */
   JWT_EXPIRES_IN: string;
+  /**
+   * Driver (app) session. Long on purpose: the app must stay logged in across
+   * days, or location reporting dies every night and the driver has to type his
+   * password to get back on the road.
+   *
+   * The trade is that a long token cannot be revoked by expiry, so the driver
+   * guard checks the account's status on every request instead - see auth.ts.
+   */
+  DRIVER_JWT_EXPIRES_IN: string;
   /** File storage. Optional: without them the app boots with uploads disabled. */
   SUPABASE_URL: string;
   SUPABASE_SERVICE_ROLE_KEY: string;
@@ -81,6 +91,7 @@ const schema = {
     DATABASE_POOL_MAX: { type: 'number', default: 0 },
     JWT_SECRET: { type: 'string', minLength: 32 },
     JWT_EXPIRES_IN: { type: 'string', default: '8h' },
+    DRIVER_JWT_EXPIRES_IN: { type: 'string', default: '365d' },
     SUPABASE_URL: { type: 'string', default: '' },
     SUPABASE_SERVICE_ROLE_KEY: { type: 'string', default: '' },
     STORAGE_BUCKET: { type: 'string', default: 'documents' },

@@ -1,6 +1,6 @@
 # Ubicación de los afiliados — propuesta
 
-> Estado: **Fase 1 HECHA** (backend) · Fases 2-4 pendientes · Fecha: 2026-08-24 · Pedido por Luis
+> Estado: **Fases 1 y 2 HECHAS** (backend) · Fases 3-4 pendientes · Fecha: 2026-08-24 · Pedido por Luis
 >
 > Orden de trabajo pedido: **primero la app y el backend**; el panel del admin se aborda después,
 > cuando todo esto esté funcionando.
@@ -238,7 +238,7 @@ resta. Las dos son carísimas de añadir cuando ya hay un mes de historial sin e
 | Fase | Qué | Dónde | Estado |
 |---|---|---|---|
 | **1** | Tablas, ajustes, endpoint de recepción y purga diaria | Backend | ✅ **Hecha** (2026-08-24) |
-| **2** | Token largo + validación del estado en el guard | Backend | Pendiente |
+| **2** | Token largo + validación del estado en el guard | Backend | ✅ **Hecha** (2026-08-24) |
 | **3** | Permisos, servicio en primer plano, cola local y arranque/parada | App | Pendiente |
 | **4** | Verlo: mapa en vivo e historial por chofer | Panel | **Después**, cuando Luis lo diga |
 

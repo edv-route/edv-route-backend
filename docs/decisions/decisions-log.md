@@ -1635,3 +1635,33 @@ en el `search_path`, pero **node-pg-migrate no**, así que una migración tiene 
 **respuesta** (`{ isAvailable }`) como si fuera la del **cuerpo** (`{ available }`). Se descubrió
 porque una prueba escrita contra la doc no ponía al chofer inactivo, y el fallo parecía estar en el
 control de acceso nuevo.
+
+## 2026-08-24 — 🔑 Ubicación, Fase 2: la sesión del chofer no caduca, pero se puede cortar
+
+> Segunda fase de [proposals/ubicacion-afiliados](../proposals/ubicacion-afiliados/README.md).
+> Verificado: `typecheck` limpio y **7/7** en `tests/driver-session.test.ts`, más el resto de la
+> suite en verde (todo salvo `debt-engine`, que se deja aparte porque factura de verdad).
+
+**El problema**: la app ya guardaba la sesión, pero el token duraba **8 horas**. Cerrarla y volver
+al día siguiente te echaba fuera — y con el rastreo encima, eso significa que **se apagaría solo
+cada noche**.
+
+| Decisión | Motivo |
+|---|---|
+| **`DRIVER_JWT_EXPIRES_IN` separado** (365d), el del admin intacto en 8h | Alargar la sesión del chofer no puede alargar la del admin: el panel es un navegador, a menudo en una máquina compartida. Un token de admin de un año sería mucho peor que el problema que resuelve |
+| **`authenticateDriver` comprueba la cuenta en CADA petición** | Es el complemento sin el cual el token largo es imprudente. Un JWT de un año **no se revoca por caducidad**, así que esto es lo único que puede cortarle el acceso a alguien: suspenderlo desde el panel lo deja fuera —y apaga el rastreo de su teléfono— en segundos, en vez de dejar un aparato robado o prestado reportando durante meses |
+| **Solo `suspended` pierde el acceso** | No se toca la decisión del 2026-08-18: un chofer con deuda —**`penalized` incluido**— entra igual, porque la app es la única pantalla donde puede ver y pagar lo que debe. El candado del trabajo sigue en cada función (`CAN_OPERATE_STATUSES`), nunca en la puerta |
+| **Un `rejected` también entra** | Tiene que poder leer **por qué** lo rechazaron, y un admin puede reabrir su solicitud. Un candado sin salida es un bug que este proyecto ya ha desplegado tres veces |
+| Una cuenta **borrada** responde 401, no 403 | El limpiador de solicitantes borra registros abandonados; un token que sobrevive a su cuenta no puede seguir sirviendo. Y la app distingue «vuelve a entrar» de «te suspendieron» |
+| El coste: **una consulta más por petición**, sin caché | Es una búsqueda por clave primaria sobre una flota de decenas. Cachearla cambiaría la inmediatez por rendimiento que no hace falta, y la inmediatez es justo el punto |
+
+### Deuda propia saldada: 12 pruebas que rompí esta mañana
+
+Hacer el correo **obligatorio** al registrar rompió todas las pruebas que creaban choferes sin
+correo, y no las actualicé en su momento. Salieron al verificar esta fase: `validation` (5),
+`payment-submission` (2), `invoice-state` (1), `invoice-payment` (1) y `notification-events` (1).
+
+Ninguna era un fallo del código: describían un contrato que **cambió a propósito**. Es exactamente
+el patrón del 18/08 («todas describían diseños que se cambiaron a propósito y nadie volvió a
+mirar»), y la lección se repite: **un cambio de contrato no está terminado hasta que la suite lo
+refleja**.

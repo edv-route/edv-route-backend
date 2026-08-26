@@ -70,6 +70,8 @@ async function newDriverWithDebt(nationalId: string): Promise<string> {
       firstName: 'TEST',
       lastName: 'Aviso',
       nationalId,
+      // Required since 2026-08-24; unique because users.email is UNIQUE.
+      email: `aviso-${nationalId.replace(/D/g, '')}@edvroute.test`,
       payment: null,
       vehicles: [],
       documents: [],

@@ -4,8 +4,14 @@
 
 ## Convenciones
 
-- **Auth**: salvo `GET /health`, `POST /auth/login` y `POST /driver-auth/login`, todos los
-  endpoints exigen `Authorization: Bearer <token>` (JWT de 8 h emitido en el login). El token
+- **Auth**: salvo `GET /health`, `POST /auth/login`, `POST /driver-auth/login` y los tres de
+  `/driver-auth/password-reset/*`, todos los endpoints exigen `Authorization: Bearer <token>`.
+  El **admin** dura 8 h; el **chofer**, un año (2026-08-24): la app tiene que sobrevivir días
+  cerrada o el reporte de ubicación se apagaría cada noche. Como un token así **no se revoca por
+  caducidad**, el guard del chofer **comprueba la cuenta en cada petición**: suspenderlo desde el
+  panel lo deja fuera en segundos (**403**, no 401 — la sesión es válida, la cuenta no), y una
+  cuenta borrada responde **401**. Un `penalized` o un `rejected` **siguen entrando**: el candado
+  del trabajo va en cada función, nunca en la puerta. El token
   lleva un claim `type` (`admin`\|`driver`): un token de chofer no accede a rutas de admin y viceversa.
 - **Formato**: JSON en camelCase. Los montos viajan como string decimal (`"150.00"`).
 - **Errores**: `{ statusCode, error, message }` — `message` viene en español, listo para UI.

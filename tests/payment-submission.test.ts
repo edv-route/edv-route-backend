@@ -42,7 +42,16 @@ const removeDriver = (driverId: string): Promise<void> => removeDriverFixture(po
 async function newDriverWithDebt(nationalId: string): Promise<{ driverId: string; debt: string }> {
   const d = await app.inject({
     method: 'POST', url: '/api/v1/drivers/register', headers: auth(),
-    payload: { firstName: 'TEST', lastName: 'Submission', nationalId, payment: null, vehicles: [], documents: [] },
+    payload: {
+      firstName: 'TEST',
+      lastName: 'Submission',
+      nationalId,
+      // Required since 2026-08-24; unique because users.email is UNIQUE.
+      email: `sub-${nationalId.replace(/D/g, '')}@edvroute.test`,
+      payment: null,
+      vehicles: [],
+      documents: [],
+    },
   });
   const driverId = (d.json() as { userId: string }).userId;
   const detail = (await (await app.inject({
@@ -274,7 +283,12 @@ test('approve of an ENROLL emits one invoice per concept (membership + N weeks)'
     // Plain driver (create, no payment) → no membership payment yet.
     const d = await app.inject({
       method: 'POST', url: '/api/v1/drivers', headers: auth(),
-      payload: { firstName: 'TEST', lastName: 'Enroll', nationalId: 'V-99991005' },
+      payload: {
+        firstName: 'TEST',
+        lastName: 'Enroll',
+        nationalId: 'V-99991005',
+        email: 'enroll-invoices@edvroute.test',
+      },
     });
     driverId = (d.json() as { userId: string }).userId;
 

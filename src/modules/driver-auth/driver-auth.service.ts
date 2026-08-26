@@ -151,7 +151,14 @@ export class DriverAuthService {
       throw httpErrors.unauthorized('Cédula o clave incorrectas');
     }
 
-    const token = this.app.jwt.sign({ sub: record.userId, type: 'driver' });
+    const token = this.app.jwt.sign(
+      { sub: record.userId, type: 'driver' },
+      // Long-lived on purpose: the app has to survive being closed for days, or
+      // location reporting stops every night. What makes it safe is that the
+      // driver guard re-checks the account on every request (auth.ts), so
+      // suspending someone cuts him off at once despite the token being alive.
+      { expiresIn: this.app.config.DRIVER_JWT_EXPIRES_IN },
+    );
 
     // Gating is open by decision: any driver with valid credentials logs in and
     // the app routes by `status` (in review / blocked / home). Failed-attempt
@@ -542,7 +549,10 @@ export class DriverAuthService {
       { source: 'app', initialStatus: 'applicant', acceptedPrivacy: true },
     );
     const userId = result['userId'] as string;
-    const token = this.app.jwt.sign({ sub: userId, type: 'driver' });
+    const token = this.app.jwt.sign(
+      { sub: userId, type: 'driver' },
+      { expiresIn: this.app.config.DRIVER_JWT_EXPIRES_IN },
+    );
     const driver = await this.drivers.findProfileById(userId);
     if (!driver) {
       throw httpErrors.internalServerError('No se pudo cargar el perfil del chofer recién creado');

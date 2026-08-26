@@ -55,7 +55,12 @@ test('enroll stamps payment method + reference on the invoice', async () => {
     // throwaway driver, no payment yet
     const d = await app.inject({
       method: 'POST', url: '/api/v1/drivers', headers: auth(),
-      payload: { firstName: 'TEST', lastName: 'InvoiceMeta', nationalId: 'V-99999002' },
+      payload: {
+        firstName: 'TEST',
+        lastName: 'InvoiceMeta',
+        nationalId: 'V-99999002',
+        email: 'invoice-meta@edvroute.test',
+      },
     });
     driverId = (d.json() as { userId: string }).userId;
 

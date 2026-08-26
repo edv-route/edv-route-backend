@@ -45,10 +45,31 @@ declare module 'fastify' {
   interface FastifyInstance {
     /** Guard for admin (panel) routes: valid token AND audience === 'admin'. */
     authenticate: (req: FastifyRequest, reply: FastifyReply) => Promise<void>;
-    /** Guard for driver (mobile app) routes: valid token AND audience === 'driver'. */
+    /**
+     * Guard for driver (mobile app) routes: valid token, audience === 'driver',
+     * AND an account that has not been thrown out. See below for why the last
+     * one costs a query.
+     */
     authenticateDriver: (req: FastifyRequest, reply: FastifyReply) => Promise<void>;
   }
 }
+
+/**
+ * Statuses that lose access to the app entirely. Deliberately just the one.
+ *
+ * A driver in debt - `penalized` included - KEEPS getting in (decision
+ * 2026-08-18): the app is the only screen where he can see and pay what he
+ * owes, so locking him out would leave him penalized with no way out. What he
+ * loses is the WORK, and that is enforced per function (`CAN_OPERATE_STATUSES`),
+ * never at the door.
+ *
+ * `rejected` also gets in, for the same reason: he has to be able to read WHY
+ * he was rejected, and an admin may reopen his solicitud. A door with no way
+ * out is a bug this project has already shipped three times.
+ *
+ * `suspended` is the expulsion, and that one is final.
+ */
+const LOCKED_OUT_STATUSES = new Set(['suspended']);
 
 /**
  * JWT signing/verification plus the audience-scoped guards used as onRequest
@@ -60,12 +81,14 @@ export default fp(
   async (app) => {
     await app.register(jwt, {
       secret: app.config.JWT_SECRET,
+      // Default lifetime; the driver login overrides it with the much longer
+      // DRIVER_JWT_EXPIRES_IN when it signs.
       sign: { expiresIn: app.config.JWT_EXPIRES_IN },
     });
 
-    const guard =
+    const verifyAudience =
       (audience: AppTokenPayload['type']) =>
-      async (req: FastifyRequest, _reply: FastifyReply): Promise<void> => {
+      async (req: FastifyRequest): Promise<void> => {
         try {
           await req.jwtVerify();
         } catch {
@@ -78,8 +101,47 @@ export default fp(
 
     // Only the two session audiences get a guard. A 'pwd_reset' token is
     // verified by hand where it is redeemed, never as a session.
-    app.decorate('authenticate', guard('admin'));
-    app.decorate('authenticateDriver', guard('driver'));
+    app.decorate('authenticate', verifyAudience('admin'));
+
+    const driverAudience = verifyAudience('driver');
+
+    /**
+     * The driver session is long-lived (a year by default) so the app survives
+     * being closed for days and location reporting does not die every night.
+     * A JWT that long CANNOT be revoked by letting it expire, so this guard
+     * asks the database on every request whether the account still exists and
+     * is not expelled.
+     *
+     * That is one extra round trip per request, and it buys the only thing that
+     * can cut somebody off: suspending a driver from the panel stops him — and
+     * his phone's location reporting — within seconds, instead of leaving a
+     * stolen or handed-down phone reporting for months.
+     *
+     * Cheap by design: one indexed lookup by primary key, on a fleet of tens.
+     * Caching it would trade away the immediacy that is the whole point.
+     */
+    app.decorate('authenticateDriver', async (req: FastifyRequest, _reply: FastifyReply) => {
+      await driverAudience(req);
+
+      const { rows } = await app.db.query<{ driverStatus: string; userStatus: string }>(
+        `SELECT d.status::text AS "driverStatus", u.status::text AS "userStatus"
+           FROM drivers d JOIN users u ON u.id = d.user_id
+          WHERE d.user_id = $1`,
+        [req.user.sub],
+      );
+
+      const account = rows[0];
+      // Gone entirely: the applicant cleanup deletes abandoned registrations,
+      // and a token outliving its account must not keep working.
+      if (!account) {
+        throw app.httpErrors.unauthorized('Tu cuenta ya no existe');
+      }
+      if (LOCKED_OUT_STATUSES.has(account.driverStatus) || account.userStatus === 'suspended') {
+        // 403, not 401: the session is valid, the account is not. The app tells
+        // them apart to decide between "log in again" and "you were suspended".
+        throw app.httpErrors.forbidden('Tu cuenta fue suspendida. Comunícate con la oficina.');
+      }
+    });
   },
-  { name: 'auth' },
+  { name: 'auth', dependencies: ['db'] },
 );

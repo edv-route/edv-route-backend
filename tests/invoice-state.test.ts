@@ -198,7 +198,12 @@ test('ciclo opción A (E2E): alta sin pago = Emitidas -> recibo aprobado = Pagad
       method: 'POST',
       url: '/api/v1/drivers/register',
       headers: auth(),
-      payload: { firstName: 'TEST', lastName: 'InvoiceState', nationalId: 'V-99999003' },
+      payload: {
+        firstName: 'TEST',
+        lastName: 'InvoiceState',
+        nationalId: 'V-99999003',
+        email: 'invoice-state@edvroute.test',
+      },
     });
     assert.equal(registered.statusCode, 201, registered.body);
     driverId = (registered.json() as { userId: string }).userId;
