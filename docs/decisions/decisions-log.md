@@ -1747,3 +1747,43 @@ escribiendo en producción.
 **La lección, que ya es la tercera vez**: verificar la plataforma antes de operar sobre ella. Con
 Railway fue el puerto de salida; con Android, qué permiso exige qué; aquí, qué se pone en marcha por
 el simple hecho de construir la aplicación.
+
+## 2026-08-28 — 🗺️ El mapa en blanco: MapLibre necesita DOS ficheros que el build no emite
+
+> Costó media tarde. El síntoma estaba diseñado para engañar.
+
+MapLibre no dibuja en el hilo principal: procesa las teselas en un **worker**, y calcula la ruta de
+ese fichero **a partir de la URL de su propio módulo**. Empaquetado por Angular, esa URL apunta a un
+trozo del build, así que pedía `/maplibre-gl-worker.mjs` — **un fichero que la compilación nunca
+generó**.
+
+**Por qué fue tan caro de encontrar:**
+
+| Lo que se veía | Lo que hacía pensar |
+|---|---|
+| Los controles de zoom y la atribución, bien colocados | Que el mapa estaba vivo y era un problema de datos |
+| El estilo, el índice de teselas y los sprites en 200 | Que la red y el proveedor estaban bien |
+| Lienzo del tamaño correcto, WebGL activo, sin errores | Que era un problema de tamaño del contenedor |
+| **Ni una sola petición de tesela** | Lo único que apuntaba a la verdad |
+
+En desarrollo esa petición daba **404**; en producción la respondía el **`index.html`** por el
+fallback de la SPA. MapLibre no protesta en ninguno de los dos casos.
+
+**Y son dos ficheros, no uno**: `maplibre-gl-worker.mjs` importa `./maplibre-gl-shared.mjs`
+(~490 KB). Copiando solo el primero, el worker sigue sin arrancar y el síntoma es idéntico.
+
+**La solución** (`edv-route-admin/angular.json` + `map-view.ts`): copiar ambos a `assets/` en el
+build y apuntar MapLibre con `setWorkerUrl`.
+
+⚠️ **`angular.json` solo se lee al arrancar el servidor.** Tocar los assets y confiar en la recarga
+en caliente deja el arreglo fuera: en producción funcionaba y en local no, por eso pareció que el
+arreglo no servía. Hay que reiniciar `npm start`.
+
+⚠️ **Una pestaña oculta no dibuja.** Chrome congela `requestAnimationFrame` en pestañas en segundo
+plano, y sin él MapLibre no renderiza ni pide teselas. Un mapa comprobado desde una pestaña que no
+está en primer plano sale en blanco **aunque esté perfecto**. Cualquier verificación visual de un
+mapa exige la pestaña visible.
+
+**La lección**, que ya va siendo un patrón en este proyecto: cuando algo falla en silencio, **mirar
+la red antes que el código**. La lista de peticiones dijo en diez segundos lo que dos hipótesis
+razonables sobre el tamaño del contenedor no habían encontrado en una hora.

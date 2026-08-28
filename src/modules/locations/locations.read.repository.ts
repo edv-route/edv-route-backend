@@ -68,6 +68,9 @@ export class LocationsReadRepository {
    * who stopped working months ago keeps a last position forever. Without this
    * cut-off the map would slowly fill with ghosts. Do not remove it.
    */
+  /** Defensive ceiling. Far above any realistic fleet, but not unbounded. */
+  private static readonly MAX_LIVE = 1000;
+
   async listLive(opts: {
     canOperateStatuses: readonly string[];
     maxAgeDays: number;
@@ -105,6 +108,7 @@ export class LocationsReadRepository {
       where.push(`(${accuracySql} IS NULL OR ${accuracySql} <= $${values.length})`);
     }
 
+    values.push(LocationsReadRepository.MAX_LIVE);
     const { rows } = await this.db.query<LiveLocationRow>(
       `SELECT d.user_id AS "userId",
               u.full_name AS "fullName",
@@ -118,7 +122,8 @@ export class LocationsReadRepository {
          FROM drivers d
          JOIN users u ON u.id = d.user_id
         WHERE ${where.join(' AND ')}
-        ORDER BY d.last_location_at DESC`,
+        ORDER BY d.last_location_at DESC, d.user_id
+        LIMIT $${values.length}`,
       values,
     );
     return rows;
