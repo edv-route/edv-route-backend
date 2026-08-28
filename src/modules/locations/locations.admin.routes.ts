@@ -1,6 +1,13 @@
 import type { FastifyPluginAsync } from 'fastify';
 import { LocationsReadRepository } from './locations.read.repository.js';
 import { LocationsAdminService } from './locations.admin.service.js';
+import { GeocodingService } from './geocoding.service.js';
+
+/**
+ * Identifies this application to the geocoder, which its usage policy
+ * requires: a library default User-Agent is grounds for being blocked.
+ */
+const GEOCODER_USER_AGENT = 'EDVRoute/1.0 (edvroute2026@gmail.com)';
 
 /**
  * What the panel reads to draw the map and the trails (proposal:
@@ -29,6 +36,16 @@ const historyParams = {
   properties: { id: { type: 'string', format: 'uuid' } },
 } as const;
 
+const addressQuery = {
+  type: 'object',
+  required: ['lat', 'lon'],
+  additionalProperties: false,
+  properties: {
+    lat: { type: 'number', minimum: -90, maximum: 90 },
+    lon: { type: 'number', minimum: -180, maximum: 180 },
+  },
+} as const;
+
 const historyQuery = {
   type: 'object',
   required: ['from', 'to'],
@@ -42,7 +59,11 @@ const historyQuery = {
 } as const;
 
 const locationsAdminRoutes: FastifyPluginAsync = async (app) => {
-  const service = new LocationsAdminService(app, new LocationsReadRepository(app.db));
+  const service = new LocationsAdminService(
+    app,
+    new LocationsReadRepository(app.db),
+    new GeocodingService(app.db, app.log, GEOCODER_USER_AGENT),
+  );
 
   app.addHook('onRequest', app.authenticate);
 
@@ -54,6 +75,12 @@ const locationsAdminRoutes: FastifyPluginAsync = async (app) => {
         ...(req.query.maxAccuracyM !== undefined ? { maxAccuracyM: req.query.maxAccuracyM } : {}),
         ...(req.query.since !== undefined ? { since: new Date(req.query.since) } : {}),
       }),
+  );
+
+  app.get<{ Querystring: { lat: number; lon: number } }>(
+    '/address',
+    { schema: { querystring: addressQuery } },
+    async (req) => service.address(req.query.lat, req.query.lon),
   );
 
   app.get<{ Params: { id: string }; Querystring: { from: string; to: string } }>(

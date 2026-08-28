@@ -133,6 +133,32 @@ Caracas o en UTC es una pregunta sobre el usuario, y el servidor no tiene por qu
 ruido. Dónde estuvo una persona un día concreto no es un listado más — se mira con el mismo rastro
 que su dinero.
 
+### Direcciones de calle (2026-08-28)
+
+| Método | Ruta | Descripción |
+|---|---|---|
+| GET | `/locations/address` | Convierte una coordenada (`?lat=` y `?lon=`) en algo legible: `{ label }`, del estilo «Av. Luis Roche, Altamira». `label` es **`null` cuando no hay calle que dar** — en medio de un campo no la hay, y eso es una respuesta, no un fallo |
+
+⚠️ **Se pide SOLO cuando un admin abre la ficha de alguien, nunca al dibujar el mapa.** El
+geocodificador público de OpenStreetMap permite **una petición por segundo**; con cien afiliados
+refrescando harían falta siete, y bloquearían el acceso — con razón.
+
+Por eso el servicio hace tres cosas que no son opcionales: **se identifica** con un User-Agent
+propio (usar el de una librería es motivo de bloqueo), **serializa** las llamadas con una cola de
+una por segundo larga, y **cachea en la base** (`geocode_cache`).
+
+**La caché es por celda, no por coordenada.** Se redondea a una rejilla de unos 33 m: un afiliado
+parado en un semáforo produce decenas de lecturas a metros unas de otras que resuelven a la misma
+calle, y así son una sola consulta. Se miran también **las ocho celdas vecinas**, porque dos
+lecturas separadas cinco metros pueden caer a un lado y otro de un borde — y preguntar dos veces
+por la misma esquina es exactamente lo que la caché existe para evitar.
+
+**Un `null` cacheado se guarda igual.** Si no, volveríamos a preguntar eternamente por un sitio
+que no tiene nombre.
+
+Si el geocodificador falla o tarda, se devuelve `null` y ya: una ficha sin calle vale mucho más
+que una ficha que no abre porque un tercero fue lento.
+
 ### Recuperación de clave (2026-08-24)
 
 **Los tres únicos endpoints públicos del chofer**, y tienen que serlo: quien olvidó su clave no

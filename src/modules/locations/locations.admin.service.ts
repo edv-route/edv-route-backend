@@ -4,6 +4,7 @@ import { CAN_OPERATE_STATUSES } from '../driver-auth/driver-auth.service.js';
 import { writeAudit } from '../audit-logs/audit-writer.js';
 import { readIntervalSeconds, readRetentionDays } from './locations.settings.js';
 import type { LocationsReadRepository } from './locations.read.repository.js';
+import type { GeocodingService } from './geocoding.service.js';
 
 /** Signed-URL lifetime for the avatars on the map. Same as the affiliates list. */
 const AVATAR_TTL_SECONDS = 3600;
@@ -81,6 +82,7 @@ export class LocationsAdminService {
   constructor(
     private readonly app: FastifyInstance,
     private readonly repo: LocationsReadRepository,
+    private readonly geocoding: GeocodingService,
   ) {
     this.settings = new SettingsRepository(app.db);
   }
@@ -190,6 +192,17 @@ export class LocationsAdminService {
       },
       truncated: rows.length < summary.count,
     };
+  }
+
+  /**
+   * Street name for a coordinate, on demand only.
+   *
+   * Never called while drawing the map: the geocoder allows one request per
+   * second, so this exists for the moment an admin opens somebody card and
+   * wants to know WHERE that dot is.
+   */
+  async address(lat: number, lon: number): Promise<{ label: string | null }> {
+    return { label: await this.geocoding.describe(lat, lon) };
   }
 
   /**
