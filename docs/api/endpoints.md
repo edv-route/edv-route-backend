@@ -90,6 +90,49 @@ falsificación, y rechazarlo tiraría en silencio todo lo que mandan algunos tel
 de `app_settings`. Así el día que haya viajes se sube el ritmo desde el panel y **todos los teléfonos
 obedecen sin publicar un APK**. Declarado en el schema de respuesta, o Fastify lo borra en silencio.
 
+### Ubicación en el panel (2026-08-28)
+
+Las dos **lecturas** que alimentan el mapa y los recorridos. Guard `authenticate` (admin), en un
+plugin aparte del `POST` de arriba: ese es la vía de escritura del chofer y corre en producción cada
+diez minutos, así que mezclar los dos guards en un mismo plugin es justo como un `onRequest` acaba
+aplicado a la ruta equivocada.
+
+| Método | Ruta | Descripción |
+|---|---|---|
+| GET | `/locations/live` | **El mapa**: última posición conocida de quien está trabajando ahora. Lee `drivers.last_location` —no el historial— porque la pregunta es «dónde está cada uno **ahora**», y responderla desde `driver_locations` obliga a sacar la fila más nueva de cada chofer entre decenas de miles, en cada refresco. Filtros opcionales `?maxAccuracyM=` y `?since=`. Devuelve `{ items:[{ userId, fullName, nationalId, photoUrl, status, lat, lon, accuracyM, lastLocationAt, ageSeconds, presence }], total, intervalSeconds, onlineWithinSeconds, delayedWithinSeconds }` |
+| GET | `/locations/drivers/:id/history` | **El recorrido** de un afiliado entre dos instantes (`?from=` y `?to=`, ISO **con desfase horario**). Devuelve `{ points:[{ lat, lon, accuracyM, recordedAt, createdAt, delaySeconds }], summary:{ count, firstAt, lastAt, maxDelaySeconds }, truncated }`, del punto **más viejo al más nuevo** — el orden en que se dibuja. **404** si el afiliado no existe · **400** si el rango está al revés o supera **31 días** |
+
+**El filtro de quién sale en el mapa es el mismo del `POST`**: estado que opera (`approved` u
+`overdue`) + tarifa arrancada + `is_available`, reutilizando `CAN_OPERATE_STATUSES`. Si los dos
+llegaran a discrepar, el mapa mostraría gente que no puede reportar, o escondería a quien sí reporta.
+
+**`presence` la calcula el servidor**, no el navegador: `online` hasta **dos** intervalos sin
+reportar, `delayed` hasta **tres**, `offline` a partir de ahí. Se **deriva del ajuste**
+`location_interval_seconds` en vez de fijarse en minutos, porque el ritmo baja a 30-60 s el día que
+arranque Viajes y un «20 minutos» escrito a mano empezaría a mentir ese mismo día. Los dos umbrales
+viajan en la respuesta para que la leyenda del panel no pueda contradecir a los pines.
+
+⚠️ **El corte por retención no es decoración.** La purga borra el historial pero **nunca limpia
+`drivers.last_location`**, así que un afiliado que dejó de trabajar hace meses conserva su última
+posición para siempre. Sin ese corte el mapa se iría llenando de fantasmas. No quitarlo.
+
+**`accuracyM` es la precisión de ESE punto**, buscada por su fecha en el historial; vale `null`
+cuando esa fila ya se purgó. Por eso `maxAccuracyM` **deja pasar los nulos**: precisión desconocida
+no es lo mismo que precisión mala, y esconder a un chofer por no saber su margen de error sería peor
+que mostrarlo.
+
+**`delaySeconds` es `created_at - recorded_at`**: cuánto tardó ese punto en llegar. Es lo que permite
+pintar de otro color el tramo que el teléfono guardó mientras no tenía señal, y la razón de que se
+guarden dos fechas por punto.
+
+**El rango se pide en instantes absolutos, nunca en días de calendario.** Si el día empieza en
+Caracas o en UTC es una pregunta sobre el usuario, y el servidor no tiene por qué adivinarla.
+
+**Consultar el recorrido de alguien deja rastro** en `audit_logs`
+(`driver.location_history_viewed`). El mapa general **no**: es una vista de trabajo y auditarla sería
+ruido. Dónde estuvo una persona un día concreto no es un listado más — se mira con el mismo rastro
+que su dinero.
+
 ### Recuperación de clave (2026-08-24)
 
 **Los tres únicos endpoints públicos del chofer**, y tienen que serlo: quien olvidó su clave no

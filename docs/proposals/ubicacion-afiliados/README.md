@@ -240,7 +240,7 @@ resta. Las dos son carísimas de añadir cuando ya hay un mes de historial sin e
 | **1** | Tablas, ajustes, endpoint de recepción y purga diaria | Backend | ✅ **Hecha** (2026-08-24) |
 | **2** | Token largo + validación del estado en el guard | Backend | ✅ **Hecha** (2026-08-24) |
 | **3** | Permisos, servicio en primer plano, cola local y arranque/parada | App | ✅ **Hecha** (2026-08-24) · sin probar en dispositivo |
-| **4** | Verlo: mapa en vivo e historial por chofer | Panel | **Después**, cuando Luis lo diga |
+| **4** | Verlo: mapa en vivo e historial por chofer | Panel | **Planificada** (2026-08-27) → [`fase-4-mapa.md`](./fase-4-mapa.md) |
 
 Las fases 1 y 2 son independientes de la 3: el backend puede probarse con peticiones sueltas antes
 de que la app mande un solo punto.

@@ -1,11 +1,8 @@
 import type { FastifyInstance } from 'fastify';
 import { SettingsRepository } from '../settings/settings.repository.js';
 import { CAN_OPERATE_STATUSES } from '../driver-auth/driver-auth.service.js';
+import { readIntervalSeconds, readRetentionDays } from './locations.settings.js';
 import type { LocationPoint, LocationsRepository } from './locations.repository.js';
-
-/** Fallbacks if the settings row ever goes missing. Same values as the migration. */
-const DEFAULT_INTERVAL_SECONDS = 600;
-const DEFAULT_RETENTION_DAYS = 30;
 
 /**
  * How far back a point may claim to have been taken. The local queue is the
@@ -42,22 +39,12 @@ export class LocationsService {
 
   /** Seconds between reports while idle. Read from settings on every call. */
   async intervalSeconds(): Promise<number> {
-    const raw = await this.settings.get('location_interval_seconds', DEFAULT_INTERVAL_SECONDS);
-    const value = Number(raw);
-    // A nonsense value in the settings table must not turn into a phone
-    // hammering the API every second, nor into one that never reports again.
-    return Number.isFinite(value) && value >= 30 && value <= 3600
-      ? Math.floor(value)
-      : DEFAULT_INTERVAL_SECONDS;
+    return readIntervalSeconds(this.settings);
   }
 
   /** Days of history kept. Read by the purge job on every pass. */
   async retentionDays(): Promise<number> {
-    const raw = await this.settings.get('location_retention_days', DEFAULT_RETENTION_DAYS);
-    const value = Number(raw);
-    return Number.isFinite(value) && value >= 1 && value <= 365
-      ? Math.floor(value)
-      : DEFAULT_RETENTION_DAYS;
+    return readRetentionDays(this.settings);
   }
 
   /**

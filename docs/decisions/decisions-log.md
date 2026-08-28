@@ -1718,3 +1718,32 @@ existen los servicios en primer plano.
 **La lección**, y es la segunda vez esta sesión: verificar la plataforma **antes** de diseñar contra
 ella. Con Railway fue el puerto de salida; aquí, qué permiso exige Android para qué. En ambos casos
 la pregunta correcta no era «¿se puede hacer esto?» sino «¿bajo qué condiciones exactas?».
+
+## 2026-08-28 — ⚠️ Arrancar el backend en local dispara los schedulers contra PRODUCCIÓN
+
+> Salió construyendo la app en local para listar las rutas registradas: al hacer `buildApp()` se
+> registran los **siete** schedulers y todos empiezan a hacer ticks contra la base — que es la misma
+> de producción. Era **viernes**, el día en que el motor de deuda emite.
+
+**Comprobado inmediatamente**: cero facturas creadas en la última hora y cero en todo el día. No
+hubo daño. Pero el daño no ocurrió por diseño, sino por suerte.
+
+| Scheduler | ¿Se protege de correr fuera de producción? |
+|---|---|
+| `location-retention` | ✅ **Sí**: comprueba `NODE_ENV !== 'production'` y ni siquiera programa el timer |
+| `debt-scheduler` | ❌ **No**. Solo mira `debt_engine_enabled`, que está **encendido** |
+| El resto (`subscription`, `document`, `applicant-cleanup`, `scheduled-driver-activation`, `notification-dispatcher`) | ❌ **No** |
+
+**La regla, hasta que se arregle**: no ejecutar `buildApp()` en local —ni `npm run dev`— salvo que
+se quiera de verdad que los schedulers corran contra los datos reales. Para comprobar que unas rutas
+quedaron registradas, basta el `typecheck` y una petición contra el backend desplegado; para probar
+lógica, los tests con sus propios afiliados desechables.
+
+**La solución de fondo**, cuando se aborde: llevar la salvaguarda de `location-retention` a todos los
+schedulers, o —mejor— el proyecto Supabase separado para producción que ya está en la lista de
+pendientes. Mientras las dos cosas compartan base, cualquier arranque local es un actor más
+escribiendo en producción.
+
+**La lección, que ya es la tercera vez**: verificar la plataforma antes de operar sobre ella. Con
+Railway fue el puerto de salida; con Android, qué permiso exige qué; aquí, qué se pone en marcha por
+el simple hecho de construir la aplicación.
