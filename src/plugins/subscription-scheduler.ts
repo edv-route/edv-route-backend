@@ -27,6 +27,14 @@ const TICK_MS = 60_000;
  */
 export default fp(
   async (app) => {
+    // Producción y desarrollo comparten UNA base de datos: un backend local
+    // que programe este timer escribe sobre datos reales. Misma guarda que el
+    // despachador de avisos y la purga de ubicación.
+    if (app.config.NODE_ENV !== 'production') {
+      app.log.info('subscription-scheduler: no programado (solo corre en producción · tarifas)');
+      return;
+    }
+
     let running = false;
 
     const tick = async (): Promise<void> => {

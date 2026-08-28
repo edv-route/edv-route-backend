@@ -183,6 +183,14 @@ export async function runApplicantCleanup(app: FastifyInstance): Promise<Applica
  */
 export default fp(
   async (app) => {
+    // Producción y desarrollo comparten UNA base de datos: un backend local
+    // que programe este timer escribe sobre datos reales. Misma guarda que el
+    // despachador de avisos y la purga de ubicación.
+    if (app.config.NODE_ENV !== 'production') {
+      app.log.info('applicant-cleanup-scheduler: no programado (solo corre en producción · limpieza de solicitantes)');
+      return;
+    }
+
     let running = false;
     const tick = async (): Promise<void> => {
       if (running) return;
