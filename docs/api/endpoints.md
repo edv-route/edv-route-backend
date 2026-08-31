@@ -199,6 +199,38 @@ registro por panel sin pago, o una deuda de alta re-emitida tras revertir un rec
 documentos de dinero (regla 7). El borrado en cascada además **se niega** a correr si el chofer
 tiene facturas, por si el criterio de selección vuelve a quedarse corto.
 
+## El cliente (pasajero) — `/client-auth` (2026-08-31)
+
+El canal de la app del pasajero, espejo de `/driver-auth` (plan: `docs/proposals/cliente/`). El
+token lleva `type: 'client'` y lo comprueba `authenticateClient`: los tres tipos se firman con el
+mismo secreto, así que sin esa comprobación un token de cliente abriría los endpoints del chofer.
+Registro y entrada son públicos; el resto exige el token del cliente.
+
+| Método | Ruta | Descripción |
+|---|---|---|
+| POST | `/client-auth/register` | Datos básicos (`firstName`, `lastName`, `email`, `password`, `acceptedPrivacy`; opcionales `middleName`, `secondLastName`, `phone`, `birthDate`, `address`) → **201** `{ token, client }`. Sin cédula y sin aprobación: se registra y entra. Si el correo o el teléfono ya pertenecen a un **afiliado**, no es error: gana su fila en `clients` y conserva nombre, clave y lado de chofer (decisión 2026-08-31). **409** si ya es cliente |
+| POST | `/client-auth/login` | `{ identifier, password }` → `{ token, client }`. `identifier` es **correo O teléfono** (E.164), una sola consulta con OR — dos intentos harían la diferencia observable por tiempo. Clave errada y cuenta desconocida responden **exactamente igual** («Datos incorrectos»). **403** si está suspendido |
+| GET / PATCH | `/client-auth/me` | Su perfil / edición parcial (nombres incluidos: no hay identidad verificada que proteger). Cambiar la clave exige `currentPassword`. **409** si el correo/teléfono nuevo pertenece a otra cuenta |
+| POST | `/client-auth/me/photo` | Foto de perfil (multipart). Mismas reglas que la del chofer: contenido olfateado (no se confía en el MIME declarado), bucket **privado**, se guarda el path y sale como URL firmada de 1 h |
+
+### Recuperación de clave del cliente (2026-08-31, fase C-d)
+
+Mismos tres pasos y **misma maquinaria** que la del chofer — `PasswordResetService` importado, no
+copiado, con las mismas reglas: código de 6 dígitos hasheado con argon2id, 10 min de vida, 3
+intentos, 5 peticiones/hora, 60 s entre códigos, token de un solo propósito y gasto del intento en
+la misma transacción del cambio. Lo que cambia es deliberado y pequeño:
+
+| Método | Ruta | Descripción |
+|---|---|---|
+| POST | `/client-auth/password-reset/request` | `{ email }` → **204**. La identidad es el **correo solo**: el pasajero no tiene cédula en el sistema, y el correo es a la vez su identificador y donde cae el código. La búsqueda está **acotada a `clients`**: una cuenta que solo es chofer responde 404 — tiene su propio canal, y esta puerta no debe confirmar que su correo existe |
+| POST | `/client-auth/password-reset/verify` | `{ email, code }` → `{ resetToken }`. Igual que el del chofer |
+| POST | `/client-auth/password-reset/confirm` | `{ resetToken, password }` → **204**. El correo de aviso redacta el «entrar» a la manera del pasajero (correo o teléfono, no cédula) |
+
+⚠️ La enumeración con un solo campo se **asumió a propósito**: `/client-auth/register` ya le dice a
+cualquiera si un correo está tomado («Ya existe una cuenta…»), así que el «no coinciden» de aquí no
+revela nada que no fuera ya visible — y el pasajero que se equivoca tecleando su propio correo
+merece saberlo, el mismo criterio del canal del chofer.
+
 ## Administradores
 
 | Método | Ruta | Descripción |

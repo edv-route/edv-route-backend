@@ -125,12 +125,25 @@ Si no pediste cambiar tu clave, ignora este correo: tu clave actual sigue funcio
  * Sent AFTER the password actually changed. Not a courtesy: it is the only way
  * the real owner finds out if somebody else pulled off the recovery, and the
  * moment when doing something about it is still cheap.
+ *
+ * The channel decides how "entrar" reads: a driver signs in with his cédula, a
+ * passenger with his email or phone. The wording still lives HERE — the
+ * services say which channel finished the flow, never how the sentence goes.
  */
-export function passwordChangedEmail(input: { to: string; firstName: string }): EmailMessage {
+export function passwordChangedEmail(input: {
+  to: string;
+  firstName: string;
+  channel?: 'driver' | 'client';
+}): EmailMessage {
+  const how =
+    input.channel === 'client'
+      ? 'con tu correo (o tu teléfono) y tu clave nueva'
+      : 'con tu cédula y tu clave nueva';
+
   const inner = `<tr><td style="padding:32px 32px 8px;">
 <p style="margin:0 0 6px; font-family:${FONT}; font-size:20px; font-weight:800; color:${INK};">Hola, ${escapeHtml(input.firstName)}</p>
 <p style="margin:0 0 20px; font-family:${FONT}; font-size:15px; line-height:1.6; color:${INK};">
-Tu clave de EDV Route se cambió correctamente. Ya puedes entrar a la app con tu cédula y tu clave nueva.
+Tu clave de EDV Route se cambió correctamente. Ya puedes entrar a la app ${how}.
 </p>
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
 <tr><td style="background-color:#FDF3F3; border-radius:14px; padding:18px 20px;">
@@ -145,7 +158,7 @@ Tu clave de EDV Route se cambió correctamente. Ya puedes entrar a la app con tu
     `Hola, ${input.firstName}`,
     '',
     'Tu clave de EDV Route se cambió correctamente.',
-    'Ya puedes entrar a la app con tu cédula y tu clave nueva.',
+    `Ya puedes entrar a la app ${how}.`,
     '',
     'Si no fuiste tú, comunícate con la oficina de inmediato.',
     '',

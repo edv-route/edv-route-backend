@@ -1787,3 +1787,32 @@ mapa exige la pestaña visible.
 **La lección**, que ya va siendo un patrón en este proyecto: cuando algo falla en silencio, **mirar
 la red antes que el código**. La lista de peticiones dijo en diez segundos lo que dos hipótesis
 razonables sobre el tamaño del contenedor no habían encontrado en una hora.
+
+## 2026-08-31 — 🔑 Recuperación de clave del cliente (fase C-d): misma maquinaria, identidad distinta
+
+**Decisión**: el pasajero recupera su clave con **su correo, solo** — sin cédula, que no tiene en
+el sistema — y los tres pasos corren por la **misma** `PasswordResetService` del chofer, importada
+y generalizada, nunca copiada. El servicio ganó `requestClientCode`/`verifyClientCode` (resuelven
+la identidad y comparten el medio del flujo) y `confirm` un parámetro de canal que solo decide la
+redacción del correo de aviso («entrar con tu correo o tu teléfono», no «con tu cédula»).
+
+**Lo que esto implica y por qué está bien:**
+
+- **La búsqueda está acotada a `clients`.** Una cuenta que solo es chofer responde «los datos no
+  coinciden» en `/client-auth/password-reset/request`: tiene su propio canal, y esta puerta no debe
+  servir para confirmar correos de la lista de afiliados.
+- **La enumeración con un solo campo se asume a propósito**, como se asumió la del chofer con dos:
+  `/client-auth/register` ya le dice a cualquiera si un correo está tomado, así que el «no
+  coinciden» de aquí no revela nada nuevo — y el pasajero que teclea mal su propio correo merece
+  enterarse. Pasar a la respuesta neutra sigue siendo un cambio de una línea.
+- **Un afiliado-que-es-cliente comparte LA clave** (una sola fila en `users`): recuperarla por
+  cualquiera de los dos canales la cambia para ambos lados. Es coherente con la decisión de que
+  conserva su clave al ganar el lado de pasajero.
+- En la app, el contrato `PasswordResetRepository` se generalizó con `ResetIdentity` (correo +
+  cédula opcional) y **las pantallas 2 y 3 del flujo son las mismas** para ambos canales; cada
+  canal aporta su pantalla de identidad, su repositorio y sus textos.
+
+**Pruebas**: `tests/client-password-reset.test.ts` (3 verdes) cubre lo específico del cliente:
+identidad por correo, el 404 del chofer-sin-lado-cliente, el camino completo código→token→clave
+nueva, la redacción del correo y el rechazo del token repetido. La maquinaria compartida ya estaba
+probada en producción desde el 2026-08-24.

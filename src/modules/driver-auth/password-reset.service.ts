@@ -2,7 +2,7 @@ import { randomInt } from 'node:crypto';
 import argon2 from 'argon2';
 import type { FastifyInstance } from 'fastify';
 import { passwordChangedEmail, passwordResetEmail } from '../../email/email-templates.js';
-import type { PasswordResetRepository } from './password-reset.repository.js';
+import type { PasswordResetRepository, ResetTarget } from './password-reset.repository.js';
 
 /** 6 digits: what fits in the app's six boxes and what people can retype. */
 const CODE_LENGTH = 6;
@@ -22,7 +22,8 @@ export class PasswordResetService {
   ) {}
 
   /**
-   * Step 1: cédula + email must match ONE account; a code goes to that address.
+   * Step 1, driver channel: cédula + email must match ONE account; a code goes
+   * to that address.
    *
    * The mismatch is reported plainly ("los datos no coinciden") rather than with
    * the neutral "if they match we sent a code". That IS user enumeration - with
@@ -31,10 +32,27 @@ export class PasswordResetService {
    * the silent version is a one-line change here and in the app copy.
    */
   async requestCode(input: { nationalId: string; email: string; ip: string | null }): Promise<void> {
+    const target = await this.repo.findTarget(input.nationalId.trim(), input.email.trim());
+    await this.issueCode(target, input.ip);
+  }
+
+  /**
+   * Step 1, client channel: the email alone. A passenger has no cédula on file,
+   * and the register endpoint already tells anyone whether an email is taken,
+   * so the single field reveals nothing that was hidden — same deliberate call
+   * as the driver's plain mismatch message.
+   */
+  async requestClientCode(input: { email: string; ip: string | null }): Promise<void> {
+    const target = await this.repo.findClientTarget(input.email.trim());
+    await this.issueCode(target, input.ip);
+  }
+
+  /** The shared middle of step 1: rate limits, the code, and the mail. */
+  private async issueCode(target: ResetTarget | null, ip: string | null): Promise<void> {
     const { httpErrors } = this.app;
 
-    // A log-only sender means the code reaches a log file, not the driver. Say
-    // so rather than show him a screen promising mail that never left.
+    // A log-only sender means the code reaches a log file, not the person. Say
+    // so rather than show a screen promising mail that never left.
     if (!this.app.emailConfigured && this.app.config.NODE_ENV === 'production') {
       this.app.log.error('password reset requested but no email provider is configured');
       throw httpErrors.serviceUnavailable(
@@ -42,7 +60,6 @@ export class PasswordResetService {
       );
     }
 
-    const target = await this.repo.findTarget(input.nationalId.trim(), input.email.trim());
     if (!target) throw httpErrors.notFound('Los datos no coinciden con ninguna cuenta');
 
     const hourAgo = new Date(Date.now() - 60 * 60 * 1000);
@@ -72,7 +89,7 @@ export class PasswordResetService {
     const codeHash = await argon2.hash(code, { type: argon2.argon2id });
     const expiresAt = new Date(Date.now() + CODE_TTL_MINUTES * 60 * 1000);
 
-    const id = await this.repo.create({ userId: target.userId, codeHash, expiresAt, ip: input.ip });
+    const id = await this.repo.create({ userId: target.userId, codeHash, expiresAt, ip });
 
     try {
       await this.app.email.send(
@@ -96,23 +113,36 @@ export class PasswordResetService {
   }
 
   /**
-   * Step 2: the code. Returns a short-lived token that authorises ONE password
-   * change - the code itself is never accepted again.
+   * Step 2, driver channel: the code. Returns a short-lived token that
+   * authorises ONE password change - the code itself is never accepted again.
    */
   async verifyCode(input: {
     nationalId: string;
     email: string;
     code: string;
   }): Promise<{ resetToken: string }> {
+    const target = await this.repo.findTarget(input.nationalId.trim(), input.email.trim());
+    return this.verifyFor(target, input.code);
+  }
+
+  /** Step 2, client channel: same check, identity by email alone. */
+  async verifyClientCode(input: { email: string; code: string }): Promise<{ resetToken: string }> {
+    const target = await this.repo.findClientTarget(input.email.trim());
+    return this.verifyFor(target, input.code);
+  }
+
+  private async verifyFor(
+    target: ResetTarget | null,
+    code: string,
+  ): Promise<{ resetToken: string }> {
     const { httpErrors } = this.app;
 
-    const target = await this.repo.findTarget(input.nationalId.trim(), input.email.trim());
     if (!target) throw httpErrors.notFound('Los datos no coinciden con ninguna cuenta');
 
     const attempt = await this.repo.findLive(target.userId);
     if (!attempt) throw httpErrors.badRequest('El código venció. Pide uno nuevo.');
 
-    const ok = await argon2.verify(attempt.codeHash, input.code.trim()).catch(() => false);
+    const ok = await argon2.verify(attempt.codeHash, code.trim()).catch(() => false);
     if (!ok) {
       const used = await this.repo.registerFailure(attempt.id);
       const left = MAX_ATTEMPTS - used;
@@ -137,8 +167,16 @@ export class PasswordResetService {
     return { resetToken };
   }
 
-  /** Step 3: the new password. The attempt is spent in the same transaction. */
-  async confirm(input: { resetToken: string; password: string }): Promise<void> {
+  /**
+   * Step 3: the new password. The attempt is spent in the same transaction.
+   * Channel-agnostic on purpose — the token already proves email ownership and
+   * both sides share the SAME password in `users`; the channel only decides how
+   * the confirmation mail words "entrar".
+   */
+  async confirm(
+    input: { resetToken: string; password: string },
+    channel: 'driver' | 'client' = 'driver',
+  ): Promise<void> {
     const { httpErrors } = this.app;
 
     let payload: { sub: string; type: string; rid?: string };
@@ -172,7 +210,7 @@ export class PasswordResetService {
       const recipient = await this.repo.findRecipient(attempt.userId);
       if (recipient) {
         await this.app.email.send(
-          passwordChangedEmail({ to: recipient.email, firstName: recipient.firstName }),
+          passwordChangedEmail({ to: recipient.email, firstName: recipient.firstName, channel }),
         );
       }
     } catch (err) {

@@ -1,6 +1,7 @@
 # El cliente (pasajero) — plan de arranque
 
-> Estado: **plan, sin escribir código** · Fecha: 2026-08-31 · Pedido por Luis
+> Estado: **C-a a C-d HECHAS** (backend + app; falta probar en el teléfono) ·
+> Pendiente: la sección de clientes del panel · Fecha: 2026-08-31 · Pedido por Luis
 >
 > Alcance de esta primera entrega: **entrar, registrarse, un inicio de mentira y un perfil
 > editable**. Sin viajes: eso viene después y es otro plan.
@@ -147,12 +148,12 @@ No entra en esta entrega salvo que lo pidas.
 
 ## 7. Orden de trabajo
 
-| Fase | Qué | Dónde |
-|---|---|---|
-| **C-a** | Tabla `clients`, guard de cliente, y los endpoints de registro, entrada y perfil, con sus pruebas | Backend |
-| **C-b** | Entrar y registrarse en la app, con el modo pasajero encendido | App |
-| **C-c** | Isla de iconos, inicio de maqueta y perfil editable con foto | App |
-| **C-d** | Recuperación de clave del cliente | Backend + App |
+| Fase | Qué | Dónde | Estado |
+|---|---|---|---|
+| **C-a** | Tabla `clients`, guard de cliente, y los endpoints de registro, entrada y perfil, con sus pruebas | Backend | ✅ 2026-08-31 |
+| **C-b** | Entrar y registrarse en la app, con el modo pasajero encendido | App | ✅ 2026-08-31 |
+| **C-c** | Isla de iconos, inicio de maqueta y perfil editable con foto | App | ✅ 2026-08-31 |
+| **C-d** | Recuperación de clave del cliente | Backend + App | ✅ 2026-08-31 (misma maquinaria del chofer, identidad por correo solo; ver decisions-log) |
 
 C-a es independiente: se prueba entera con peticiones sueltas antes de que la app tenga una
 pantalla. C-b y C-c comparten el esqueleto de navegación.

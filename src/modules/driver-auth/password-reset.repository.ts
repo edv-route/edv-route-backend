@@ -43,6 +43,24 @@ export class PasswordResetRepository {
   }
 
   /**
+   * The CLIENT channel's identity check: a passenger recovers with his email
+   * alone — he has no cédula on file, and the email is both his identifier and
+   * where the code lands. The join against `clients` is what scopes the lookup:
+   * a driver-only account does not match here (he has his own channel), so a
+   * stranger cannot use this door to probe the affiliate list.
+   */
+  async findClientTarget(email: string): Promise<ResetTarget | null> {
+    const { rows } = await this.db.query<ResetTarget>(
+      `SELECT u.id AS "userId", u.first_name AS "firstName", u.email
+         FROM clients c
+         JOIN users u ON u.id = c.user_id
+        WHERE lower(u.email) = lower($1)`,
+      [email],
+    );
+    return rows[0] ?? null;
+  }
+
+  /**
    * Who to write to, by user id. The confirmation mail runs AFTER the change,
    * when the cédula/email the driver typed are no longer in hand - and going
    * back through `findTarget` would mean re-deriving them just to look up what
