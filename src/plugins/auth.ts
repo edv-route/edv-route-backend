@@ -25,6 +25,12 @@ export interface DriverTokenPayload {
  * `rid` is the reset attempt it belongs to, so the row can veto a replay even
  * while the signature is still valid (a JWT cannot be revoked; the row can).
  */
+/** Passenger session (mobile app, "Modo pasajero"). */
+export interface ClientTokenPayload {
+  sub: string;
+  type: 'client';
+}
+
 export interface PasswordResetTokenPayload {
   sub: string;
   type: 'pwd_reset';
@@ -32,7 +38,11 @@ export interface PasswordResetTokenPayload {
 }
 
 /** Every token this API issues. `type` discriminates the audience. */
-export type AppTokenPayload = AdminTokenPayload | DriverTokenPayload | PasswordResetTokenPayload;
+export type AppTokenPayload =
+  | AdminTokenPayload
+  | DriverTokenPayload
+  | ClientTokenPayload
+  | PasswordResetTokenPayload;
 
 declare module '@fastify/jwt' {
   interface FastifyJWT {
@@ -51,6 +61,11 @@ declare module 'fastify' {
      * one costs a query.
      */
     authenticateDriver: (req: FastifyRequest, reply: FastifyReply) => Promise<void>;
+    /**
+     * Guard for client (passenger) routes: valid token, audience === 'client',
+     * AND an account that is not suspended. Same reasoning as the driver one.
+     */
+    authenticateClient: (req: FastifyRequest, reply: FastifyReply) => Promise<void>;
   }
 }
 
@@ -139,6 +154,37 @@ export default fp(
       if (LOCKED_OUT_STATUSES.has(account.driverStatus) || account.userStatus === 'suspended') {
         // 403, not 401: the session is valid, the account is not. The app tells
         // them apart to decide between "log in again" and "you were suspended".
+        throw app.httpErrors.forbidden('Tu cuenta fue suspendida. Comunícate con la oficina.');
+      }
+    });
+
+    const clientAudience = verifyAudience('client');
+
+    /**
+     * Same shape as the driver guard, and for the same reason: the passenger
+     * session is long-lived, so expiry cannot revoke it. Asking the database
+     * on every request is what makes suspending somebody take effect at once.
+     *
+     * It checks BOTH sides: `clients.status` for a passenger the office
+     * stopped, and `users.status` for a person suspended altogether — which
+     * matters because that same row may also be an affiliate.
+     */
+    app.decorate('authenticateClient', async (req: FastifyRequest, _reply: FastifyReply) => {
+      await clientAudience(req);
+
+      const { rows } = await app.db.query<{ clientStatus: string; userStatus: string }>(
+        `SELECT c.status AS "clientStatus", u.status::text AS "userStatus"
+           FROM clients c JOIN users u ON u.id = c.user_id
+          WHERE c.user_id = $1`,
+        [req.user.sub],
+      );
+
+      const account = rows[0];
+      if (!account) {
+        throw app.httpErrors.unauthorized('Tu cuenta ya no existe');
+      }
+      if (account.clientStatus === 'suspended' || account.userStatus === 'suspended') {
+        // 403, not 401: the session is valid, the account is not.
         throw app.httpErrors.forbidden('Tu cuenta fue suspendida. Comunícate con la oficina.');
       }
     });
