@@ -25,6 +25,7 @@ import locationsRoutes from './modules/locations/locations.routes.js';
 import locationsAdminRoutes from './modules/locations/locations.admin.routes.js';
 import clientAuthRoutes from './modules/client-auth/client-auth.routes.js';
 import clientPasswordResetRoutes from './modules/client-auth/client-password-reset.routes.js';
+import clientsRoutes from './modules/clients/clients.routes.js';
 import adminsRoutes from './modules/admins/admins.routes.js';
 import vehicleTypesRoutes from './modules/vehicle-types/vehicle-types.routes.js';
 import requirementsRoutes from './modules/requirements/requirements.routes.js';
@@ -116,6 +117,7 @@ export async function buildApp(): Promise<FastifyInstance> {
       await api.register(paymentMethodsRoutes, { prefix: '/payment-methods' });
       await api.register(clientAuthRoutes, { prefix: '/client-auth' }); // app del pasajero
       await api.register(clientPasswordResetRoutes, { prefix: '/client-auth' }); // /password-reset/*
+      await api.register(clientsRoutes, { prefix: '/clients' }); // panel: lista de pasajeros
       await api.register(locationsAdminRoutes, { prefix: '/locations' }); // panel: mapa e historial
       await api.register(driversRoutes, { prefix: '/drivers' });
       await api.register(vehicleImagesRoutes, { prefix: '/drivers' });

@@ -231,6 +231,16 @@ cualquiera si un correo está tomado («Ya existe una cuenta…»), así que el 
 revela nada que no fuera ya visible — y el pasajero que se equivoca tecleando su propio correo
 merece saberlo, el mismo criterio del canal del chofer.
 
+### Clientes en el panel — `/clients` (2026-08-31)
+
+La vista del **admin** sobre los pasajeros (sección «Clientes»), espejo de la lista de afiliados.
+**Solo lista por ahora** (decisión de Luis): la ficha de detalle y la suspensión llegan después.
+Exige el token de **admin**.
+
+| Método | Ruta | Descripción |
+|---|---|---|
+| GET | `/clients` | Lista con búsqueda y paginación (`search` por nombre/correo/**teléfono** — el pasajero se identifica por teléfono, no por cédula —, `status` `active\|suspended`, `page`, `limit`). Cada fila trae la cédula **solo si la persona también es afiliado** (LEFT JOIN a `drivers`; el panel lo muestra como insignia «También afiliado») y la foto como URL firmada de 1 h, **firmada en lote** (`signAvatars`, extraído a `src/storage/avatar-signing.ts` y compartido con la lista de afiliados) |
+
 ## Administradores
 
 | Método | Ruta | Descripción |

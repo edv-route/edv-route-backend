@@ -1,7 +1,7 @@
 # El cliente (pasajero) — plan de arranque
 
-> Estado: **C-a a C-d HECHAS** (backend + app; falta probar en el teléfono) ·
-> Pendiente: la sección de clientes del panel · Fecha: 2026-08-31 · Pedido por Luis
+> Estado: **C-a a C-d HECHAS** (backend + app) · Panel: **lista de clientes HECHA**
+> (2026-08-31; ficha y suspensión pendientes) · Fecha: 2026-08-31 · Pedido por Luis
 >
 > Alcance de esta primera entrega: **entrar, registrarse, un inicio de mentira y un perfil
 > editable**. Sin viajes: eso viene después y es otro plan.
