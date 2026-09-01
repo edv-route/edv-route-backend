@@ -4,11 +4,13 @@ import { personProperties } from '../drivers/drivers.schemas.js';
  * Validation for the passenger side (proposal: docs/proposals/cliente).
  *
  * The person fields are the SAME ones the affiliate registration uses —
- * imported, not copied. Luis asked for the two forms to match, and importing is
- * what actually guarantees it: a copy drifts the first time somebody widens a
- * field on one side only. That includes the phone pattern (+58 and ten digits),
- * which is already right and is deliberately left alone.
+ * imported, not copied. Since 2026-09-01 each role owns its OWN email, phone
+ * and password (independent roles, decision by Luis); what both share is the
+ * person: names, cédula and birth date.
  */
+
+/** App password policy (both roles): digits only, 6 to 8 (Luis, 2026-09-01). */
+const appPassword = { type: 'string', pattern: '^\\d{6,8}$' } as const;
 
 /** What the app shows about the signed-in client. */
 export const clientPublicSchema = {
@@ -27,9 +29,9 @@ export const clientPublicSchema = {
     address: { type: ['string', 'null'] },
     status: { type: 'string' },
     /**
-     * Present only when this person is ALSO an affiliate — it lives on
-     * `drivers`, not on `users`. The app can use it to offer the driver mode
-     * to somebody who already has one.
+     * The office-verified one (`drivers`) when the person is also an
+     * affiliate, else the self-declared one (`clients`). Null only on legacy
+     * accounts registered before the cédula became mandatory (2026-08-31).
      */
     nationalId: { type: ['string', 'null'] },
     createdAt: { type: 'string' },
@@ -59,16 +61,49 @@ export const clientLoginSchema = {
        * the lookup matches both columns anyway.
        */
       identifier: { type: 'string', minLength: 3, maxLength: 120 },
+      // Lenient on purpose: passwords predating the numeric policy still work.
       password: { type: 'string', minLength: 1, maxLength: 72 },
     },
   },
   response: authResponse,
 } as const;
 
+/**
+ * Step 0 of both registrations (Luis, 2026-09-01): the cédula travels FIRST
+ * and the answer says which form to show. `new` = nobody has it (full form);
+ * `attachable` = the person exists without a client side (short form);
+ * `exists` = already a client (go log in).
+ */
+export const clientCheckCedulaSchema = {
+  body: {
+    type: 'object',
+    required: ['nationalId'],
+    additionalProperties: false,
+    properties: { nationalId: personProperties.nationalId },
+  },
+  response: {
+    200: {
+      type: 'object',
+      properties: { status: { type: 'string', enum: ['new', 'attachable', 'exists'] } },
+    },
+  },
+} as const;
+
 export const clientRegisterSchema = {
   body: {
     type: 'object',
-    required: ['firstName', 'lastName', 'email', 'password', 'acceptedPrivacy'],
+    // Parity with the affiliate registration (decision by Luis, 2026-08-31):
+    // everything mandatory except middle name, second last name and address.
+    required: [
+      'firstName',
+      'lastName',
+      'birthDate',
+      'nationalId',
+      'phone',
+      'email',
+      'password',
+      'acceptedPrivacy',
+    ],
     additionalProperties: false,
     properties: {
       firstName: personProperties.firstName,
@@ -76,11 +111,36 @@ export const clientRegisterSchema = {
       lastName: personProperties.lastName,
       secondLastName: personProperties.secondLastName,
       birthDate: personProperties.birthDate,
+      nationalId: personProperties.nationalId,
       address: personProperties.address,
       email: personProperties.email,
       phone: personProperties.phone,
-      // Required, unlike the driver's: it is one of the two ways he signs in.
-      password: { type: 'string', minLength: 6, maxLength: 72 },
+      password: appPassword,
+      acceptedPrivacy: { type: 'boolean' },
+    },
+  },
+  response: { 201: authResponse[200] },
+} as const;
+
+/**
+ * The SHORT form (Luis, 2026-09-01): an existing person — usually an
+ * affiliate — gains the client side. He proves it is him with the password he
+ * already has, and types only what is HIS as a client: email, phone and this
+ * role's password (same or different, his call). Names, cédula and birth date
+ * are the person's and are neither asked nor shown.
+ */
+export const clientAttachSchema = {
+  body: {
+    type: 'object',
+    required: ['nationalId', 'currentPassword', 'email', 'phone', 'password', 'acceptedPrivacy'],
+    additionalProperties: false,
+    properties: {
+      nationalId: personProperties.nationalId,
+      // Lenient: the proof is whatever password the account already has.
+      currentPassword: { type: 'string', minLength: 1, maxLength: 72 },
+      email: personProperties.email,
+      phone: personProperties.phone,
+      password: appPassword,
       acceptedPrivacy: { type: 'boolean' },
     },
   },
@@ -97,15 +157,17 @@ export const clientUpdateSchema = {
     additionalProperties: false,
     minProperties: 1,
     properties: {
+      // Names and address are the PERSON's (shared with the driver side).
       firstName: personProperties.firstName,
       middleName: personProperties.middleName,
       lastName: personProperties.lastName,
       secondLastName: personProperties.secondLastName,
       birthDate: personProperties.birthDate,
       address: personProperties.address,
+      // Email, phone and password are THIS role's own.
       email: personProperties.email,
       phone: personProperties.phone,
-      password: { type: 'string', minLength: 6, maxLength: 72 },
+      password: appPassword,
       // Required by the service whenever `password` travels: a stolen session
       // must not be enough to lock the owner out of his own account.
       currentPassword: { type: 'string', minLength: 1, maxLength: 72 },

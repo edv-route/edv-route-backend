@@ -1,9 +1,9 @@
 import type { FastifyInstance } from 'fastify';
 import { signAvatars } from '../../storage/avatar-signing.js';
-import type { ClientsRepository, ClientListResult } from './clients.repository.js';
+import type { ClientsRepository, ClientDetail, ClientListResult } from './clients.repository.js';
 
-/** Thin on purpose: today the panel only lists. Suspension and the detail
- *  card land here when Luis asks for them. */
+/** Thin on purpose: the panel lists and reads the detail card. Suspension
+ *  lands here when Luis asks for it. */
 export class ClientsService {
   constructor(
     private readonly app: FastifyInstance,
@@ -19,5 +19,12 @@ export class ClientsService {
     const result = await this.clients.list(opts);
     result.items = await signAvatars(this.app.storage, result.items);
     return result;
+  }
+
+  async getDetail(userId: string): Promise<ClientDetail> {
+    const detail = await this.clients.findDetail(userId);
+    if (!detail) throw this.app.httpErrors.notFound('Cliente no encontrado');
+    const [signed] = await signAvatars(this.app.storage, [detail]);
+    return signed!;
   }
 }

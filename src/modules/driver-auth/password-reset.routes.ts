@@ -56,9 +56,9 @@ const confirmSchema = {
     additionalProperties: false,
     properties: {
       resetToken: { type: 'string', maxLength: 2000 },
-      // Same policy as everywhere else for the driver app: min 6, digits-only
-      // allowed (PIN-like, decision 2026-07-16).
-      password: { type: 'string', minLength: 6, maxLength: 72 },
+      // Numeric 6-8 (decision by Luis, 2026-09-01): the NEW password follows
+      // the app policy; old passwords keep working at login until changed.
+      password: { type: 'string', pattern: '^\\d{6,8}$' },
     },
   },
 } as const;

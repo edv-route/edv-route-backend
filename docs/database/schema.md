@@ -59,10 +59,30 @@ eliminan: se suspenden.
 | `status` | user_status | no | `'active'` | `active` \| `suspended` |
 | `created_at` / `updated_at` | timestamptz | no | `now()` | — |
 
-`users` es identidad **pura**: los roles viven en tablas de extensión (`drivers` hoy;
-`clients` llegará con el módulo de viajes). Una misma cuenta podrá ser ambos.
-`drivers.national_id` guarda el documento canónico `V-12345678` (tipo + número se separan
-solo en la UI). Tipos: **V** (venezolano), **E** (extranjero), **J** (jurídico/RIF).
+`users` es identidad **pura**: los roles viven en tablas de extensión (`drivers` y `clients`).
+Una misma cuenta puede ser ambos. `drivers.national_id` guarda el documento canónico
+`V-12345678` (tipo + número se separan solo en la UI). Tipos: **V** (venezolano),
+**E** (extranjero), **J** (jurídico/RIF).
+
+### `clients` — extensión rol pasajero (2026-08-31; roles independientes 2026-09-01)
+
+| Columna | Tipo | Null | Default | Descripción |
+|---|---|---|---|---|
+| `user_id` | uuid | no | — | **PK y FK** → `users.id` (CASCADE). Relación 1:1 |
+| `status` | text | no | `'active'` | `active` \| `suspended` (CHECK; texto, no enum: los estados del cliente no están asentados) |
+| `accepted_privacy_at` | timestamptz | sí | — | Consentimiento capturado en el registro, con fecha |
+| `national_id` | text | sí | — | **Cédula AUTODECLARADA** del pasajero (obligatoria en el registro desde 2026-08-31). UNIQUE parcial. La del afiliado (`drivers.national_id`) está **verificada por la oficina** y gana: un afiliado-cliente no escribe aquí, y la API expone `COALESCE(d.national_id, c.national_id)`. Nullable por los registros previos a la regla |
+| `email` | text | sí | — | **Correo PROPIO del rol** (2026-09-01, roles independientes): el cliente entra con él y la recuperación de clave del pasajero le escribe aquí. UNIQUE parcial sobre `lower(email)` |
+| `phone` | text | sí | — | **Teléfono PROPIO del rol** (E.164). El otro identificador de entrada. UNIQUE parcial |
+| `password_hash` | text | sí | — | **Clave PROPIA del rol** (argon2id). La del chofer sigue en `users.password_hash`; cambiar o recuperar una NO toca la otra |
+| `created_at` / `updated_at` | timestamptz | no | `now()` | — |
+
+**Roles independientes (2026-09-01)**: cada sombrero guarda su correo, teléfono y clave; lo
+compartido en `users` es la persona (nombres, nacimiento, dirección, foto). El índice
+`users_phone_unique` **se eliminó** (su razón de ser —el login del cliente contra `users`— se
+mudó a `clients.phone`). Un cliente puro nace con `users.email/phone/password_hash` en NULL.
+La unicidad de la cédula **entre las dos tablas** la comprueba el servicio (un índice no puede
+cruzar tablas).
 
 ---
 
@@ -707,7 +727,7 @@ dependan de él.
 
 ---
 
-Del modelo v7 quedan pendientes para los módulos siguientes: `clients`, `trip_requests`,
+Del modelo v7 quedan pendientes para los módulos siguientes: `trip_requests`,
 `trip_offers`, `trips`, `trip_route_points`, `ratings`, `fare_rules`, `time_multipliers`,
 `push_campaigns` (campañas manuales, **pospuesta a propósito**: v1 solo manda avisos automáticos),
 `service_areas`, `benefit_requests`, `support_tickets`. Ver

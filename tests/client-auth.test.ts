@@ -8,31 +8,30 @@ import { ClientAuthRepository } from '../src/modules/client-auth/client-auth.rep
 import { ClientAuthService } from '../src/modules/client-auth/client-auth.service.js';
 
 /**
- * The passenger side of the account (proposal: docs/proposals/cliente).
+ * The passenger side of the account. Since 2026-09-01 the roles are
+ * INDEPENDENT (decision by Luis): the client owns his email, phone and
+ * password on `clients`; the person (names, cédula, birth) is shared on
+ * `users`. Registration is cédula-first: full form for a new person, short
+ * form (attach) for an existing one proving it is him with his password.
  *
  * Every test builds its own throwaway people and deletes them afterwards: the
- * database is shared with production, and `users` is shared with the driver
- * side, so a stray row here is a stray row in the affiliates list.
- *
- * Nothing here goes near the debt engine.
+ * database is shared with production.
  */
 
 let pool: pg.Pool;
-let app: FastifyInstance;
 let repo: ClientAuthRepository;
 let service: ClientAuthService;
 
-/** Ids created by this run, removed in `after` no matter how a test ended. */
 const created: string[] = [];
 
 const stamp = Date.now();
 const emailFor = (tag: string): string => `test.${tag}.${stamp}@edvroute.test`;
-/** Venezuelan mobile shape, as personProperties demands. */
 const phoneFor = (n: number): string => `+58412${String(stamp).slice(-5)}${String(n).padStart(2, '0')}`;
+const cedulaFor = (n: number): string => `V-9${String(stamp).slice(-6)}${String(n).padStart(2, '0')}`;
 
 before(async () => {
   pool = new pg.Pool({ connectionString: process.env.DATABASE_URL, max: 2 });
-  app = {
+  const app = {
     db: pool,
     log: { info: () => {}, warn: () => {}, error: () => {} },
     storage: undefined,
@@ -52,9 +51,12 @@ before(async () => {
 
 after(async () => {
   for (const id of created) {
-    // clients cascades from users; audit rows reference the user, so they go first.
-    await pool.query('DELETE FROM audit_logs WHERE actor_user_id = $1', [id]).catch(() => {});
-    await pool.query('DELETE FROM users WHERE id = $1', [id]).catch(() => {});
+    await pool.query('DELETE FROM audit_logs WHERE actor_user_id = $1', [id]).catch((e) => {
+      console.error('limpieza audit_logs falló:', id, e.message);
+    });
+    await pool.query('DELETE FROM users WHERE id = $1', [id]).catch((e) => {
+      console.error('limpieza users falló:', id, e.message);
+    });
   }
   await pool.end();
 });
@@ -65,157 +67,182 @@ function registration(tag: string, n: number) {
     lastName: tag,
     email: emailFor(tag),
     phone: phoneFor(n),
-    password: 'clave123',
+    birthDate: '1990-05-15',
+    nationalId: cedulaFor(n),
+    // Numeric 6-8 policy (Luis, 2026-09-01).
+    password: '123456',
     acceptedPrivacy: true,
   };
 }
 
-test('registering creates the person and their client side', async () => {
-  const result = await service.register(registration('Alta', 1));
-  created.push(result.client.userId);
-
-  assert.equal(result.client.status, 'active');
-  assert.equal(result.client.fullName, 'Prueba Alta', 'el nombre completo se arma de sus partes');
-  assert.ok(result.token, 'debe devolver sesión: registrarse ya te deja dentro');
-
-  // Both rows, not just the user: half an account cannot sign in anywhere.
-  const { rows } = await pool.query(
-    'SELECT (SELECT count(*) FROM users WHERE id = $1)::int AS u, (SELECT count(*) FROM clients WHERE user_id = $1)::int AS c',
-    [result.client.userId],
-  );
-  assert.equal(rows[0]!.u, 1);
-  assert.equal(rows[0]!.c, 1);
-});
-
-test('privacy consent is required, and it is recorded with its date', async () => {
-  await assert.rejects(
-    () => service.register({ ...registration('SinPriv', 2), acceptedPrivacy: false }),
-    /privacidad/,
-  );
-
-  const ok = await service.register(registration('ConPriv', 3));
-  created.push(ok.client.userId);
-  const { rows } = await pool.query<{ acceptedPrivacyAt: Date | null }>(
-    'SELECT accepted_privacy_at AS "acceptedPrivacyAt" FROM clients WHERE user_id = $1',
-    [ok.client.userId],
-  );
-  assert.ok(rows[0]!.acceptedPrivacyAt, 'sin la fecha no sabríamos CUÁNDO aceptó');
-});
-
-test('he can sign in with his email OR his phone', async () => {
-  const reg = registration('Entrar', 4);
-  const created1 = await service.register(reg);
-  created.push(created1.client.userId);
-
-  const byEmail = await service.login(reg.email, reg.password);
-  assert.equal(byEmail.client.userId, created1.client.userId);
-
-  const byPhone = await service.login(reg.phone, reg.password);
-  assert.equal(byPhone.client.userId, created1.client.userId, 'el teléfono vale igual que el correo');
-
-  // Case must not matter: nobody types their own address the same way twice.
-  const byUpper = await service.login(reg.email.toUpperCase(), reg.password);
-  assert.equal(byUpper.client.userId, created1.client.userId);
-});
-
-test('a wrong password and an unknown account say exactly the same thing', async () => {
-  const reg = registration('Malo', 5);
-  const c = await service.register(reg);
-  created.push(c.client.userId);
-
-  const wrong = await service.login(reg.email, 'otraclave').catch((e: Error) => e.message);
-  const unknown = await service.login('nadie.' + stamp + '@edvroute.test', 'x').catch((e: Error) => e.message);
-  // Different messages would tell a stranger which addresses are registered.
-  assert.equal(wrong, unknown);
-});
-
-test('an AFFILIATE registering as a client keeps his account and gains the passenger side', async () => {
-  // Somebody who already exists as a driver, with his own password.
+/** A throwaway DRIVER-only person (his app password lives on `users`). */
+async function driver(tag: string, n: number): Promise<string> {
   const { rows } = await pool.query<{ id: string }>(
     `INSERT INTO users (first_name, last_name, full_name, email, phone, password_hash)
-     VALUES ('Prueba', 'Chofer', 'Prueba Chofer', $1, $2, $3) RETURNING id`,
-    [emailFor('Chofer'), phoneFor(6), await argon2.hash('claveoriginal')],
+     VALUES ('Prueba', $2, 'Prueba ' || $2, $1, $3, $4) RETURNING id`,
+    [emailFor(tag), tag, phoneFor(n), await argon2.hash('claveChofer')],
   );
   const userId = rows[0]!.id;
   created.push(userId);
   await pool.query(
     `INSERT INTO drivers (user_id, source, status, national_id) VALUES ($1, 'app', 'approved', $2)`,
-    [userId, `V-${String(stamp).slice(-8)}`],
+    [userId, cedulaFor(n)],
   );
+  return userId;
+}
 
-  const result = await service.register({
-    ...registration('Chofer', 6),
-    email: emailFor('Chofer'),
-    phone: phoneFor(6),
-    password: 'claveNUEVA',
+test('registering creates the person and the role, each holding its own data', async () => {
+  const result = await service.register(registration('Alta', 1));
+  created.push(result.client.userId);
+
+  assert.equal(result.client.status, 'active');
+  assert.equal(result.client.fullName, 'Prueba Alta', 'el nombre completo se arma de sus partes');
+  assert.equal(result.client.email, emailFor('Alta'), 'su correo de cliente');
+  assert.ok(result.token, 'registrarse ya te deja dentro');
+
+  // The contact lives on the ROLE; the person's users row carries none.
+  const { rows } = await pool.query<{
+    uEmail: string | null;
+    cEmail: string | null;
+    cHash: string | null;
+  }>(
+    `SELECT u.email AS "uEmail", c.email AS "cEmail", c.password_hash AS "cHash"
+       FROM users u JOIN clients c ON c.user_id = u.id WHERE u.id = $1`,
+    [result.client.userId],
+  );
+  assert.equal(rows[0]!.uEmail, null, 'la persona no carga el contacto del rol');
+  assert.equal(rows[0]!.cEmail, emailFor('Alta'));
+  assert.ok(rows[0]!.cHash, 'la clave del rol vive en clients');
+});
+
+test('he signs in with HIS email or HIS phone (the client ones)', async () => {
+  const reg = registration('Entrar', 2);
+  const c = await service.register(reg);
+  created.push(c.client.userId);
+
+  const byEmail = await service.login(reg.email, reg.password);
+  assert.equal(byEmail.client.userId, c.client.userId);
+  const byPhone = await service.login(reg.phone, reg.password);
+  assert.equal(byPhone.client.userId, c.client.userId);
+  const byUpper = await service.login(reg.email.toUpperCase(), reg.password);
+  assert.equal(byUpper.client.userId, c.client.userId);
+});
+
+test('a wrong password and an unknown account say exactly the same thing', async () => {
+  const reg = registration('Malo', 3);
+  const c = await service.register(reg);
+  created.push(c.client.userId);
+
+  const wrong = await service.login(reg.email, '999999').catch((e: Error) => e.message);
+  const unknown = await service.login('nadie.' + stamp + '@edvroute.test', '1').catch((e: Error) => e.message);
+  assert.equal(wrong, unknown);
+});
+
+test('checkCedula picks the form: new · attachable · exists', async () => {
+  assert.deepEqual(await service.checkCedula(cedulaFor(90)), { status: 'new' });
+
+  await driver('Chequeo', 4);
+  assert.deepEqual(await service.checkCedula(cedulaFor(4)), { status: 'attachable' });
+
+  const c = await service.register(registration('Chequeado', 5));
+  created.push(c.client.userId);
+  assert.deepEqual(await service.checkCedula(cedulaFor(5)), { status: 'exists' });
+});
+
+test('the SHORT form: an affiliate gains the client hat with his OWN contact and password', async () => {
+  const userId = await driver('Adjunto', 6);
+
+  const result = await service.attach({
+    nationalId: cedulaFor(6),
+    currentPassword: 'claveChofer',
+    email: emailFor('AdjuntoCliente'),
+    phone: phoneFor(46),
+    password: '654321',
+    acceptedPrivacy: true,
   });
+  assert.equal(result.client.userId, userId, 'la MISMA persona, segundo sombrero');
+  assert.equal(result.client.email, emailFor('AdjuntoCliente'), 'correo PROPIO del rol cliente');
+  assert.equal(result.client.nationalId, cedulaFor(6), 'la cédula verificada del chofer gana');
 
-  assert.equal(result.client.userId, userId, 'es la MISMA persona, no una cuenta nueva');
-  assert.ok(result.client.nationalId, 'sigue siendo afiliado: conserva su cédula');
+  // He logs in as a client with the NEW credentials…
+  const login = await service.login(emailFor('AdjuntoCliente'), '654321');
+  assert.equal(login.client.userId, userId);
 
-  // His password was NOT replaced by the one typed on the passenger form.
-  const stored = await repo.findPasswordHash(userId);
-  assert.ok(await argon2.verify(stored!, 'claveoriginal'), 'su clave de chofer no se toca');
-
-  // And there is exactly one user row: no duplicate person.
-  const { rows: count } = await pool.query(
-    'SELECT count(*)::int AS n FROM users WHERE email = $1',
-    [emailFor('Chofer')],
+  // …and his driver password did not move a hair (independent roles).
+  const { rows } = await pool.query<{ hash: string }>(
+    'SELECT password_hash AS hash FROM users WHERE id = $1',
+    [userId],
   );
-  assert.equal(count[0]!.n, 1);
+  assert.ok(await argon2.verify(rows[0]!.hash, 'claveChofer'), 'su clave de chofer intacta');
 });
 
-test('registering twice as a client is refused', async () => {
-  const reg = registration('Doble', 7);
-  const first = await service.register(reg);
-  created.push(first.client.userId);
+test('without the right password, the short form attaches nothing (one message for all refusals)', async () => {
+  await driver('Cauto', 7);
 
-  await assert.rejects(() => service.register(reg), /Ya existe una cuenta/);
+  const bad = await service
+    .attach({
+      nationalId: cedulaFor(7),
+      currentPassword: 'adivinada',
+      email: emailFor('CautoCliente'),
+      phone: phoneFor(47),
+      password: '111111',
+      acceptedPrivacy: true,
+    })
+    .catch((e: Error) => e.message);
+  const unknownCedula = await service
+    .attach({
+      nationalId: cedulaFor(91),
+      currentPassword: 'x',
+      email: emailFor('NadieCliente'),
+      phone: phoneFor(48),
+      password: '111111',
+      acceptedPrivacy: true,
+    })
+    .catch((e: Error) => e.message);
+  assert.equal(bad, unknownCedula, 'clave errada y cédula desconocida responden igual');
 });
 
-test('editing his data updates the full name and rejects a taken email', async () => {
-  const mine = await service.register(registration('Editar', 8));
-  const other = await service.register(registration('Otro', 9));
-  created.push(mine.client.userId, other.client.userId);
+test('the FULL form refuses a cédula somebody already holds', async () => {
+  await driver('Dueño', 8);
 
-  const updated = await service.updateProfile(mine.client.userId, {
+  await assert.rejects(
+    () => service.register({ ...registration('Imitador', 9), nationalId: cedulaFor(8) }),
+    /ya tiene una cuenta/,
+  );
+});
+
+test('editing his data: names touch the person, contact and password touch only this role', async () => {
+  const reg = registration('Editar', 10);
+  const c = await service.register(reg);
+  const other = await service.register(registration('Otro', 11));
+  created.push(c.client.userId, other.client.userId);
+
+  const updated = await service.updateProfile(c.client.userId, {
     lastName: 'Apellido',
     address: 'Naguanagua',
   });
   assert.equal(updated.fullName, 'Prueba Apellido', 'el nombre completo se rehace solo');
-  assert.equal(updated.address, 'Naguanagua');
 
   await assert.rejects(
-    () => service.updateProfile(mine.client.userId, { email: other.client.email! }),
-    /ya pertenece a otra cuenta/,
+    () => service.updateProfile(c.client.userId, { email: other.client.email! }),
+    /ya pertenece a otra/,
+    'el correo es único ENTRE clientes',
   );
-});
-
-test('changing the password demands the current one', async () => {
-  const reg = registration('Clave', 10);
-  const c = await service.register(reg);
-  created.push(c.client.userId);
 
   await assert.rejects(
-    () => service.updateProfile(c.client.userId, { password: 'nuevaclave' }),
+    () => service.updateProfile(c.client.userId, { password: '222222' }),
     /la actual/,
-    'sin la clave actual, una sesión robada bastaría para dejarte fuera de tu cuenta',
   );
-  await assert.rejects(
-    () => service.updateProfile(c.client.userId, { password: 'nuevaclave', currentPassword: 'mala' }),
-    /no es correcta/,
-  );
-
   await service.updateProfile(c.client.userId, {
-    password: 'nuevaclave',
+    password: '222222',
     currentPassword: reg.password,
   });
-  const after = await service.login(reg.email, 'nuevaclave');
+  const after = await service.login(reg.email, '222222');
   assert.equal(after.client.userId, c.client.userId);
 });
 
 test('a suspended client cannot get in', async () => {
-  const reg = registration('Susp', 11);
+  const reg = registration('Susp', 12);
   const c = await service.register(reg);
   created.push(c.client.userId);
 

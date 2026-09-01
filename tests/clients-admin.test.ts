@@ -25,6 +25,9 @@ before(async () => {
     db: pool,
     storage: undefined, // no bucket in tests: photoUrl degrades to null
     log: { info: () => {}, warn: () => {}, error: () => {} },
+    httpErrors: {
+      notFound: (m: string) => Object.assign(new Error(m), { statusCode: 404 }),
+    },
   } as unknown as FastifyInstance;
   service = new ClientsService(app, new ClientsRepository(pool));
 });
@@ -38,15 +41,24 @@ after(async () => {
 
 async function person(tag: string, opts: { asDriver?: boolean; suspended?: boolean } = {}): Promise<string> {
   const { rows } = await pool.query<{ id: string }>(
-    `INSERT INTO users (first_name, last_name, full_name, email, phone)
-     VALUES ('Panel', $2, 'Panel ' || $2, $1, $3) RETURNING id`,
-    [emailFor(tag), tag, `+58412${String(stamp).slice(-5)}${String(created.length).padStart(2, '0')}`],
+    `INSERT INTO users (first_name, last_name, full_name)
+     VALUES ('Panel', $1, 'Panel ' || $1) RETURNING id`,
+    [tag],
   );
   const userId = rows[0]!.id;
   created.push(userId);
+  // Since 2026-09-01 the list reads the ROLE's own contact, on `clients`.
   await pool.query(
-    `INSERT INTO clients (user_id, status, accepted_privacy_at) VALUES ($1, $2, now())`,
-    [userId, opts.suspended ? 'suspended' : 'active'],
+    `INSERT INTO clients (user_id, status, accepted_privacy_at, email, phone)
+     VALUES ($1, $2, now(), $3, $4)`,
+    [
+      userId,
+      opts.suspended ? 'suspended' : 'active',
+      emailFor(tag),
+      // 0424 prefix: 0412 belongs to client-auth.test.ts, and the two files
+      // can load on the SAME millisecond — clients.phone is unique now.
+      `+58424${String(stamp).slice(-5)}${String(created.length).padStart(2, '0')}`,
+    ],
   );
   if (opts.asDriver) {
     await pool.query(
@@ -87,4 +99,22 @@ test('the status filter separates suspended clients', async () => {
 
   const active = await service.list({ status: 'active', search: emailFor('Suspendido'), page: 1, limit: 10 });
   assert.equal(active.total, 0, 'no aparece entre los activos');
+});
+
+test('the detail card carries the person extras the list does not', async () => {
+  const id = await person('Ficha');
+  await pool.query(
+    `UPDATE users SET address = 'Naguanagua, Carabobo', birth_date = '1990-05-15' WHERE id = $1`,
+    [id],
+  );
+
+  const detail = await service.getDetail(id);
+  assert.equal(detail.address, 'Naguanagua, Carabobo');
+  assert.ok(detail.acceptedPrivacyAt, 'la fecha del consentimiento viaja a la ficha');
+  assert.equal(detail.isAffiliate, false);
+
+  await assert.rejects(
+    () => service.getDetail('00000000-0000-0000-0000-000000000000'),
+    /no encontrado/,
+  );
 });

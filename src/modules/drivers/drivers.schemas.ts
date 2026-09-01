@@ -56,9 +56,10 @@ export const personProperties = {
   phone: { type: ['string', 'null'], pattern: '^\\+58\\d{10}$' },
   // V = venezolano · E = extranjero · J = jurídico (RIF)
   nationalId: { type: ['string', 'null'], pattern: '^[VEJ]-\\d{5,9}$' },
-  // Driver app password: min 6, digits-only allowed (PIN-like, decision
-  // 2026-07-16). It guards the driver's app, not the admin panel.
-  password: { type: ['string', 'null'], minLength: 6, maxLength: 72 },
+  // App password (BOTH roles): digits only, 6 to 8 (decision by Luis,
+  // 2026-09-01 — it replaced the old min-6/max-72 free-form rule). Applies to
+  // NEW passwords and changes; existing ones keep working at login.
+  password: { type: ['string', 'null'], pattern: '^\\d{6,8}$' },
 } as const;
 
 const documentItems = {

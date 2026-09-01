@@ -5,7 +5,8 @@ import { ClientsService } from './clients.service.js';
 /**
  * Panel section «Clientes» (2026-08-31): the admin's list of passengers,
  * mirroring the affiliates list — search + pagination, avatars signed in
- * batch. LIST ONLY for now (decision by Luis): no detail card, no actions.
+ * batch — plus the read-only DETAIL card (2026-09-01). No actions yet:
+ * suspension lands when Luis asks for it.
  * Guarded by the ADMIN token; the passenger's own channel is `/client-auth`.
  */
 const clientsRoutes: FastifyPluginAsync = async (app) => {
@@ -38,6 +39,20 @@ const clientsRoutes: FastifyPluginAsync = async (app) => {
         page: req.query.page ?? 1,
         limit: req.query.limit ?? 20,
       }),
+  );
+
+  app.get<{ Params: { id: string } }>(
+    '/:id',
+    {
+      schema: {
+        params: {
+          type: 'object',
+          required: ['id'],
+          properties: { id: { type: 'string', format: 'uuid' } },
+        },
+      },
+    },
+    async (req) => service.getDetail(req.params.id),
   );
 };
 

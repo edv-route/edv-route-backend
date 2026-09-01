@@ -11,6 +11,14 @@ export default interface Clients {
   created_at: Date;
 
   updated_at: Date;
+
+  national_id: string | null;
+
+  email: string | null;
+
+  phone: string | null;
+
+  password_hash: string | null;
 }
 
 /** Represents the initializer for the table public.clients */
@@ -27,6 +35,14 @@ export interface ClientsInitializer {
 
   /** Default value: now() */
   updated_at?: Date;
+
+  national_id?: string | null;
+
+  email?: string | null;
+
+  phone?: string | null;
+
+  password_hash?: string | null;
 }
 
 /** Represents the mutator for the table public.clients */
@@ -40,4 +56,12 @@ export interface ClientsMutator {
   created_at?: Date;
 
   updated_at?: Date;
+
+  national_id?: string | null;
+
+  email?: string | null;
+
+  phone?: string | null;
+
+  password_hash?: string | null;
 }

@@ -14,11 +14,14 @@ import type { ClientAuthRepository, ClientProfile } from './client-auth.reposito
  * The passenger side of the account (proposal: docs/proposals/cliente).
  *
  * Mirrors `DriverAuthService` on purpose — same password hashing, same photo
- * rules, same signed-URL discipline — because they are the same account system
- * seen from two sides. What differs is deliberate and small: a client signs in
- * with his email OR his phone, and he needs no approval to start using the app.
+ * rules, same signed-URL discipline. Since 2026-09-01 the roles are
+ * INDEPENDENT (decision by Luis): this role owns its email, phone and
+ * password on `clients`; the person (names, cédula, birth date) is shared.
+ *
+ * Registration is cédula-FIRST: `checkCedula` says which form the app shows —
+ * full (new person) or short (an existing person gaining the client hat, who
+ * must prove it is him with the password he already has).
  */
-
 
 /** Signed-URL lifetime for the photo the app displays. */
 const PHOTO_TTL_SECONDS = 3600;
@@ -26,7 +29,6 @@ const PHOTO_TTL_SECONDS = 3600;
 /**
  * Verified against a throwaway hash when the identifier is unknown, so a
  * registered address and an unregistered one take the same time to answer.
- * Without it, the response time alone tells an attacker who has an account.
  */
 const DUMMY_HASH_PROMISE = argon2.hash('timing-equalizer-dummy-password');
 
@@ -38,7 +40,20 @@ export interface ClientRegisterInput {
   email: string;
   phone?: string | null;
   birthDate?: string | null;
+  nationalId?: string | null;
   address?: string | null;
+  password: string;
+  acceptedPrivacy: boolean;
+}
+
+/** The SHORT form: an existing person gains the client hat (Luis, 2026-09-01). */
+export interface ClientAttachInput {
+  nationalId: string;
+  /** The password the account ALREADY has — the proof it is him. */
+  currentPassword: string;
+  email: string;
+  phone?: string | null;
+  /** This role's own password (same or different, his call). */
   password: string;
   acceptedPrivacy: boolean;
 }
@@ -55,11 +70,8 @@ export class ClientAuthService {
   ) {}
 
   /**
-   * Signs in with email OR phone, whichever the passenger remembers.
-   *
-   * The message never says which half was wrong. "Ese correo no existe" tells
-   * a stranger which addresses are registered here, and that is a list worth
-   * having if you are the wrong sort of person.
+   * Signs in with email OR phone, whichever the passenger remembers — HIS
+   * client ones. The message never says which half was wrong.
    */
   async login(identifier: string, password: string): Promise<ClientLoginResult> {
     const { httpErrors } = this.app;
@@ -81,15 +93,21 @@ export class ClientAuthService {
   }
 
   /**
-   * Creates a passenger account.
-   *
-   * ⚠️ The interesting case: the email or phone may already belong to somebody
-   * — an AFFILIATE. That is not an error, it is the point (decision by Luis,
-   * 2026-08-31): a driver who has an accident is a passenger that day. He
-   * already has his `users` row, so he only gains a `clients` one, keeping his
-   * name, his password and his driver side untouched.
-   *
-   * What IS refused is registering twice as a client.
+   * Step 0 of the registration: which form does this cédula deserve?
+   * `new` (full form) · `attachable` (short form) · `exists` (go log in).
+   * Confirming existence per cédula is assumed enumeration, same criterion as
+   * the register message (decisions-log 2026-08-31).
+   */
+  async checkCedula(nationalId: string): Promise<{ status: 'new' | 'attachable' | 'exists' }> {
+    const person = await this.clients.findPersonByCedula(nationalId.trim());
+    if (!person) return { status: 'new' };
+    return { status: person.hasClient ? 'exists' : 'attachable' };
+  }
+
+  /**
+   * FULL registration: a brand-new person. The role's email/phone/password
+   * land on `clients`; the person on `users`. A cédula somebody else holds —
+   * on either side — is refused before anything is written.
    */
   async register(input: ClientRegisterInput): Promise<ClientLoginResult> {
     const { httpErrors } = this.app;
@@ -100,26 +118,15 @@ export class ClientAuthService {
 
     const phone = input.phone?.trim() || null;
     const email = input.email.trim();
+    const nationalId = input.nationalId?.trim() || null;
 
-    const existing = await this.clients.findUserByEmailOrPhone(email, phone);
-    if (existing) {
-      if (await this.clients.existsClient(existing.id)) {
-        throw httpErrors.conflict(
-          'Ya existe una cuenta con ese correo o teléfono. Intenta entrar en lugar de registrarte.',
-        );
-      }
-      // Somebody the system already knows (an affiliate): give him the client
-      // side without touching anything else about him.
-      await this.clients.attachClientTo(existing.id);
-      await writeAudit(this.app.db, {
-        actorUserId: existing.id,
-        eventType: 'client.attached',
-        entity: 'client',
-        entityId: existing.id,
-        data: { reason: 'existing user registered as client' },
-      });
-      const profile = await this.requireProfile(existing.id);
-      return { token: this.signToken(existing.id), client: profile };
+    if (nationalId && (await this.clients.cedulaTakenByOther(nationalId, null))) {
+      throw httpErrors.conflict(
+        'Esa cédula ya tiene una cuenta. Vuelve atrás y escribe tu cédula para continuar con ella.',
+      );
+    }
+    if (await this.clients.contactTakenByOtherClient(email, phone, null)) {
+      throw httpErrors.conflict('Ese correo o teléfono ya pertenece a otro cliente.');
     }
 
     const passwordHash = await argon2.hash(input.password, { type: argon2.argon2id });
@@ -133,6 +140,7 @@ export class ClientAuthService {
       phone,
       birthDate: input.birthDate ?? null,
       address: input.address?.trim() || null,
+      nationalId,
       passwordHash,
     });
 
@@ -146,13 +154,60 @@ export class ClientAuthService {
     return { token: this.signToken(userId), client: await this.requireProfile(userId) };
   }
 
+  /**
+   * SHORT registration: the person exists (found by cédula) and gains the
+   * client hat. The proof of ownership is the password the account already
+   * has — without it, knowing a cédula would be enough to take over an
+   * affiliate's account. Every refusal on the proof answers the same message.
+   */
+  async attach(input: ClientAttachInput): Promise<ClientLoginResult> {
+    const { httpErrors } = this.app;
+
+    if (!input.acceptedPrivacy) {
+      throw httpErrors.badRequest('Debes aceptar la política de privacidad para continuar');
+    }
+
+    const notAttachable = httpErrors.conflict(
+      'Los datos no coinciden con una cuenta que pueda hacerse cliente. Revisa tu cédula y tu clave.',
+    );
+    const person = await this.clients.findPersonByCedula(input.nationalId.trim());
+    if (!person || person.hasClient) {
+      await argon2.verify(await DUMMY_HASH_PROMISE, input.currentPassword).catch(() => false);
+      throw notAttachable;
+    }
+    const ok = person.driverPasswordHash
+      ? await argon2.verify(person.driverPasswordHash, input.currentPassword).catch(() => false)
+      : false;
+    if (!ok) throw notAttachable;
+
+    const email = input.email.trim();
+    const phone = input.phone?.trim() || null;
+    if (await this.clients.contactTakenByOtherClient(email, phone, person.id)) {
+      // Only the legitimate owner reaches here, so this one speaks plainly.
+      throw httpErrors.conflict('Ese correo o teléfono ya pertenece a otro cliente.');
+    }
+
+    const passwordHash = await argon2.hash(input.password, { type: argon2.argon2id });
+    await this.clients.attachClientTo(person.id, { email, phone, passwordHash });
+    await writeAudit(this.app.db, {
+      actorUserId: person.id,
+      eventType: 'client.attached',
+      entity: 'client',
+      entityId: person.id,
+      data: { reason: 'existing user registered as client (password verified)' },
+    });
+    return { token: this.signToken(person.id), client: await this.requireProfile(person.id) };
+  }
+
   async getProfile(userId: string): Promise<ClientProfile> {
     return this.requireProfile(userId);
   }
 
   /**
-   * Partial edit of his own data. Changing the password requires the current
-   * one: a stolen session must not be enough to lock the owner out.
+   * Partial edit of his own data. Names/birth/address touch the PERSON
+   * (shared with the driver side, decision by Luis: one name for both hats);
+   * email/phone/password touch only THIS role. Changing the password requires
+   * the current one.
    */
   async updateProfile(
     userId: string,
@@ -174,14 +229,12 @@ export class ClientAuthService {
     if (input.birthDate !== undefined) changes.birthDate = input.birthDate ?? null;
     if (input.address !== undefined) changes.address = input.address?.trim() || null;
 
-    // Email and phone are identifiers: both are unique, and both are how he
-    // gets back in. A collision has to say so instead of failing on a
-    // constraint the app cannot explain.
+    // Email and phone are THIS role's identifiers: unique among clients. A
+    // collision has to say so instead of failing on a constraint.
     if (input.email !== undefined || input.phone !== undefined) {
       const email = (input.email ?? record.email ?? '').trim();
       const phone = input.phone !== undefined ? input.phone?.trim() || null : record.phone;
-      const clash = await this.clients.findUserByEmailOrPhone(email, phone);
-      if (clash && clash.id !== userId) {
+      if (await this.clients.contactTakenByOtherClient(email, phone, userId)) {
         throw httpErrors.conflict('Ese correo o teléfono ya pertenece a otra cuenta');
       }
       if (input.email !== undefined) changes.email = email;
@@ -218,10 +271,9 @@ export class ClientAuthService {
   }
 
   /**
-   * Replaces the profile photo. Same rules as the driver's, and they are not
-   * decoration: the content is sniffed rather than trusted (a .png that is
-   * really a PDF is rejected), it lands in the PRIVATE bucket, and only its
-   * path is stored.
+   * Replaces the profile photo. Same rules as the driver's: the content is
+   * sniffed rather than trusted, it lands in the PRIVATE bucket, and only its
+   * path is stored. The photo is the PERSON's (shared by both hats).
    */
   async replacePhoto(
     userId: string,
@@ -247,12 +299,9 @@ export class ClientAuthService {
     try {
       previous = await this.clients.setPhotoPath(userId, path);
     } catch (err) {
-      // The row did not change, so the object would be an orphan.
       await storage.remove(path).catch(() => {});
       throw err;
     }
-    // Best effort: an orphan object costs storage, a failed request costs him
-    // his new photo. The new path is already committed.
     if (previous && previous !== path) await storage.remove(previous).catch(() => {});
 
     const signed = await storage.getSignedUrls([path], PHOTO_TTL_SECONDS).catch(() => new Map());
@@ -272,12 +321,6 @@ export class ClientAuthService {
     return this.withSignedPhoto(profile);
   }
 
-  /**
-   * Turns the stored bucket path into a signed URL before the profile leaves
-   * the API. `photo_url` holds a PATH, never a public link. A signing failure
-   * degrades to no photo — the app falls back to initials — rather than failing
-   * the whole request.
-   */
   private async withSignedPhoto(profile: ClientProfile): Promise<ClientProfile> {
     const storage = this.app.storage;
     if (!storage || !profile.photoUrl) return { ...profile, photoUrl: null };

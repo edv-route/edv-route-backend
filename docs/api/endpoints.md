@@ -42,7 +42,9 @@ por `status` (revisión / bloqueado / home). Lockout por intentos: diferido (no 
 | GET | `/driver-auth/vehicle-types` | Tipos de vehículo activos `{ id, name }`, para el selector del wizard (público) |
 | GET | `/driver-auth/membership` | Membresía vigente `{ name, priceUsd, benefits[] }` (o `null`), para la **pantalla informativa previa** (beneficios + precio) y el resumen de cobro (público) |
 | GET | `/driver-auth/subscription-plans` | Tarifas activas `{ id, name, priceUsd, billingPeriod }`, para el resumen de cobro (la app usa la semanal) (público) |
-| POST | `/driver-auth/register` | **Auto-registro (público) — SOLO PASO 1** (solicitudes-app): datos personales + credenciales + `acceptedPrivacy` (obligatorio). ⚠️ **`email` obligatorio** (2026-08-24): este canal lo ofrecía como «Correo (opcional)» y el único afiliado sin correo en producción salió justamente de aquí — sin él no hay forma de recuperar la clave. Crea un **`applicant`** (`source='app'`, sin deuda, sin vehículos/documentos) → `{ token, driver, createdDocumentIds: [], createdVehicles: [] }`. Los documentos y vehículos se agregan después con el token |
+| POST | `/driver-auth/register` | **Auto-registro (público) — SOLO PASO 1** (solicitudes-app): datos personales + credenciales + `acceptedPrivacy` (obligatorio). ⚠️ **`email` obligatorio** (2026-08-24): este canal lo ofrecía como «Correo (opcional)» y el único afiliado sin correo en producción salió justamente de aquí — sin él no hay forma de recuperar la clave. Crea un **`applicant`** (`source='app'`, sin deuda, sin vehículos/documentos) → `{ token, driver, createdDocumentIds: [], createdVehicles: [] }`. Los documentos y vehículos se agregan después con el token. Clave numérica 6-8 (2026-09-01). **Si los datos ya son de una persona existente** —un CLIENTE volviéndose afiliado— no crea a nadie: adjunta el rol probando **su clave de cliente**. Quien ya tiene lado de chofer recibe **409** |
+| POST | `/driver-auth/register/check-cedula` | **Paso 0** (2026-09-01, cédula-primero): `{ nationalId }` → `{ status: 'new' \| 'attachable' \| 'exists' }` |
+| POST | `/driver-auth/register/attach` | **Formulario CORTO**: un cliente gana el lado chofer como `applicant`. `{ nationalId, currentPassword, email, phone, password, acceptedPrivacy }` — la prueba es su clave de cliente; el correo/teléfono/clave del ROL chofer aterrizan en `users` (donde todo el lado del dinero los lee). Su lado cliente no se toca; los rechazos de la prueba responden un solo mensaje |
 | GET | `/driver-auth/me/checklist` | **"Completa tu solicitud"** (guard `authenticateDriver`): por cada requisito (chofer + por vehículo) el estado del documento — falta / en revisión / aprobado / **rechazado + motivo** — y el estado de revisión de cada vehículo. `{ driverDocuments[], vehicles[] }` |
 | GET | `/driver-auth/me/vehicles` | Vehículos del chofer con **detalle completo** para el perfil (guard `authenticateDriver`): `[{ id, brand, model, year, color, plate, vehicleType, approvalStatus, rejectionReason, images:[{ id, position, url }] }]`. Las **fotos** son URLs firmadas (60 s) del bucket privado |
 | POST | `/driver-auth/me/vehicles` | El solicitante agrega un vehículo a su **propia** solicitud (guard `authenticateDriver`; `driverId` del token). Nace **`pending`** (lo revisa el admin) → `{ id }` |
@@ -208,9 +210,11 @@ Registro y entrada son públicos; el resto exige el token del cliente.
 
 | Método | Ruta | Descripción |
 |---|---|---|
-| POST | `/client-auth/register` | Datos básicos (`firstName`, `lastName`, `email`, `password`, `acceptedPrivacy`; opcionales `middleName`, `secondLastName`, `phone`, `birthDate`, `address`) → **201** `{ token, client }`. Sin cédula y sin aprobación: se registra y entra. Si el correo o el teléfono ya pertenecen a un **afiliado**, no es error: gana su fila en `clients` y conserva nombre, clave y lado de chofer (decisión 2026-08-31). **409** si ya es cliente |
-| POST | `/client-auth/login` | `{ identifier, password }` → `{ token, client }`. `identifier` es **correo O teléfono** (E.164), una sola consulta con OR — dos intentos harían la diferencia observable por tiempo. Clave errada y cuenta desconocida responden **exactamente igual** («Datos incorrectos»). **403** si está suspendido |
-| GET / PATCH | `/client-auth/me` | Su perfil / edición parcial (nombres incluidos: no hay identidad verificada que proteger). Cambiar la clave exige `currentPassword`. **409** si el correo/teléfono nuevo pertenece a otra cuenta |
+| POST | `/client-auth/register/check-cedula` | **Paso 0** (2026-09-01, cédula-primero): `{ nationalId }` → `{ status: 'new' \| 'attachable' \| 'exists' }` — elige el formulario (completo / corto / «entra con tu cuenta») |
+| POST | `/client-auth/register` | **Formulario COMPLETO** (persona nueva): obligatorios `firstName`, `lastName`, `birthDate`, `nationalId`, `phone`, `email`, `password` (numérica 6-8), `acceptedPrivacy`; opcionales `middleName`, `secondLastName`, `address` → **201** `{ token, client }`. Sin aprobación. La persona va a `users` (contacto en NULL); **el correo, el teléfono y la clave del ROL van a `clients`** (roles independientes 2026-09-01). **409** si la cédula o el contacto ya pertenecen a otro |
+| POST | `/client-auth/register/attach` | **Formulario CORTO**: un afiliado gana el lado cliente. `{ nationalId, currentPassword, email, phone, password, acceptedPrivacy }` — la prueba es **la clave que ya tiene** (verificada como un login; todos los rechazos responden un solo mensaje, sin enumeración). Su lado chofer no se toca |
+| POST | `/client-auth/login` | `{ identifier, password }` → `{ token, client }`. `identifier` es **su correo o teléfono de cliente** (`clients.email/phone`), una sola consulta con OR. Clave errada y cuenta desconocida responden **exactamente igual**. **403** si está suspendido |
+| GET / PATCH | `/client-auth/me` | Su perfil / edición parcial. Nombres/nacimiento/dirección tocan a la **persona** (compartidos con el lado chofer); correo/teléfono/clave tocan **solo este rol**. Cambiar la clave exige `currentPassword` (nueva: numérica 6-8). **409** si el correo/teléfono pertenece a otro cliente |
 | POST | `/client-auth/me/photo` | Foto de perfil (multipart). Mismas reglas que la del chofer: contenido olfateado (no se confía en el MIME declarado), bucket **privado**, se guarda el path y sale como URL firmada de 1 h |
 
 ### Recuperación de clave del cliente (2026-08-31, fase C-d)
@@ -222,9 +226,9 @@ la misma transacción del cambio. Lo que cambia es deliberado y pequeño:
 
 | Método | Ruta | Descripción |
 |---|---|---|
-| POST | `/client-auth/password-reset/request` | `{ email }` → **204**. La identidad es el **correo solo**: el pasajero no tiene cédula en el sistema, y el correo es a la vez su identificador y donde cae el código. La búsqueda está **acotada a `clients`**: una cuenta que solo es chofer responde 404 — tiene su propio canal, y esta puerta no debe confirmar que su correo existe |
+| POST | `/client-auth/password-reset/request` | `{ email }` → **204**. La identidad es el **correo de cliente** (`clients.email` desde 2026-09-01): su identificador y donde cae el código. Acotada a `clients`: una cuenta que solo es chofer responde 404 |
 | POST | `/client-auth/password-reset/verify` | `{ email, code }` → `{ resetToken }`. Igual que el del chofer |
-| POST | `/client-auth/password-reset/confirm` | `{ resetToken, password }` → **204**. El correo de aviso redacta el «entrar» a la manera del pasajero (correo o teléfono, no cédula) |
+| POST | `/client-auth/password-reset/confirm` | `{ resetToken, password }` → **204**. Nueva clave numérica 6-8. **Toca SOLO la clave de pasajero** (`clients.password_hash`, roles independientes): la de chofer ni se entera. El correo de aviso redacta el «entrar» a la manera del pasajero |
 
 ⚠️ La enumeración con un solo campo se **asumió a propósito**: `/client-auth/register` ya le dice a
 cualquiera si un correo está tomado («Ya existe una cuenta…»), así que el «no coinciden» de aquí no
@@ -239,7 +243,8 @@ Exige el token de **admin**.
 
 | Método | Ruta | Descripción |
 |---|---|---|
-| GET | `/clients` | Lista con búsqueda y paginación (`search` por nombre/correo/**teléfono** — el pasajero se identifica por teléfono, no por cédula —, `status` `active\|suspended`, `page`, `limit`). Cada fila trae la cédula **solo si la persona también es afiliado** (LEFT JOIN a `drivers`; el panel lo muestra como insignia «También afiliado») y la foto como URL firmada de 1 h, **firmada en lote** (`signAvatars`, extraído a `src/storage/avatar-signing.ts` y compartido con la lista de afiliados) |
+| GET | `/clients` | Lista con búsqueda y paginación (`search` por nombre/correo/teléfono/**cédula**, `status` `active\|suspended`, `page`, `limit`). La cédula sale de `COALESCE(drivers, clients)` — la verificada gana — más `isAffiliate` para la insignia «También afiliado», y la foto como URL firmada de 1 h **firmada en lote** (`signAvatars`, `src/storage/avatar-signing.ts`, compartido con la lista de afiliados) |
+| GET | `/clients/:id` | **Ficha del cliente** (2026-09-01, solo lectura): lo de la lista + dirección, nacimiento, fecha del consentimiento de privacidad y canal de registro. El historial de viajes del panel es **maqueta declarada en el frontend** (datos de ejemplo marcados) hasta que exista el módulo de Viajes; la suspensión llega después. **404** si no existe |
 
 ## Administradores
 

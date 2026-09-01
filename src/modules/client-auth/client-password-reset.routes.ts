@@ -7,9 +7,10 @@ import { PasswordResetService } from '../driver-auth/password-reset.service.js';
  *
  * Same three public steps as the driver's, run by the SAME service — imported,
  * not copied, the way this module already imports `personProperties`. What
- * differs is deliberate and small: the identity is the email alone (a
- * passenger has no cédula on file, and the email is both his identifier and
- * where the code lands), and the confirmation mail words "entrar" his way.
+ * differs is deliberate and small: the identity is the email alone (the
+ * client's OWN email on `clients` since the roles split, 2026-09-01), the
+ * reset touches ONLY the client password, and the confirmation mail words
+ * "entrar" his way.
  *
  * Mounted under `/client-auth`, so the paths mirror the driver's:
  *   /client-auth/password-reset/request | verify | confirm
@@ -53,8 +54,8 @@ const confirmSchema = {
     additionalProperties: false,
     properties: {
       resetToken: { type: 'string', maxLength: 2000 },
-      // Same policy as the rest of the system: min 6, digits-only allowed.
-      password: { type: 'string', minLength: 6, maxLength: 72 },
+      // Numeric 6-8 (decision by Luis, 2026-09-01).
+      password: { type: 'string', pattern: '^\\d{6,8}$' },
     },
   },
 } as const;

@@ -32,6 +32,8 @@ import {
   appVehicleTypesSchema,
   driverLoginSchema,
   driverMeSchema,
+  driverAttachSchema,
+  driverCheckCedulaSchema,
   driverRegisterSchema,
 } from './driver-auth.schemas.js';
 
@@ -108,6 +110,30 @@ const driverAuthRoutes: FastifyPluginAsync = async (app) => {
   }>('/register', { schema: driverRegisterSchema }, async (req, reply) => {
     const { acceptedPrivacy, ...person } = req.body;
     const result = await service.register(person, acceptedPrivacy ?? false);
+    return reply.code(201).send(result);
+  });
+
+  // Step 0 of the registration (Luis, 2026-09-01): the cédula first; the
+  // answer says which form the app shows (full / short / go log in).
+  app.post<{ Body: { nationalId: string } }>(
+    '/register/check-cedula',
+    { schema: driverCheckCedulaSchema },
+    async (req) => service.checkCedula(req.body.nationalId),
+  );
+
+  // The SHORT form: a client gains the driver side proving it is him with the
+  // password he already has. His client life is not touched.
+  app.post<{
+    Body: {
+      nationalId: string;
+      currentPassword: string;
+      email: string;
+      phone?: string | null;
+      password: string;
+      acceptedPrivacy: boolean;
+    };
+  }>('/register/attach', { schema: driverAttachSchema }, async (req, reply) => {
+    const result = await service.attach(req.body);
     return reply.code(201).send(result);
   });
 

@@ -198,7 +198,7 @@ export class PasswordResetService {
     }
 
     const passwordHash = await argon2.hash(input.password, { type: argon2.argon2id });
-    if (!(await this.repo.consumeAndSetPassword(attempt.id, attempt.userId, passwordHash))) {
+    if (!(await this.repo.consumeAndSetPassword(attempt.id, attempt.userId, passwordHash, channel))) {
       throw httpErrors.unauthorized('El código ya se usó. Vuelve a pedir uno.');
     }
 
@@ -207,8 +207,11 @@ export class PasswordResetService {
     // owner finds out somebody else pulled off the recovery, so it is worth
     // sending - but not worth undoing a successful change over.
     try {
-      const recipient = await this.repo.findRecipient(attempt.userId);
-      if (recipient) {
+      const recipient =
+        channel === 'client'
+          ? await this.repo.findClientRecipient(attempt.userId)
+          : await this.repo.findRecipient(attempt.userId);
+      if (recipient && recipient.email) {
         await this.app.email.send(
           passwordChangedEmail({ to: recipient.email, firstName: recipient.firstName, channel }),
         );

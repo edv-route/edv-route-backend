@@ -1,7 +1,13 @@
 import type { FastifyPluginAsync } from 'fastify';
 import { ClientAuthRepository } from './client-auth.repository.js';
-import { ClientAuthService, type ClientRegisterInput } from './client-auth.service.js';
 import {
+  ClientAuthService,
+  type ClientAttachInput,
+  type ClientRegisterInput,
+} from './client-auth.service.js';
+import {
+  clientAttachSchema,
+  clientCheckCedulaSchema,
   clientLoginSchema,
   clientPhotoSchema,
   clientProfileSchema,
@@ -12,10 +18,11 @@ import {
 /**
  * The passenger's own channel (proposal: docs/proposals/cliente).
  *
- * Mounted under `/client-auth`, mirroring `/driver-auth`. Registration and
- * login are the only public routes — everything else needs the client token,
- * and the guard checks the audience, because all three token types are signed
- * with the same secret and a client must never open a driver's endpoint.
+ * Mounted under `/client-auth`, mirroring `/driver-auth`. Registration is
+ * cédula-FIRST (Luis, 2026-09-01): `register/check-cedula` says which form
+ * the app shows — `register` (full, new person) or `register/attach` (short,
+ * an existing person gaining the client hat with his password as proof).
+ * Everything else needs the client token; the guard checks the audience.
  */
 const clientAuthRoutes: FastifyPluginAsync = async (app) => {
   const service = new ClientAuthService(app, new ClientAuthRepository(app.db));
@@ -26,11 +33,26 @@ const clientAuthRoutes: FastifyPluginAsync = async (app) => {
     async (req) => service.login(req.body.identifier, req.body.password),
   );
 
+  app.post<{ Body: { nationalId: string } }>(
+    '/register/check-cedula',
+    { schema: clientCheckCedulaSchema },
+    async (req) => service.checkCedula(req.body.nationalId),
+  );
+
   app.post<{ Body: ClientRegisterInput }>(
     '/register',
     { schema: clientRegisterSchema },
     async (req, reply) => {
       const result = await service.register(req.body);
+      return reply.code(201).send(result);
+    },
+  );
+
+  app.post<{ Body: ClientAttachInput }>(
+    '/register/attach',
+    { schema: clientAttachSchema },
+    async (req, reply) => {
+      const result = await service.attach(req.body);
       return reply.code(201).send(result);
     },
   );

@@ -79,14 +79,16 @@ async function person(tag: string, opts: { asClient?: boolean; asDriver?: boolea
   const { rows } = await pool.query<{ id: string }>(
     `INSERT INTO users (first_name, last_name, full_name, email, password_hash)
      VALUES ('Prueba', $2, 'Prueba ' || $2, $1, $3) RETURNING id`,
-    [emailFor(tag), tag, await argon2.hash('claveoriginal')],
+    [emailFor(tag), tag, await argon2.hash('claveChofer')],
   );
   const userId = rows[0]!.id;
   created.push(userId);
   if (opts.asClient ?? true) {
+    // Since 2026-09-01 the client's email and password live on `clients`.
     await pool.query(
-      `INSERT INTO clients (user_id, status, accepted_privacy_at) VALUES ($1, 'active', now())`,
-      [userId],
+      `INSERT INTO clients (user_id, status, accepted_privacy_at, email, password_hash)
+       VALUES ($1, 'active', now(), $2, $3)`,
+      [userId, emailFor(tag), await argon2.hash('claveoriginal')],
     );
   }
   if (opts.asDriver) {
@@ -134,15 +136,18 @@ test('the full walk: code → token → new password, and the mail speaks passen
   );
 
   const { resetToken } = await service.verifyClientCode({ email: emailFor('Camino'), code });
-  await service.confirm({ resetToken, password: 'clavenueva' }, 'client');
+  await service.confirm({ resetToken, password: '654321' }, 'client');
 
-  // The password really changed for the SHARED users row.
-  const { rows } = await pool.query<{ hash: string }>(
-    'SELECT password_hash AS hash FROM users WHERE id = $1',
+  // ONLY the client password changed (independent roles, 2026-09-01): the
+  // driver one on `users` did not move a hair.
+  const { rows } = await pool.query<{ cHash: string; uHash: string }>(
+    `SELECT c.password_hash AS "cHash", u.password_hash AS "uHash"
+       FROM users u JOIN clients c ON c.user_id = u.id WHERE u.id = $1`,
     [userId],
   );
-  assert.ok(await argon2.verify(rows[0]!.hash, 'clavenueva'));
-  assert.equal(await argon2.verify(rows[0]!.hash, 'claveoriginal'), false);
+  assert.ok(await argon2.verify(rows[0]!.cHash, '654321'), 'la clave de cliente es la nueva');
+  assert.equal(await argon2.verify(rows[0]!.cHash, 'claveoriginal'), false);
+  assert.ok(await argon2.verify(rows[0]!.uHash, 'claveChofer'), 'la de chofer sigue intacta');
 
   // The confirmation mail words "entrar" the passenger's way, not the cédula's.
   const changed = sent.at(-1)!;

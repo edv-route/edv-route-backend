@@ -539,6 +539,41 @@ export class DriverAuthService {
       throw httpErrors.badRequest('Debe aceptar la política de privacidad para continuar');
     }
 
+    /**
+     * The data may already belong to somebody — usually a CLIENT becoming an
+     * affiliate (decision by Luis, 2026-09-01: the roles are independent, one
+     * must never block the other). The cédula-first flow normally routes him
+     * to `register/attach`; this inline path is the backstop for a full
+     * payload that hits an existing person anyway. Proof and rules are the
+     * same: his existing password (the client one), his declared cédula.
+     */
+    const existing = await this.drivers.findPersonForDriverAttach(
+      input.email ?? '',
+      input.phone ?? null,
+      input.nationalId,
+    );
+    if (existing) {
+      const alreadyTaken = httpErrors.conflict(
+        'Ya existe una cuenta con esos datos. Si es tuya, entra o recupera tu clave.',
+      );
+      if (existing.hasDriver) throw alreadyTaken;
+      const ok = existing.clientPasswordHash
+        ? await argon2.verify(existing.clientPasswordHash, input.password).catch(() => false)
+        : false;
+      if (!ok) throw alreadyTaken;
+      // Only the legitimate owner reaches here, so this one speaks plainly.
+      if (existing.clientNationalId && existing.clientNationalId !== input.nationalId) {
+        throw httpErrors.badRequest('La cédula no coincide con la de tu cuenta. Revísala.');
+      }
+      // One password in this payload: it proves ownership AND becomes the
+      // driver clave (equal claves; the short form allows different ones).
+      return this.attachAsApplicant(existing.id, input.nationalId, {
+        email: input.email ?? '',
+        phone: input.phone ?? null,
+        password: input.password,
+      });
+    }
+
     // Reduced alta: no money (deferred), no children. The driver is born
     // `applicant`; documents/vehicles come next from the app and the admin
     // approves the solicitud, which is what emits the base debt.
@@ -562,6 +597,98 @@ export class DriverAuthService {
       driver,
       createdDocumentIds: result['createdDocumentIds'] as string[],
       createdVehicles: result['createdVehicles'] as { id: string; documentIds: string[] }[],
+    };
+  }
+
+  /**
+   * Step 0 of the registration (Luis, 2026-09-01): which form does this
+   * cédula deserve? `new` (full form) · `attachable` (short form — the person
+   * exists without a driver side) · `exists` (already drives: go log in).
+   */
+  async checkCedula(nationalId: string): Promise<{ status: 'new' | 'attachable' | 'exists' }> {
+    const person = await this.drivers.findPersonByCedula(nationalId.trim());
+    if (!person) return { status: 'new' };
+    return { status: person.hasDriver ? 'exists' : 'attachable' };
+  }
+
+  /**
+   * SHORT registration: a CLIENT gains the driver side as an `applicant`. He
+   * proves it is him with his client password, and types only what is HIS as
+   * a driver: email, phone and this role's password (same or different).
+   * Names, cédula and birth date are the person's — neither asked nor shown.
+   */
+  async attach(input: {
+    nationalId: string;
+    currentPassword: string;
+    email: string;
+    phone?: string | null;
+    password: string;
+    acceptedPrivacy: boolean;
+  }): Promise<DriverRegisterResult> {
+    const { httpErrors } = this.app;
+    if (!input.acceptedPrivacy) {
+      throw httpErrors.badRequest('Debe aceptar la política de privacidad para continuar');
+    }
+
+    const notAttachable = httpErrors.conflict(
+      'Los datos no coinciden con una cuenta que pueda hacerse afiliado. Revisa tu cédula y tu clave.',
+    );
+    const person = await this.drivers.findPersonByCedula(input.nationalId.trim());
+    if (!person || person.hasDriver) {
+      await argon2.verify(await DUMMY_HASH_PROMISE, input.currentPassword).catch(() => false);
+      throw notAttachable;
+    }
+    const ok = person.clientPasswordHash
+      ? await argon2.verify(person.clientPasswordHash, input.currentPassword).catch(() => false)
+      : false;
+    if (!ok) throw notAttachable;
+
+    return this.attachAsApplicant(person.id, input.nationalId.trim(), {
+      email: input.email,
+      phone: input.phone ?? null,
+      password: input.password,
+    });
+  }
+
+  /** Shared tail of both attach paths: the drivers row, its audit, the session. */
+  private async attachAsApplicant(
+    userId: string,
+    nationalId: string,
+    role: { email: string; phone: string | null; password: string },
+  ): Promise<DriverRegisterResult> {
+    const { httpErrors } = this.app;
+    const passwordHash = await argon2.hash(role.password, { type: argon2.argon2id });
+    try {
+      await this.drivers.attachDriverTo(userId, nationalId, {
+        email: role.email.trim(),
+        phone: role.phone?.trim() || null,
+        passwordHash,
+      });
+    } catch (err) {
+      if ((err as { code?: string }).code === UNIQUE_VIOLATION) {
+        throw httpErrors.conflict('Ese correo o esa cédula ya pertenecen a otro afiliado.');
+      }
+      throw err;
+    }
+    await writeAudit(this.app.db, {
+      actorUserId: userId,
+      eventType: 'driver.attached',
+      entity: 'drivers',
+      entityId: userId,
+      data: { reason: 'existing client registered as applicant (password verified)' },
+    });
+    const profile = await this.drivers.findProfileById(userId);
+    if (!profile) {
+      throw httpErrors.internalServerError('No se pudo cargar el perfil del chofer recién creado');
+    }
+    return {
+      token: this.app.jwt.sign(
+        { sub: userId, type: 'driver' },
+        { expiresIn: this.app.config.DRIVER_JWT_EXPIRES_IN },
+      ),
+      driver: profile,
+      createdDocumentIds: [],
+      createdVehicles: [],
     };
   }
 }

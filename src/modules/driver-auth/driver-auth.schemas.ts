@@ -173,7 +173,9 @@ export const appSelfUpdateSchema = {
       phone: { type: 'string', maxLength: 30 },
       email: { type: 'string', format: 'email', minLength: 5, maxLength: 120 },
       address: { type: 'string', maxLength: 250 },
-      password: { type: 'string', minLength: 6, maxLength: 72 },
+      // Numeric 6-8 (Luis, 2026-09-01); the CURRENT one stays lenient because
+      // passwords predating the policy must still be able to prove themselves.
+      password: { type: 'string', pattern: '^\\d{6,8}$' },
       currentPassword: { type: 'string', maxLength: 72 },
     },
   },
@@ -268,6 +270,43 @@ export const appRegisterBody = {
     ...personProperties,
     // Privacy consent captured at registration; the service requires it true.
     acceptedPrivacy: { type: 'boolean' },
+  },
+} as const;
+
+/** Step 0 (Luis, 2026-09-01): the cédula travels first; the answer picks the form. */
+export const driverCheckCedulaSchema = {
+  body: {
+    type: 'object',
+    required: ['nationalId'],
+    additionalProperties: false,
+    properties: { nationalId: personProperties.nationalId },
+  },
+  response: {
+    200: {
+      type: 'object',
+      properties: { status: { type: 'string', enum: ['new', 'attachable', 'exists'] } },
+    },
+  },
+} as const;
+
+/**
+ * The SHORT form (Luis, 2026-09-01): a CLIENT gains the driver side. He proves
+ * it is him with the password he already has and types only what is HIS as a
+ * driver: email, phone and this role's password (same or different).
+ */
+export const driverAttachSchema = {
+  body: {
+    type: 'object',
+    required: ['nationalId', 'currentPassword', 'email', 'phone', 'password', 'acceptedPrivacy'],
+    additionalProperties: false,
+    properties: {
+      nationalId: personProperties.nationalId,
+      currentPassword: { type: 'string', minLength: 1, maxLength: 72 },
+      email: personProperties.email,
+      phone: personProperties.phone,
+      password: personProperties.password,
+      acceptedPrivacy: { type: 'boolean' },
+    },
   },
 } as const;
 

@@ -34,6 +34,112 @@ const PROFILE_COLUMNS = `
 export class DriverAuthRepository {
   constructor(private readonly db: pg.Pool) {}
 
+  /**
+   * Whether the data a would-be applicant typed already belongs to somebody:
+   * matched by email, phone OR cédula (the cédula on either side — a driver's
+   * verified one or a client's declared one). Carries what the ATTACH decision
+   * needs: the password hash (proving it is HIM), whether a driver side
+   * already exists, and the client-declared cédula to check consistency.
+   * Mirrors the client channel's `findUserByEmailOrPhone` (2026-08-31).
+   */
+  async findPersonForDriverAttach(
+    email: string,
+    phone: string | null,
+    nationalId: string,
+  ): Promise<{
+    id: string;
+    hasDriver: boolean;
+    clientPasswordHash: string | null;
+    clientNationalId: string | null;
+  } | null> {
+    const { rows } = await this.db.query<{
+      id: string;
+      hasDriver: boolean;
+      clientPasswordHash: string | null;
+      clientNationalId: string | null;
+    }>(
+      `SELECT u.id,
+              (d.user_id IS NOT NULL) AS "hasDriver",
+              -- The proof: a client-only person keeps his app password on
+              -- clients (independent roles, 2026-09-01).
+              c.password_hash AS "clientPasswordHash",
+              c.national_id AS "clientNationalId"
+         FROM users u
+         LEFT JOIN drivers d ON d.user_id = u.id
+         LEFT JOIN clients c ON c.user_id = u.id
+        WHERE lower(u.email) = lower($1)
+           OR ($2::text IS NOT NULL AND u.phone = $2)
+           OR ($2::text IS NOT NULL AND c.phone = $2)
+           OR lower(c.email) = lower($1)
+           OR d.national_id = $3
+           OR c.national_id = $3
+        LIMIT 1`,
+      [email, phone, nationalId],
+    );
+    return rows[0] ?? null;
+  }
+
+  /** Cédula-first lookup (step 0): who holds it, and does he drive already? */
+  async findPersonByCedula(nationalId: string): Promise<{
+    id: string;
+    hasDriver: boolean;
+    clientPasswordHash: string | null;
+    clientNationalId: string | null;
+  } | null> {
+    const { rows } = await this.db.query<{
+      id: string;
+      hasDriver: boolean;
+      clientPasswordHash: string | null;
+      clientNationalId: string | null;
+    }>(
+      `SELECT u.id,
+              (d.user_id IS NOT NULL) AS "hasDriver",
+              c.password_hash AS "clientPasswordHash",
+              c.national_id AS "clientNationalId"
+         FROM users u
+         LEFT JOIN drivers d ON d.user_id = u.id
+         LEFT JOIN clients c ON c.user_id = u.id
+        WHERE d.national_id = $1 OR c.national_id = $1
+        LIMIT 1`,
+      [nationalId],
+    );
+    return rows[0] ?? null;
+  }
+
+  /**
+   * Gives an existing person (a client) the driver side as an `applicant`:
+   * same person, second hat. The driver's OWN email, phone and password land
+   * on `users` — that is where the whole driver side reads them — and the
+   * typed cédula becomes the one the office will verify. His client life is
+   * not touched.
+   */
+  async attachDriverTo(
+    userId: string,
+    nationalId: string,
+    role: { email: string; phone: string | null; passwordHash: string },
+  ): Promise<void> {
+    const client = await this.db.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query(
+        `UPDATE users SET email = $2, phone = $3, password_hash = $4 WHERE id = $1`,
+        [userId, role.email, role.phone, role.passwordHash],
+      );
+      await client.query(
+        `INSERT INTO drivers
+           (user_id, national_id, source, registered_by, registration_step, status, accepted_privacy_at)
+         VALUES ($1, $2, 'app', NULL, NULL, 'applicant', now())`,
+        [userId, nationalId],
+      );
+      await client.query('COMMIT');
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
   /** Credential lookup by national id (cédula). Includes the password hash. */
   async findAuthByNationalId(nationalId: string): Promise<DriverAuthRecord | null> {
     const { rows } = await this.db.query<DriverAuthRecord>(

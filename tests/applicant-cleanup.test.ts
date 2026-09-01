@@ -99,3 +99,23 @@ test('a VOIDED invoice also spares him (a money document is kept, not deleted)',
     await removeDriver(pool, driverId);
   }
 });
+
+test('a person who is ALSO a client is never a purge candidate (roles independientes)', async () => {
+  const driverId = await makeStalePending('CleanupCliente');
+  try {
+    // The same human has a passenger life: purging the solicitud would delete
+    // the whole users row in cascade and take his client account with it.
+    await pool.query(
+      `INSERT INTO clients (user_id, status, accepted_privacy_at) VALUES ($1, 'active', now())`,
+      [driverId],
+    );
+    const result = await runApplicantCleanup(app);
+    assert.ok(
+      !result.candidates.includes(driverId),
+      'una solicitud abandonada de alguien que es cliente NO se purga: se llevaría su vida de pasajero',
+    );
+  } finally {
+    await pool.query('DELETE FROM clients WHERE user_id = $1', [driverId]).catch(() => {});
+    await removeDriver(pool, driverId);
+  }
+});

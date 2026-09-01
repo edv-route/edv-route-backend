@@ -1816,3 +1816,97 @@ redacción del correo de aviso («entrar con tu correo o tu teléfono», no «co
 identidad por correo, el 404 del chofer-sin-lado-cliente, el camino completo código→token→clave
 nueva, la redacción del correo y el rechazo del token repetido. La maquinaria compartida ya estaba
 probada en producción desde el 2026-08-24.
+
+## 2026-08-31 — 🪪 El registro del cliente en paridad con el del afiliado (y un candado que faltaba)
+
+**Decisión de Luis**: `users` es la tabla madre con lo básico de la persona; `drivers` y
+`clients` cuelgan de ella con lo propio de cada rol — y el registro del pasajero pide **los
+mismos campos** que el del afiliado. Obligatorios: primer nombre, primer apellido, **fecha de
+nacimiento, cédula, teléfono**, correo y clave. Opcionales solo: segundo nombre, segundo
+apellido y dirección. (Esto revierte la propuesta C2 del plan, que dejaba la cédula fuera.)
+
+**Dónde vive la cédula del cliente**: en `clients.national_id`, NO en `users` ni en `drivers`.
+La del afiliado está **verificada por la oficina** contra sus documentos; la del pasajero es
+**autodeclarada** al registrarse. Son niveles de confianza distintos y una columna compartida
+borraría la diferencia. Un afiliado-cliente conserva la verificada en `drivers` (no se duplica
+nada en `clients`) y la API presenta ambas unificadas con `COALESCE(d.national_id,
+c.national_id)`. UNIQUE parcial en `clients.national_id`; la unicidad **cruzada** (que un
+pasajero nuevo no reclame la cédula de un afiliado, ni al revés) la comprueba el servicio.
+
+**🔒 El candado que faltaba (arreglado en el mismo cambio)**: registrarse como cliente con el
+correo o teléfono de un afiliado existente **adjuntaba el lado cliente y devolvía sesión SIN
+verificar la clave** — saber el correo de un afiliado bastaba para obtener una sesión sobre su
+cuenta (y con ella cambiarle correo y teléfono por `PATCH /me`). Ahora el camino de adjuntar
+exige **probar la clave de la cuenta** (verificada como un login) y que la cédula tecleada
+coincida con la verificada del afiliado. Todos los rechazos de ese camino responden **el mismo
+mensaje** («Ya existe una cuenta…») para no regalar enumeración; solo el dueño legítimo (clave
+correcta) recibe el aviso claro de cédula que no coincide.
+
+**Pruebas**: `tests/client-auth.test.ts` pasó a 10 (adjuntar sin clave se rechaza; con clave y
+cédula equivocada se rechaza; con ambas correctas adjunta sin duplicar nada; una cédula ajena
+no se puede reclamar). Migración `1752500000000_clients-national-id` aplicada y modelos
+regenerados.
+
+## 2026-09-01 — 🎩 Los dos roles son independientes: cliente→afiliado ya funciona (y la purga no se lleva al pasajero)
+
+**Regla de Luis, en sus palabras**: un cliente puede registrarse como afiliado y un afiliado como
+cliente; si lo rechazan en un rol, el otro no se entera; son «entidades diferentes que comparten
+algunos datos». Una persona (`users`), dos sombreros (`drivers`, `clients`), cada uno con su vida.
+
+**Lo que faltaba**: la dirección cliente→afiliado. El registro de afiliado siempre creaba una
+persona nueva, así que a un cliente lo rechazaba por «correo ya registrado» (y con otro correo lo
+DUPLICABA como persona). Ahora `/driver-auth/register` reconoce a la persona existente —por
+correo, teléfono o cédula, de cualquiera de los dos lados— y le adjunta el rol de chofer como
+`applicant`, con las mismas dos pruebas del camino espejo: **su clave** (verificada como un login;
+todos los rechazos responden el mismo mensaje para no regalar enumeración) y **su cédula** debe
+coincidir con la que declaró como cliente. Su lado cliente no se toca: sigue activo, con su
+cédula declarada donde estaba (la del chofer pasará a ser la verificada cuando la oficina revise).
+
+**El derivado peligroso que se blindó**: la purga de solicitudes abandonadas
+(`applicant-cleanup`) borra la fila de `users` en cascada. Si el solicitante abandonado era
+también cliente, la purga se llevaba su vida de pasajero entera. Ahora la selección excluye a
+cualquier persona con lado cliente (`NOT EXISTS clients`), con su prueba.
+
+**Pruebas**: `tests/driver-attach.test.ts` (4: adjunta con su clave y su lado cliente intacto;
+sin la clave no adjunta nada; la cédula debe coincidir; el rechazo como chofer deja al cliente
+como si nada) + el caso nuevo en `applicant-cleanup.test.ts`.
+
+**Pendiente de decisión (propuesto por Luis el mismo día)**: claves SEPARADAS por rol. Hoy la
+clave es una sola (`users.password_hash`) y la usan ambos logins; separar (p. ej.
+`clients.password_hash` propia, el chofer se queda donde está) haría que recuperar o cambiar la
+clave de un lado no toque el otro. Toca login, recuperación y cambio de clave del cliente + una
+migración. Sin construir hasta que Luis confirme.
+
+## 2026-09-01 — 🔑 Cédula primero, formulario corto y una clave por rol (numérica de 6 a 8)
+
+**Las tres decisiones de Luis, construidas juntas** porque se sostienen entre sí:
+
+1. **La cédula viaja primero** en ambos registros (`register/check-cedula`): si nadie la tiene,
+   formulario completo; si la persona existe sin este rol, **formulario corto**
+   (`register/attach`); si ya tiene este rol, «entra con tu cuenta». Confirmar existencia por
+   cédula es enumeración asumida — el mismo criterio ya tomado con el correo.
+2. **El formulario corto** pide SOLO lo propio del rol nuevo: correo, teléfono y clave — más
+   **la clave que ya se tiene**, que es la prueba de propiedad (sin ella, saber una cédula
+   bastaría para montarse en la cuenta de otro; todos los rechazos de la prueba responden un
+   único mensaje). Nombres, cédula y nacimiento ni se piden ni se muestran: nada se le revela a
+   quien solo escribió una cédula.
+3. **Una clave por rol** — y correo y teléfono también por rol: el chofer sigue guardando lo
+   suyo en `users` (el lado del dinero NO se movió: facturas, avisos y listas intactos) y el
+   cliente estrenó `clients.email/phone/password_hash` (migración `role-credentials`, con
+   backfill para los clientes existentes). La recuperación de clave del pasajero ahora toca
+   **solo** la clave de pasajero; la del chofer, solo la de chofer. La clave puede ser igual o
+   distinta entre roles — sin limitar (decisión explícita). Los nombres **se comparten** (Luis:
+   «que ambos casos compartan los nombres»): editarlos desde cualquier rol cambia a la persona.
+
+**Política de clave nueva (ambos roles): solo números, de 6 a 8** (`^\d{6,8}$`), aplicada en
+registro, cambio y recuperación. Las claves existentes siguen entrando (el login no valida
+formato); la regla rige claves NUEVAS.
+
+**Verificación**: 38 pruebas del backend en verde (client-auth 9 · driver-attach 4 ·
+client-password-reset 3 · clients-admin 3 · applicant-cleanup 3 · driver-session · validation)
++ smoke de punta a punta contra el servidor local (11/11: check→registro→attach en ambas
+direcciones→logins con claves propias→la clave de un rol NO abre el otro).
+
+⚠️ **Transición en producción**: la migración copia el contacto/clave actual de cada cliente a
+sus casillas nuevas, así que al desplegar nadie pierde acceso; desde ahí las copias divergen
+libremente.

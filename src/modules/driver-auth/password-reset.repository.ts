@@ -51,11 +51,22 @@ export class PasswordResetRepository {
    */
   async findClientTarget(email: string): Promise<ResetTarget | null> {
     const { rows } = await this.db.query<ResetTarget>(
-      `SELECT u.id AS "userId", u.first_name AS "firstName", u.email
+      `SELECT u.id AS "userId", u.first_name AS "firstName", c.email
          FROM clients c
          JOIN users u ON u.id = c.user_id
-        WHERE lower(u.email) = lower($1)`,
+        WHERE lower(c.email) = lower($1)`,
       [email],
+    );
+    return rows[0] ?? null;
+  }
+
+  /** The client channel's recipient: HIS email, on `clients` (2026-09-01). */
+  async findClientRecipient(userId: string): Promise<Omit<ResetTarget, 'userId'> | null> {
+    const { rows } = await this.db.query<Omit<ResetTarget, 'userId'>>(
+      `SELECT u.first_name AS "firstName", c.email
+         FROM clients c JOIN users u ON u.id = c.user_id
+        WHERE c.user_id = $1 AND c.email IS NOT NULL`,
+      [userId],
     );
     return rows[0] ?? null;
   }
@@ -191,7 +202,12 @@ export class PasswordResetRepository {
    * still being live, so a replay of the same token writes nothing and the
    * caller sees `false`.
    */
-  async consumeAndSetPassword(id: string, userId: string, passwordHash: string): Promise<boolean> {
+  async consumeAndSetPassword(
+    id: string,
+    userId: string,
+    passwordHash: string,
+    channel: 'driver' | 'client' = 'driver',
+  ): Promise<boolean> {
     const client = await this.db.connect();
     try {
       await client.query('BEGIN');
@@ -204,10 +220,19 @@ export class PasswordResetRepository {
         await client.query('ROLLBACK');
         return false;
       }
-      await client.query(`UPDATE users SET password_hash = $2, updated_at = now() WHERE id = $1`, [
-        userId,
-        passwordHash,
-      ]);
+      // Each channel resets ONLY its own password (independent roles,
+      // 2026-09-01): the driver's lives on users, the client's on clients.
+      if (channel === 'client') {
+        await client.query(
+          `UPDATE clients SET password_hash = $2, updated_at = now() WHERE user_id = $1`,
+          [userId, passwordHash],
+        );
+      } else {
+        await client.query(
+          `UPDATE users SET password_hash = $2, updated_at = now() WHERE id = $1`,
+          [userId, passwordHash],
+        );
+      }
       await client.query('COMMIT');
       return true;
     } catch (err) {

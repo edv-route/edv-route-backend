@@ -1,7 +1,7 @@
 # El cliente (pasajero) — plan de arranque
 
-> Estado: **C-a a C-d HECHAS** (backend + app) · Panel: **lista de clientes HECHA**
-> (2026-08-31; ficha y suspensión pendientes) · Fecha: 2026-08-31 · Pedido por Luis
+> Estado: **C-a a C-d HECHAS** (backend + app) · Panel: **lista Y FICHA de clientes HECHAS**
+> (ficha 2026-09-01, con historial de viajes de ejemplo; suspensión pendiente) · Pedido por Luis
 >
 > Alcance de esta primera entrega: **entrar, registrarse, un inicio de mentira y un perfil
 > editable**. Sin viajes: eso viene después y es otro plan.
@@ -47,6 +47,11 @@ Van primero porque **la número 1 cambia el resto del plan**.
 | **C5** | **¿Foto obligatoria?** | **No.** Iniciales de respaldo, como ya hace el panel | Y el día que haya viajes, el chofer agradecerá verle la cara — pero pedirla al registrarse frena |
 
 ---
+
+> ⚠️ **Superseded (2026-08-31, tarde)**: Luis revirtió C2/C3 — el registro del cliente pide
+> los MISMOS campos que el del afiliado: cédula, fecha de nacimiento y teléfono OBLIGATORIOS
+> (opcionales solo segundo nombre, segundo apellido y dirección). La cédula autodeclarada vive
+> en `clients.national_id`; la verificada del afiliado sigue en `drivers`. Ver decisions-log.
 
 ## 3. La base de datos
 

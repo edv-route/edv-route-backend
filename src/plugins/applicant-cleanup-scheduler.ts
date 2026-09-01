@@ -47,7 +47,11 @@ async function findExpiredApplicants(db: pg.Pool): Promise<string[]> {
   const { rows } = await db.query<{ userId: string }>(
     `SELECT d.user_id AS "userId"
        FROM drivers d
-      WHERE (d.status = 'pending'
+      -- NEVER a person who is also a CLIENT (2026-09-01): the purge deletes the
+      -- whole users row in cascade, and an abandoned solicitud must not take his
+      -- passenger life with it — the roles are independent (decisión de Luis).
+      WHERE NOT EXISTS (SELECT 1 FROM clients c WHERE c.user_id = d.user_id)
+        AND ((d.status = 'pending'
              AND d.created_at < now() - make_interval(days => $1)
              AND NOT EXISTS (
                SELECT 1 FROM payment_submissions ps
@@ -64,7 +68,7 @@ async function findExpiredApplicants(db: pg.Pool): Promise<string[]> {
          OR (d.status = 'applicant'
              AND d.created_at < now() - make_interval(days => $1)
              AND NOT EXISTS (SELECT 1 FROM documents doc WHERE doc.driver_id = d.user_id)
-             AND NOT EXISTS (SELECT 1 FROM vehicles v WHERE v.driver_id = d.user_id))`,
+             AND NOT EXISTS (SELECT 1 FROM vehicles v WHERE v.driver_id = d.user_id)))`,
     [GRACE_DAYS],
   );
   return rows.map((r) => r.userId);
