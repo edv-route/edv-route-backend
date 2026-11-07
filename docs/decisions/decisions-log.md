@@ -1910,3 +1910,30 @@ direcciones→logins con claves propias→la clave de un rol NO abre el otro).
 ⚠️ **Transición en producción**: la migración copia el contacto/clave actual de cada cliente a
 sus casillas nuevas, así que al desplegar nadie pierde acceso; desde ahí las copias divergen
 libremente.
+
+## 2026-11-07 — Caída de seis semanas y migración a una cuenta de Railway de pago
+
+**Qué pasó**: la prueba de la cuenta de Railway del 2026-08-26 venció y el servidor quedó apagado
+entre el **25/09** (última factura emitida) y el **28/09** (el cobro de esa semana nunca pasó a
+mora). Sin nadie que la consultara, **Supabase pausó el proyecto** por inactividad (plan gratis:
+7 días). La app y el panel estuvieron fuera de servicio unas seis semanas.
+
+**Recuperación** (Luis + Claude, mismo día):
+1. Supabase reanudado desde el dashboard (*Resume project*; datos intactos, ventana de 1 año).
+2. `debt_engine_enabled` se apagó en cuanto despertó la base, antes de encender nada, para que el
+   motor no actuara a ciegas. Luis ordenó reactivarlo («reactiva todo»). Efecto al arrancar: el
+   único cobro de la semana del 28/09 pasó a mora y su afiliado (ya con 2 semanas, tope 2) quedó
+   `penalized` con multa; se emitió el cobro de la semana del 09/11. Las semanas de octubre NO se
+   cobran: el motor solo emite la semana siguiente, nunca recupera semanas perdidas.
+3. Servidor y panel en una **tercera cuenta, de pago**. En la cuenta vencida de julio se
+   renombraron los dominios con `-2` y la nueva recuperó los **nombres originales**:
+   `edv-route-backend.up.railway.app` y `edv-route-admin.up.railway.app`. Panel y app apuntan
+   ahí desde este cambio.
+
+**Consecuencia asumida**: los APK instalados buscan la dirección del 26/08 (con `-production`),
+que ya no existe. **Cada afiliado y pasajero tiene que instalar el APK nuevo**; Luis eligió esto en
+lugar de liberar el nombre en la cuenta del 26/08.
+
+**Lecciones** (ya en `guides/deploy-railway.md`): un servicio nuevo de Railway nace conectado a
+`main` (arrancó con código de agosto hasta pasarlo a `dev`); si el servidor cae, Supabase se
+duerme detrás; al volver, reanudar la base primero y decidir el motor de cobro antes de encender.

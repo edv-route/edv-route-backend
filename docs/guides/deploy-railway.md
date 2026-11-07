@@ -9,12 +9,22 @@
 
 | Pieza | Dónde | URL pública |
 |---|---|---|
-| **Backend** (Fastify) | Railway · repo `edv-route-backend` (rama **`dev`**) | `https://edv-route-backend-production.up.railway.app` |
-| **Frontend** (Angular) | Railway · repo `edv-route-admin` (rama **`dev`**) | `https://edv-route-admin-production.up.railway.app` |
+| **Backend** (Fastify) | Railway · repo `edv-route-backend` (rama **`dev`**) | `https://edv-route-backend.up.railway.app` |
+| **Frontend** (Angular) | Railway · repo `edv-route-admin` (rama **`dev`**) | `https://edv-route-admin.up.railway.app` |
 
-> **Cuenta nueva desde el 2026-08-26.** Se migró todo al agotarse el crédito de la anterior. El
-> sufijo `-production` es lo que genera Railway cuando el nombre original sigue ocupado por el
-> proyecto viejo. El despliegue sigue la rama **`dev`** en ambos repos (antes `main`).
+> **Tercera cuenta, de pago, desde el 2026-11-07.** La del 2026-08-26 (URLs con sufijo
+> `-production`) venció su prueba; el servidor estuvo caído desde fines de septiembre y Supabase
+> pausó el proyecto por inactividad (se reanudó el mismo 07/11). En la cuenta vencida de julio
+> (*optimistic-patience*) se renombraron los dominios con `-2` para liberar los nombres
+> originales, y la cuenta nueva los recuperó. El despliegue sigue la rama **`dev`** en ambos repos.
+>
+> ⚠️ **Al crear un servicio nuevo, Railway lo conecta a `main` por defecto.** Hay que cambiarlo a
+> `dev` en *Settings → Source*: el 2026-11-07 servidor y panel arrancaron con código de agosto
+> (sin app del pasajero, mapa ni clientes) hasta que se corrigió.
+>
+> ⚠️ **Supabase gratis se pausa a los 7 días sin actividad.** Si el servidor se cae, la base se
+> duerme detrás. Al volver: reanudar Supabase PRIMERO y apagar `debt_engine_enabled` antes de
+> encender el servidor si hay cobros pendientes que no se quieran pasar a mora.
 >
 > ⚠️ **Al migrar, apagar el proyecto viejo — no basta con quitarle el dominio.** El proceso sigue
 > corriendo con sus schedulers: dos motores de cobro y dos despachadores de avisos sobre la MISMA
