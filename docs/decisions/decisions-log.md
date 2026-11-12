@@ -1978,3 +1978,38 @@ quien siga activo sin identidad aprobada, y encender el interruptor.
 
 **Verificación**: 5 pruebas nuevas (`tests/identity.test.ts`) + 84 de las suites vecinas en verde;
 prueba HTTP de las rutas nuevas (guardas, validación, 404) contra una persona desechable.
+
+## 2026-11-12 — Verificación de identidad (fase 2: app, APK 1.0.0 (34))
+
+- **Cámara propia** (paquete oficial `camera`), no `image_picker`: es la única forma de **imponer**
+  la cámara frontal para la foto tipo carnet y dibujar las guías (óvalo para la cara, marco con
+  esquinas doradas para la cédula). No hay galería en ningún punto del flujo. La foto tipo carnet
+  sale a 720p y la cédula a 1080p (la oficina tiene que LEERLA). Cada foto pasa por «¿Se ve bien?».
+- **Registro (afiliado y pasajero) en dos pasos**: el formulario termina en «Continuar»; el paso 2
+  toma las tres fotos en el teléfono y su botón crea la cuenta y LUEGO las envía. Si la cuenta se
+  crea y una foto falla, reintentar solo manda lo que falta (nunca registra dos veces) y el botón
+  «volver» se cierra para no reenviar el formulario. Si se pierde la respuesta de una subida, la
+  app pregunta al servidor qué llegó antes de reintentar.
+- **Puerta de identidad** a la entrada del afiliado (todos los estados salvo rechazado/suspendido)
+  y del pasajero: fotos faltantes o rechazadas detienen ahí, con «Cerrar sesión» como única salida.
+  En revisión o aprobadas dejan pasar. **Falla abierta** si no hay conexión: las reglas que
+  importan las impone el servidor, y un chequeo sin red no puede dejar a nadie sin poder pagar.
+  Su texto es honesto con el interruptor: mientras `identity_required_enabled` esté apagado dice
+  «pronto serán obligatorias para trabajar», no que ya lo son.
+- **Desvío deliberado de la maqueta 10** (afiliado que se hace pasajero): el aviso verde «tus fotos
+  ya están registradas» no se puede mostrar ANTES de que pruebe que es él (con su clave), porque le
+  confirmaría a cualquiera que escriba una cédula que esa persona tiene fotos. Queda una nota neutra
+  («si ya enviaste tus fotos, no tendrás que tomarlas de nuevo») y, tras el registro corto, la puerta
+  decide.
+- **«Completa tu solicitud» rediseñada** (maqueta 8): barra de avance por secciones, UN siguiente
+  paso destacado y tres secciones — Identidad, Documentos, Vehículo — con su estado en lenguaje
+  llano. La lógica vive aparte (`application_progress.dart`, probada) y la pantalla solo pinta.
+- La foto de perfil ya no se cambia libremente cuando existe la selfie (la app lo dice antes de
+  abrir la cámara; el servidor lo impone igual).
+
+**Transición conocida**: hasta el encendido (fase 4), «Documentos» todavía lista el requisito
+«Cédula de Identidad». Se retira al encender el interruptor (ver fase 1), no antes: retirarlo ahora
+dejaría aprobar solicitudes sin ninguna foto de cédula mientras la regla nueva no muerde.
+
+**Verificación**: `flutter analyze` sin avisos; 98 pruebas de la app en verde (10 nuevas:
+`test/identity_test.dart`).
