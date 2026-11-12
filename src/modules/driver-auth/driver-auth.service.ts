@@ -9,6 +9,8 @@ import {
   sniffMimeType,
 } from '../../storage/storage-provider.js';
 import type { FastifyInstance } from 'fastify';
+import { IdentityPolicy, PROFILE_PHOTO_LOCKED_MESSAGE, type IdentityStatus } from '../identity/identity.policy.js';
+import { IdentityRepository } from '../identity/identity.repository.js';
 import { DriversService } from '../drivers/drivers.service.js';
 import type { DriversRepository } from '../drivers/drivers.repository.js';
 import type { CreateDriverInput } from '../drivers/drivers.service.js';
@@ -134,6 +136,8 @@ export class DriverAuthService {
     private readonly driversRepository: DriversRepository,
     /** Only for the unread badge that rides inside the account standing. */
     private readonly notifications: NotificationsRepository,
+    /** Identity rules (2026-11-12): who may go active, whether the photo is locked. */
+    private readonly identity: IdentityPolicy = new IdentityPolicy(new IdentityRepository(app.db)),
   ) {}
 
   async login(nationalId: string, password: string): Promise<DriverLoginResult> {
@@ -167,12 +171,20 @@ export class DriverAuthService {
     return { token, driver: await this.withSignedPhoto(driver) };
   }
 
-  async getProfile(userId: string): Promise<DriverProfile> {
+  /**
+   * `identityStatus` rides along so the app knows, on every start, whether it
+   * must open the identity screen before anything else.
+   */
+  async getProfile(userId: string): Promise<DriverProfile & { identityStatus: IdentityStatus }> {
     const driver = await this.drivers.findProfileById(userId);
     if (!driver) {
       throw this.app.httpErrors.unauthorized('Sesión inválida');
     }
-    return this.withSignedPhoto(driver);
+    const [profile, identityStatus] = await Promise.all([
+      this.withSignedPhoto(driver),
+      this.identity.statusFor(userId),
+    ]);
+    return { ...profile, identityStatus };
   }
 
   /**
@@ -204,6 +216,9 @@ export class DriverAuthService {
     const { httpErrors } = this.app;
     const storage = this.app.storage;
     if (!storage) throw httpErrors.serviceUnavailable('El almacenamiento no está configurado');
+    if (await this.identity.profilePhotoLocked(userId)) {
+      throw httpErrors.conflict(PROFILE_PHOTO_LOCKED_MESSAGE);
+    }
 
     if (file.buffer.length === 0) throw httpErrors.badRequest('La imagen está vacía');
     if (file.buffer.length > MAX_FILE_BYTES) {
@@ -372,6 +387,12 @@ export class DriverAuthService {
 
     if (available && !CAN_OPERATE_STATUSES.includes(status)) {
       throw httpErrors.conflict(await this.cannotGoActiveReason(userId, status));
+    }
+    // Identity rule (2026-11-12): only an APPROVED identity works, approved
+    // affiliates included. Inert while `identity_required_enabled` is off.
+    if (available) {
+      const identityBlock = await this.identity.workBlockReason(userId);
+      if (identityBlock) throw httpErrors.conflict(identityBlock);
     }
 
     const isAvailable = await this.drivers.setAvailability(userId, available);

@@ -1,4 +1,5 @@
 import { personProperties } from '../drivers/drivers.schemas.js';
+import { identityStatusProperty } from '../identity/identity.schemas.js';
 
 export const driverPublicSchema = {
   type: 'object',
@@ -22,6 +23,9 @@ export const driverPublicSchema = {
     // Whether the admin already set the tariff start; false = approved but not yet
     // activated (the app shows a waiting screen instead of the home).
     tariffStarted: { type: 'boolean' },
+    // Identity photos (2026-11-12). Only GET /me fills it; missing/rejected =
+    // the app opens the identity screen before anything else.
+    identityStatus: identityStatusProperty,
   },
 } as const;
 

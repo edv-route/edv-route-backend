@@ -72,7 +72,12 @@ export type MessageInput =
   | { type: 'document_approved'; name: string }
   | { type: 'document_rejected'; name: string; reason: string }
   | { type: 'vehicle_approved'; plate: string }
-  | { type: 'vehicle_rejected'; plate: string; reason: string };
+  | { type: 'vehicle_rejected'; plate: string; reason: string }
+  // One notice when the WHOLE identity is approved, not one per photo: three
+  // pushes for one review would be noise.
+  | { type: 'identity_verified' }
+  // `photo` is already the human label ("foto tipo carnet", …).
+  | { type: 'identity_photo_rejected'; photo: string; reason: string };
 
 export function renderMessage(input: MessageInput): RenderedMessage {
   switch (input.type) {
@@ -159,6 +164,16 @@ export function renderMessage(input: MessageInput): RenderedMessage {
       return {
         title: 'Vehículo rechazado',
         body: `Tu vehículo ${input.plate} no fue aprobado. Motivo: ${input.reason}. Corrige lo indicado y vuelve a enviarlo desde la app.`,
+      };
+    case 'identity_verified':
+      return {
+        title: 'Identidad verificada',
+        body: 'La oficina aprobó tus fotos de identidad. Ya cumples con la verificación.',
+      };
+    case 'identity_photo_rejected':
+      return {
+        title: 'Foto rechazada',
+        body: `La oficina rechazó tu ${input.photo}. Motivo: ${input.reason}. Tómala de nuevo desde la app.`,
       };
   }
 }

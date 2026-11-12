@@ -3,6 +3,8 @@ import type { FastifyInstance } from 'fastify';
 import { withTransaction } from '../../db/tx.js';
 import { notify } from '../notifications/notification-writer.js';
 import { writeAudit } from '../audit-logs/audit-writer.js';
+import { IdentityPolicy } from '../identity/identity.policy.js';
+import { IdentityRepository } from '../identity/identity.repository.js';
 import {
   extensionFor,
   isAllowedMimeType,
@@ -658,6 +660,13 @@ export class ApplicationsService {
     if (missDriver[0]) {
       throw httpErrors.conflict(`Falta el documento obligatorio aprobado: ${missDriver[0].name}`);
     }
+
+    // Identity photos (2026-11-12): a solicitud from the app is not approved on
+    // an unverified face. Inert while `identity_required_enabled` is off.
+    const identityBlock = await new IdentityPolicy(new IdentityRepository(this.app.db)).approvalBlockReason(
+      driverId,
+    );
+    if (identityBlock) throw httpErrors.conflict(identityBlock);
 
     const { rows: missVehicle } = await this.app.db.query<{ name: string }>(
       `SELECT r.name FROM vehicles v

@@ -14,6 +14,8 @@ type NotificationType =
   | 'document_approved'
   | 'document_rejected'
   | 'vehicle_approved'
-  | 'vehicle_rejected';
+  | 'vehicle_rejected'
+  | 'identity_verified'
+  | 'identity_photo_rejected';
 
 export type { NotificationType as default };

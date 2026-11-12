@@ -110,12 +110,19 @@ src/notifications/    Abstracción de push: `PushSender` (interfaz) y `LogPushSe
 src/modules/notifications/
                       `notification-writer.ts` (única puerta de escritura; `notify` recibe
                       el CLIENTE de la transacción del hecho) y `notification-messages.ts`
-                      (la redacción de los 15 avisos, en un solo sitio: los servicios dicen
+                      (la redacción de los 17 avisos, en un solo sitio: los servicios dicen
                       QUÉ pasó, el catálogo cómo se lee). Quien emite cada aviso: el motor
                       de deuda (cobro, recordatorio, mora, penalización, reactivación), el
                       repositorio de pagos (recibido/aprobado/rechazado), `applications.
                       service` (solicitud), `documents.service` y `drivers.service`
-                      (documento, vehículo e inicio de tarifa).
+                      (documento, vehículo e inicio de tarifa) e `identity.service`
+                      (identidad verificada, foto rechazada).
+src/modules/identity/ Fotos de identidad de la PERSONA (2026-11-12). Además de las capas
+                      de siempre trae `identity.policy.ts`: la regla «solo trabaja una
+                      identidad aprobada» en UN sitio, que consultan otros módulos (ponerse
+                      activo, reportar ubicación, aprobar una solicitud) en vez de repetirla.
+                      Las rutas de la app se montan DOS veces (`/driver-auth` y `/client-auth`,
+                      cambia solo el guard): las fotos sirven a los dos roles.
 src/app.ts            Ensambla todo (testeable sin puerto). src/server.ts es el entrypoint.
 ```
 

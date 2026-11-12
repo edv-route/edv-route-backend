@@ -1,4 +1,5 @@
 import { personProperties } from '../drivers/drivers.schemas.js';
+import { identityStatusProperty } from '../identity/identity.schemas.js';
 
 /**
  * Validation for the passenger side (proposal: docs/proposals/cliente).
@@ -35,6 +36,9 @@ export const clientPublicSchema = {
      */
     nationalId: { type: ['string', 'null'] },
     createdAt: { type: 'string' },
+    // Identity photos (2026-11-12). Only GET /me fills it; missing/rejected =
+    // the app opens the identity screen before anything else.
+    identityStatus: identityStatusProperty,
   },
 } as const;
 

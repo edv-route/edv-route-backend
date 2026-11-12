@@ -26,6 +26,8 @@ import locationsAdminRoutes from './modules/locations/locations.admin.routes.js'
 import clientAuthRoutes from './modules/client-auth/client-auth.routes.js';
 import clientPasswordResetRoutes from './modules/client-auth/client-password-reset.routes.js';
 import clientsRoutes from './modules/clients/clients.routes.js';
+import identityAppRoutes from './modules/identity/identity.routes.js';
+import identityAdminRoutes from './modules/identity/identity.admin.routes.js';
 import adminsRoutes from './modules/admins/admins.routes.js';
 import vehicleTypesRoutes from './modules/vehicle-types/vehicle-types.routes.js';
 import requirementsRoutes from './modules/requirements/requirements.routes.js';
@@ -119,6 +121,10 @@ export async function buildApp(): Promise<FastifyInstance> {
       await api.register(clientPasswordResetRoutes, { prefix: '/client-auth' }); // /password-reset/*
       await api.register(clientsRoutes, { prefix: '/clients' }); // panel: lista de pasajeros
       await api.register(locationsAdminRoutes, { prefix: '/locations' }); // panel: mapa e historial
+      // Identity photos belong to the PERSON: the same routes serve both apps.
+      await api.register(identityAppRoutes, { prefix: '/driver-auth', channel: 'driver' });
+      await api.register(identityAppRoutes, { prefix: '/client-auth', channel: 'client' });
+      await api.register(identityAdminRoutes, { prefix: '/identity' }); // panel: revisar fotos
       await api.register(driversRoutes, { prefix: '/drivers' });
       await api.register(vehicleImagesRoutes, { prefix: '/drivers' });
       await api.register(auditLogsRoutes, { prefix: '/audit-logs' });

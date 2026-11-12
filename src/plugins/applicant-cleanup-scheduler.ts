@@ -74,7 +74,11 @@ async function findExpiredApplicants(db: pg.Pool): Promise<string[]> {
   return rows.map((r) => r.userId);
 }
 
-/** Every storage key owned by the driver: document files, vehicle photos, receipts. */
+/**
+ * Every storage key owned by the driver: document files, vehicle photos,
+ * receipts and his identity photos (history included). The purge never touches
+ * someone who is also a client, so the person's photos are his alone here.
+ */
 async function driverStoragePaths(db: pg.Pool, driverId: string): Promise<string[]> {
   const { rows } = await db.query<{ path: string }>(
     `SELECT file_url AS path FROM documents
@@ -85,7 +89,9 @@ async function driverStoragePaths(db: pg.Pool, driverId: string): Promise<string
       WHERE vehicle_id IN (SELECT id FROM vehicles WHERE driver_id = $1)
      UNION ALL
      SELECT storage_path AS path FROM payment_submission_files
-      WHERE submission_id IN (SELECT id FROM payment_submissions WHERE driver_id = $1)`,
+      WHERE submission_id IN (SELECT id FROM payment_submissions WHERE driver_id = $1)
+     UNION ALL
+     SELECT file_path AS path FROM identity_photos WHERE user_id = $1`,
     [driverId],
   );
   return rows.map((r) => r.path);

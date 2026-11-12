@@ -1,6 +1,8 @@
 import type { FastifyInstance } from 'fastify';
 import { SettingsRepository } from '../settings/settings.repository.js';
 import { CAN_OPERATE_STATUSES } from '../driver-auth/driver-auth.service.js';
+import { IdentityPolicy } from '../identity/identity.policy.js';
+import { IdentityRepository } from '../identity/identity.repository.js';
 import { readIntervalSeconds, readRetentionDays } from './locations.settings.js';
 import type { LocationPoint, LocationsRepository } from './locations.repository.js';
 
@@ -29,12 +31,14 @@ export interface ReportResult {
 
 export class LocationsService {
   private readonly settings: SettingsRepository;
+  private readonly identity: IdentityPolicy;
 
   constructor(
     private readonly app: FastifyInstance,
     private readonly repo: LocationsRepository,
   ) {
     this.settings = new SettingsRepository(app.db);
+    this.identity = new IdentityPolicy(new IdentityRepository(app.db));
   }
 
   /** Seconds between reports while idle. Read from settings on every call. */
@@ -62,6 +66,10 @@ export class LocationsService {
     if (!eligibility.allowed) {
       throw httpErrors.forbidden(eligibility.reason ?? 'No puedes reportar tu ubicación');
     }
+    // Same identity rule as going active: an affiliate who switched ON before
+    // the rule was enforced stops reporting (403 stops the app's tracker).
+    const identityBlock = await this.identity.workBlockReason(driverId);
+    if (identityBlock) throw httpErrors.forbidden(identityBlock);
 
     const now = Date.now();
     // Bad points are DROPPED, not fatal: one corrupt reading must not throw away

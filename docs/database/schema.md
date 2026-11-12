@@ -725,6 +725,43 @@ dependan de él.
 | `location_retention_days` | 30 | Días de historial que se conservan. Los purga un job diario |
 | `location_interval_seconds` | 600 | Cada cuántos segundos reporta la app en reposo. Viaja en cada respuesta del endpoint, así que subirlo no exige publicar un APK |
 
+## Dominio 12 — Verificación de identidad (mig. `1752520000000`, 2026-11-12)
+
+Foto tipo carnet (cámara frontal) y cédula por ambos lados, obligatorias para afiliados **y**
+pasajeros. Son **de la persona** (`users`), no del rol: quien las envió como afiliado no las repite
+como pasajero, y viceversa. Tabla propia y no filas de `documents`: el juego es fijo (tres tipos,
+definidos en el código) y `requirements` es un catálogo que la oficina edita.
+
+### `identity_photos` — una foto de identidad (con su historial)
+
+| Columna | Tipo | Notas |
+|---|---|---|
+| `id` | uuid PK | `gen_random_uuid()` |
+| `user_id` | uuid FK → `users` | ON DELETE CASCADE |
+| `kind` | enum `identity_photo_kind` | `selfie` · `id_front` · `id_back` |
+| `file_path` | text | **Path** en el bucket privado (`<userId>/identity/<kind>-<uuid>.jpg`), nunca un enlace público |
+| `status` | enum `identity_photo_status` | `pending` (def.) · `approved` · `rejected` |
+| `rejection_reason` | text NULL | Obligatorio si `rejected` (CHECK `identity_photos_reason_when_rejected`). Lo lee la persona |
+| `reviewed_by` | uuid FK → `admins` NULL | ON DELETE SET NULL |
+| `reviewed_at` | timestamptz NULL | |
+| `superseded_at` | timestamptz NULL | Se llena cuando una foto nueva la reemplaza. **NULL = la vigente** |
+| `created_at` | timestamptz | `now()` |
+
+- **Una sola vigente por persona y tipo**: índice único parcial `identity_photos_one_current`
+  (`user_id, kind` WHERE `superseded_at IS NULL`). La garantía la da la BD, no el servicio.
+- **El historial no se borra**: retomar una foto rechazada marca la anterior y añade otra.
+- `identity_photos_pending_idx`: la cola de revisión de la oficina (vigentes en `pending`).
+- La selfie también es **la foto de perfil**: subirla apunta `users.photo_url` a su path. Desde
+  ese momento la foto de perfil libre (`/me/photo`) queda bloqueada.
+- Avisos nuevos en `notification_type`: `identity_verified` (uno solo, cuando se aprueba la última
+  de las tres) e `identity_photo_rejected`.
+
+### Ajuste
+
+| Clave | Por defecto | Para qué |
+|---|---|---|
+| `identity_required_enabled` | `false` | Encendido: un afiliado solo se pone activo (y reporta ubicación), y una solicitud de la app solo se aprueba, con las **tres fotos aprobadas**. Nace apagado: se enciende cuando el APK que toma las fotos esté repartido |
+
 ---
 
 Del modelo v7 quedan pendientes para los módulos siguientes: `trip_requests`,

@@ -9,6 +9,8 @@ import {
   sniffMimeType,
 } from '../../storage/storage-provider.js';
 import type { ClientAuthRepository, ClientProfile } from './client-auth.repository.js';
+import { IdentityPolicy, PROFILE_PHOTO_LOCKED_MESSAGE, type IdentityStatus } from '../identity/identity.policy.js';
+import { IdentityRepository } from '../identity/identity.repository.js';
 
 /**
  * The passenger side of the account (proposal: docs/proposals/cliente).
@@ -67,6 +69,8 @@ export class ClientAuthService {
   constructor(
     private readonly app: FastifyInstance,
     private readonly clients: ClientAuthRepository,
+    /** Identity rules (2026-11-12): the profile photo locks once the selfie exists. */
+    private readonly identity: IdentityPolicy = new IdentityPolicy(new IdentityRepository(app.db)),
   ) {}
 
   /**
@@ -199,8 +203,17 @@ export class ClientAuthService {
     return { token: this.signToken(person.id), client: await this.requireProfile(person.id) };
   }
 
-  async getProfile(userId: string): Promise<ClientProfile> {
-    return this.requireProfile(userId);
+  /**
+   * `identityStatus` rides along so the app knows, on every start, whether it
+   * must open the identity screen. A passenger is never APPROVED (no review
+   * step for him); missing or rejected photos are what block him.
+   */
+  async getProfile(userId: string): Promise<ClientProfile & { identityStatus: IdentityStatus }> {
+    const [profile, identityStatus] = await Promise.all([
+      this.requireProfile(userId),
+      this.identity.statusFor(userId),
+    ]);
+    return { ...profile, identityStatus };
   }
 
   /**
@@ -282,6 +295,9 @@ export class ClientAuthService {
     const { httpErrors } = this.app;
     const storage = this.app.storage;
     if (!storage) throw httpErrors.serviceUnavailable('El almacenamiento no está configurado');
+    if (await this.identity.profilePhotoLocked(userId)) {
+      throw httpErrors.conflict(PROFILE_PHOTO_LOCKED_MESSAGE);
+    }
 
     if (file.buffer.length === 0) throw httpErrors.badRequest('La imagen está vacía');
     if (file.buffer.length > MAX_FILE_BYTES) {

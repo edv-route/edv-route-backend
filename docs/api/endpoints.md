@@ -246,6 +246,38 @@ Exige el token de **admin**.
 | GET | `/clients` | Lista con búsqueda y paginación (`search` por nombre/correo/teléfono/**cédula**, `status` `active\|suspended`, `page`, `limit`). La cédula sale de `COALESCE(drivers, clients)` — la verificada gana — más `isAffiliate` para la insignia «También afiliado», y la foto como URL firmada de 1 h **firmada en lote** (`signAvatars`, `src/storage/avatar-signing.ts`, compartido con la lista de afiliados) |
 | GET | `/clients/:id` | **Ficha del cliente** (2026-09-01, solo lectura): lo de la lista + dirección, nacimiento, fecha del consentimiento de privacidad y canal de registro. El historial de viajes del panel es **maqueta declarada en el frontend** (datos de ejemplo marcados) hasta que exista el módulo de Viajes; la suspensión llega después. **404** si no existe |
 
+## Verificación de identidad (2026-11-12)
+
+Foto tipo carnet + cédula frente y reverso, de **la persona** (sirven a sus dos roles). La app las
+sube **una por llamada** (multipart, campo de archivo único); el servidor olfatea el contenido
+(solo JPG/PNG reales, máx 10 MB) y las guarda en el bucket **privado**. Respuesta de todos:
+`{ status, required, photos[] }` — `status` es `missing | rejected | pending | approved` (en ese
+orden de precedencia: primero lo que la persona tiene que HACER), `required` es el interruptor
+`identity_required_enabled`, y cada foto trae `kind`, `status`, `rejectionReason`, `uploadedAt`,
+`reviewedAt` y una **URL firmada de 2 min** (`reviewedByName` solo en el panel).
+
+| Método | Ruta | Descripción |
+|---|---|---|
+| GET | `/driver-auth/me/identity` · `/client-auth/me/identity` | Sus fotos vigentes y el estado |
+| POST | `/driver-auth/me/identity/:kind` · `/client-auth/me/identity/:kind` | `kind` = `selfie \| id_front \| id_back`. Se acepta si ese hueco está **vacío o rechazado**; **409** si está en revisión o aprobada («ya fue verificada y no se puede cambiar»). La selfie pasa a ser la foto de perfil |
+| GET | `/identity/users/:userId` | Panel (token admin): las fotos de una persona — afiliado o pasajero — con quién las revisó. **404** si no existe |
+| POST | `/identity/photos/:photoId/approve` | Panel. Aprobar la última de las tres manda **un** aviso `identity_verified`. **409** si fue rechazada (espera la nueva) o si la persona ya la reemplazó |
+| POST | `/identity/photos/:photoId/reject` | Panel. `{ reason }` obligatorio (lo lee la persona en el aviso). También revoca una **aprobada** («pedir otra foto»). Con el interruptor encendido, saca al afiliado de servicio en la misma transacción |
+
+**Dónde muerde la regla** (solo con `identity_required_enabled` encendido; apagado no frena a
+nadie — es la ventana para recoger las fotos):
+
+- `PATCH /driver-auth/me/availability` con `available: true` → **409** con el motivo («te faltan
+  las fotos», «la oficina rechazó una foto», «tus fotos están en revisión»).
+- `POST /driver-auth/me/locations` → **403** con el mismo motivo (la app para el rastreo).
+- `POST /drivers/:id/approve-application` → **409** si las fotos del solicitante no están aprobadas.
+  Los afiliados inscritos **desde el panel** no pasan por aquí: se crean sin fotos y la app se las
+  exige al entrar.
+
+Siempre, con interruptor o sin él: `GET /driver-auth/me` y `GET /client-auth/me` traen
+`identityStatus`, y `POST /me/photo` (chofer y cliente) responde **409** en cuanto existe una
+selfie: la foto de perfil es la verificada.
+
 ## Administradores
 
 | Método | Ruta | Descripción |

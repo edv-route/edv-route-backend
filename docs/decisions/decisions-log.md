@@ -1937,3 +1937,44 @@ lugar de liberar el nombre en la cuenta del 26/08.
 **Lecciones** (ya en `guides/deploy-railway.md`): un servicio nuevo de Railway nace conectado a
 `main` (arrancó con código de agosto hasta pasarlo a `dev`); si el servidor cae, Supabase se
 duerme detrás; al volver, reanudar la base primero y decidir el motor de cobro antes de encender.
+
+## 2026-11-12 — Verificación de identidad con fotos (fase 1: servidor)
+
+**Pedido de Luis (2026-11-09)**: en el registro del afiliado **y** del pasajero, foto tipo carnet
+tomada con la cámara **frontal** del teléfono (sin galería) y foto de la cédula por **ambos
+lados**, obligatorias. Maquetas aprobadas antes de escribir código (canvas de 12 pantallas,
+2026-11-12).
+
+**Decisiones de Luis**:
+1. El pasajero **no pasa por aprobación**: entra al registrarse; la oficina puede pedirle otra foto.
+2. **Solo trabaja quien tenga la identidad APROBADA**, afiliados ya aprobados incluidos: quedan en
+   pausa hasta que la oficina apruebe sus tres fotos.
+3. **Todos los ya registrados** deben enviarlas; los inscritos desde el panel se crean sin fotos y
+   la app se las exige al entrar.
+4. Una foto rechazada se vuelve a tomar desde la app, con el motivo a la vista.
+5. Una foto **verificada no se puede cambiar**, y la selfie pasa a ser la foto de perfil (la foto
+   libre de `/me/photo` queda bloqueada en cuanto existe una selfie).
+6. La cédula del registro reemplaza al requisito «Cédula de Identidad» del checklist.
+
+**Cómo quedó**:
+- Tabla `identity_photos` por **persona** (no por rol): quien las envió como afiliado no las
+  repite como pasajero. Tabla propia y no `documents`, porque el juego es fijo y `requirements` es
+  un catálogo que la oficina edita. Historial sin borrar (`superseded_at`); una sola vigente por
+  tipo garantizada por índice único parcial.
+- Una foto se acepta si su hueco está vacío o rechazado; **en revisión o aprobada es definitiva**.
+- La regla vive en **`identity.policy.ts`** y la consultan ponerse activo (409), reportar
+  ubicación (403) y aprobar una solicitud de la app (409).
+- **Interruptor `identity_required_enabled`, apagado al desplegar.** Encender la regla antes de
+  que el APK nuevo esté en los teléfonos pausaría a todos los afiliados sin forma de cumplir. El
+  APK nuevo exige las fotos al entrar desde el primer día (recoge las fotos), y el interruptor
+  decide cuándo empiezan a frenar el trabajo.
+- Un aviso al teléfono cuando la identidad queda **completa** (no uno por foto) y uno por cada
+  foto rechazada. Con el interruptor encendido, rechazar una foto saca al afiliado de servicio en
+  la misma transacción.
+
+**Pendiente para el encendido (fase 4)**: desactivar el requisito «Cédula de Identidad»
+(`requirements.active = false`; las 10 aprobadas quedan como historial), poner fuera de servicio a
+quien siga activo sin identidad aprobada, y encender el interruptor.
+
+**Verificación**: 5 pruebas nuevas (`tests/identity.test.ts`) + 84 de las suites vecinas en verde;
+prueba HTTP de las rutas nuevas (guardas, validación, 404) contra una persona desechable.
