@@ -2013,3 +2013,23 @@ dejaría aprobar solicitudes sin ninguna foto de cédula mientras la regla nueva
 
 **Verificación**: `flutter analyze` sin avisos; 98 pruebas de la app en verde (10 nuevas:
 `test/identity_test.dart`).
+
+## 2026-11-13 — Verificación de identidad (fase 3: panel)
+
+- **La ficha del afiliado se partió antes de tocarla**: sus dos archivos pasaban del tope de 1000
+  líneas (1083 y 1039). Salieron dos modales autónomos a componentes propios —
+  `driver-edit-modal` («Editar datos») y `driver-add-document-modal` («Agregar documento») — con su
+  formulario y su guardado; la ficha solo los abre y recarga. Quedó en 943/956 con la tarjeta nueva.
+- **Tarjeta «Verificación de identidad»** (`features/identity/identity-review`), UNA para las dos
+  fichas porque las fotos son de la persona:
+  - afiliado: aprobar o rechazar cada foto; una aprobada aún se puede revocar («pedir otra foto»);
+  - pasajero: solo «pedir otra foto» (no hay aprobación para él).
+  Al lado, lo declarado (nombre, cédula, nacimiento) para comparar con la cara y la cédula. El
+  rechazo se elige de una lista por tipo de foto («está borrosa», «no se leen los datos»…) o se
+  escribe en «Otro motivo»; la persona lo lee en el aviso. Ampliar una foto pide un enlace firmado
+  nuevo (viven 2 minutos) en vez de reutilizar el de la lista.
+- **Aprobar una solicitud** se frena en el panel cuando la regla está encendida y las fotos no
+  están aprobadas (el servidor lo impone igual; el panel se ahorra el diálogo de confirmación).
+
+**Verificación**: `ng build` limpio; 5 pruebas del panel en verde (4 nuevas,
+`identity-review.spec.ts`).
